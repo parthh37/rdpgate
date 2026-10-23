@@ -2,8 +2,10 @@
 ; Build: ISCC /DAppVersion=0.2.0 /DSourceDir=<folder with rdpgate-server.exe> /DOutputDir=<out> server.iss
 ;
 ; Installs to C:\Program Files\RDPGate, then runs install-server.ps1, which
-; secures the data folder, locks down Windows Firewall, turns on hardened
-; Remote Desktop and starts the RDPGate service.
+; secures the data folder, locks down Windows Firewall (now, or after the
+; first sign-in when installing over Remote Desktop), turns on hardened
+; Remote Desktop, starts the RDPGate service and, if chosen, runs the guided
+; domain setup for browser sign-in.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -47,6 +49,7 @@ CloseApplications=no
 WelcomeLabel2=This installs the RDP Gate agent on this PC and configures Windows Firewall (and, if it allows it, your router) for you.%n%nRemote Desktop will stay closed to the internet. It opens only for a computer you enrolled, after it signs in with its key and a 6-digit code (or a passkey), and only for that computer's IP address.%n%nWindows Home is not supported (it cannot accept Remote Desktop connections).
 
 [Tasks]
+Name: "domain"; Description: "Also sign in from a web browser with a passkey, using my own domain name (guided setup)"; Flags: unchecked
 Name: "beacon"; Description: "Set up the encrypted IP beacon now (asks for a Gists-only GitHub token, ideally from an account used only for this)"
 Name: "router"; Description: "Forward ports on my router automatically (UPnP), if the router allows it"
 Name: "lockout"; Description: "Set an account lockout policy (10 wrong passwords lock an account for 15 minutes)"
@@ -64,25 +67,58 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "{code:Hard
 Filename: "{cmd}"; Parameters: "/c """"{app}\rdpgate-server.exe"" totp-setup & pause"""; Description: "Set up 6-digit codes now (shows a QR code for your phone)"; Flags: postinstall waituntilterminated
 Filename: "https://parthh37.github.io/rdpgate/guide.html#client"; Description: "Open the guide for enrolling your computers"; Flags: postinstall shellexec nowait unchecked
 
-[UninstallRun]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\uninstall-server.ps1"" -FromInstaller"; RunOnceId: "RDPGateUninstall"; Flags: waituntilterminated runhidden
-
 [UninstallDelete]
 Type: files; Name: "{app}\*.old.exe"
 Type: files; Name: "{app}\*.new.exe"
 
 [Code]
 var
+  ProtectPage: TInputOptionWizardPage;
   HostPage: TInputQueryWizardPage;
 
-procedure InitializeWizard;
+// Setup is running inside a Remote Desktop session (SESSIONNAME=RDP-Tcp#N).
+function OverRemoteDesktop: Boolean;
 begin
-  HostPage := CreateInputQueryPage(wpSelectTasks,
-    'Browser sign-in (optional)',
-    'Do you also want to sign in from a web browser with a passkey?',
-    'Browsers only use passkeys with a domain name you own that points at this network, for example rdp.example.com.' + #13#10 + #13#10 +
-    'Leave this empty to use the RDP Gate app only. No domain name is needed for that.');
-  HostPage.Add('Domain name (optional):', False);
+  Result := Pos('RDP-TCP', Uppercase(GetEnv('SESSIONNAME'))) = 1;
+end;
+
+procedure InitializeWizard;
+var
+  Note: String;
+begin
+  if OverRemoteDesktop then
+    Note := 'You are connected over Remote Desktop right now, so the second option is selected: the first would disconnect you, and no computer can sign in yet to get you back in.'
+  else
+    Note := 'Choose the second option if you might install or manage this PC over Remote Desktop before your computers are set up.';
+  ProtectPage := CreateInputOptionPage(wpSelectTasks,
+    'When to close Remote Desktop',
+    'RDP Gate closes Remote Desktop to everyone who hasn''t signed in. When should that start?',
+    'Closing it disconnects every Remote Desktop session that didn''t come through RDP Gate. With "after my first sign-in", Remote Desktop stays as it is until one of your computers has signed in through RDP Gate and connected; the service then closes it to everyone else by itself.' + #13#10 + #13#10 + Note,
+    True, False);
+  ProtectPage.Add('Now, during Setup (I''m sitting at this PC)');
+  ProtectPage.Add('After my first sign-in through RDP Gate (keeps this session; closes automatically)');
+  if OverRemoteDesktop then
+    ProtectPage.SelectedValueIndex := 1
+  else
+    ProtectPage.SelectedValueIndex := 0;
+
+  HostPage := CreateInputQueryPage(ProtectPage.ID,
+    'Browser sign-in with your domain',
+    'Which domain name should point at this PC?',
+    'Browsers only use passkeys with a domain name, never an IP address. Before you continue you need:' + #13#10 +
+    '  1. A domain you control, e.g. example.com (any registrar, or Cloudflare).' + #13#10 +
+    '  2. A name under it for this PC, e.g. rdp.example.com. At the end of Setup a window shows the exact DNS' + #13#10 +
+    '      record to create (type A, pointing at your public IP) and checks it for you.' + #13#10 +
+    '  3. If your home IP changes: dynamic DNS ("DDNS") at your registrar or router to keep the record current.' + #13#10 +
+    '  4. Port 443 on your router reaching this PC (Setup does this when your router allows it).' + #13#10 + #13#10 +
+    'The certificate comes free from Let''s Encrypt, automatically. The email is optional and only gets expiry notices.');
+  HostPage.Add('Domain name (e.g. rdp.example.com):', False);
+  HostPage.Add('Email for certificate notices (optional):', False);
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = HostPage.ID) and not WizardIsTaskSelected('domain');
 end;
 
 // Letters, digits, dots and dashes only, with at least one dot. This also
@@ -101,17 +137,44 @@ begin
   end;
 end;
 
+// name@domain with a safe character set (it goes on a command line too).
+function ValidEmail(E: String): Boolean;
+var
+  I, At: Integer;
+  C: Char;
+begin
+  At := Pos('@', E);
+  Result := (At > 1) and ValidHost(Copy(E, At + 1, Length(E)));
+  for I := 1 to At - 1 do
+  begin
+    C := E[I];
+    if not (((C >= 'a') and (C <= 'z')) or ((C >= 'A') and (C <= 'Z')) or ((C >= '0') and (C <= '9')) or (C = '.') or (C = '-') or (C = '_') or (C = '+')) then
+      Result := False;
+  end;
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  H: String;
+  H, E: String;
 begin
   Result := True;
+  if CurPageID = ProtectPage.ID then
+  begin
+    if OverRemoteDesktop and (ProtectPage.SelectedValueIndex = 0) then
+      Result := MsgBox('You are connected over Remote Desktop. Closing it now will disconnect you, and no computer can sign in through RDP Gate yet.' + #13#10 + #13#10 + 'Close Remote Desktop now anyway?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+  end;
   if CurPageID = HostPage.ID then
   begin
     H := Trim(HostPage.Values[0]);
-    if (H <> '') and not ValidHost(H) then
+    E := Trim(HostPage.Values[1]);
+    if not ValidHost(H) then
     begin
-      MsgBox('Enter a domain name like rdp.example.com, or leave it empty.', mbError, MB_OK);
+      MsgBox('Enter a domain name like rdp.example.com, or go Back and untick browser sign-in.', mbError, MB_OK);
+      Result := False;
+    end
+    else if (E <> '') and not ValidEmail(E) then
+    begin
+      MsgBox('Enter an email address like me@example.com, or leave it empty.', mbError, MB_OK);
       Result := False;
     end;
   end;
@@ -119,12 +182,24 @@ end;
 
 function HardenParams(Param: String): String;
 var
-  H: String;
+  H, E: String;
 begin
   Result := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\install-server.ps1') + '" -FromInstaller';
-  H := Trim(HostPage.Values[0]);
-  if (H <> '') and ValidHost(H) then
-    Result := Result + ' -PublicHost ' + H;
+  if ProtectPage.SelectedValueIndex = 1 then
+    Result := Result + ' -Protect AfterSignIn'
+  else
+    Result := Result + ' -Protect Now';
+  if WizardIsTaskSelected('domain') then
+  begin
+    H := Trim(HostPage.Values[0]);
+    E := Trim(HostPage.Values[1]);
+    if ValidHost(H) then
+      Result := Result + ' -PublicHost ' + H
+    else
+      Result := Result + ' -DomainSetup';
+    if (E <> '') and ValidEmail(E) then
+      Result := Result + ' -Email ' + E;
+  end;
   if not WizardIsTaskSelected('beacon') then
     Result := Result + ' -NoBeacon';
   if not WizardIsTaskSelected('router') then
@@ -135,6 +210,36 @@ begin
     Result := Result + ' -SkipSleep';
   if WizardIsTaskSelected('udp') then
     Result := Result + ' -AllowUdp';
+end;
+
+// ---- uninstall ---------------------------------------------------------------
+var
+  RestoreSettings: Boolean;
+
+function InitializeUninstall(): Boolean;
+begin
+  // Silent uninstalls keep Remote Desktop blocked (the safe answer).
+  RestoreSettings := SuppressibleMsgBox('Also put back the settings RDP Gate Setup changed?' + #13#10 + #13#10 +
+    'Windows Firewall, the Remote Desktop firewall rules and settings, the account lockout policy, sleep on mains power, and the port forwards RDP Gate added on your router return to how they were before you installed it.' + #13#10 + #13#10 +
+    'If Remote Desktop was reachable from the internet before, it will be again. Choose No to keep Remote Desktop blocked from the network.',
+    mbConfirmation, MB_YESNO, IDNO) = IDYES;
+  Result := True;
+end;
+
+// Runs before the program files are deleted: the script needs rdpgate-server.exe
+// to remove the router forwards.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Params: String;
+  RC: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\uninstall-server.ps1') + '" -FromInstaller';
+    if RestoreSettings then
+      Params := Params + ' -Restore';
+    Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, RC);
+  end;
 end;
 
 // Stop the running service so its executable can be replaced on upgrade.

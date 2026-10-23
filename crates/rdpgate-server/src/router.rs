@@ -147,6 +147,37 @@ pub fn apply(cfg: &Config) -> RouterStatus {
     st
 }
 
+/// Removes the forwards RDP Gate made (blocking), for uninstalling. Only
+/// mappings with our description that point at this PC are touched, so a
+/// forward the owner set up by hand stays. Returns what happened, per line.
+pub fn remove() -> Vec<String> {
+    let mut opts = SearchOptions::default();
+    opts.timeout = Some(Duration::from_secs(4));
+    let Ok(gw) = search_gateway(opts) else {
+        return vec!["No router answered UPnP; nothing to remove.".into()];
+    };
+    let Some(lan) = lan_ip_towards(gw.addr.ip()) else {
+        return vec!["Could not work out this PC's local address; router forwards left as they are.".into()];
+    };
+    let mut ours = Vec::new();
+    // The router numbers its mappings 0..n and errors past the end.
+    for i in 0..256 {
+        let Ok(e) = gw.get_generic_port_mapping_entry(i) else { break };
+        if e.port_mapping_description == DESCRIPTION && e.internal_client == lan.to_string() {
+            ours.push((e.protocol, e.external_port, e.internal_port));
+        }
+    }
+    if ours.is_empty() {
+        return vec!["No RDP Gate forwards on the router.".into()];
+    }
+    ours.into_iter()
+        .map(|(proto, ext, int)| match gw.remove_port(proto, ext) {
+            Ok(()) => format!("Router: removed {} {ext} -> {lan}:{int}", proto_name(proto)),
+            Err(e) => format!("Router: could not remove {} {ext} ({e}); remove it in the router's settings", proto_name(proto)),
+        })
+        .collect()
+}
+
 fn write_status(cfg: &Config, st: &RouterStatus) {
     if let Ok(json) = serde_json::to_vec_pretty(st) {
         let _ = rdpgate_core::keystore::write_private(&cfg.data_dir.join("router.json"), &json);

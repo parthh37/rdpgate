@@ -342,10 +342,13 @@ impl GateApp {
         ui.heading("Enroll this computer");
         ui.label("1. On the Windows server, in PowerShell as Administrator, run:");
         let mut cmd = id.enroll_command();
-        ui.add(TextEdit::multiline(&mut cmd).font(egui::TextStyle::Monospace).desired_rows(3).desired_width(f32::INFINITY));
+        // One line that never wraps: a wrapped copy pastes into PowerShell
+        // as two commands, and the key alone is "not recognized".
+        ui.add(TextEdit::singleline(&mut cmd).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
         ui.horizontal(|ui| {
             if ui.button("Copy command").clicked() {
                 ui.ctx().copy_text(id.enroll_command());
+                self.status = Some((true, "Command copied. Paste it into PowerShell on the server.".into()));
             }
             ui.label(RichText::new(&id.fingerprint).monospace().small());
         });
@@ -446,6 +449,7 @@ impl GateApp {
                 ui.label(format!("Device key {}", id.fingerprint));
                 if ui.button("Copy enrollment command").clicked() {
                     ui.ctx().copy_text(id.enroll_command());
+                    self.status = Some((true, "Command copied. Paste it into PowerShell on the server.".into()));
                 }
             }
             if let Some(a) = cfg.last_known {

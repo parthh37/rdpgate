@@ -29,6 +29,11 @@ pub struct State {
     pub totp: Option<TotpState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enroll_tokens: Vec<EnrollToken>,
+    /// Setup left Remote Desktop reachable as it was, so installing over RDP
+    /// doesn't cut the installer off. The service locks it down once someone
+    /// has signed in and connected through RDP Gate (see `protect`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protection_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +145,7 @@ impl Store {
             passkeys: vec![],
             totp: None,
             enroll_tokens: vec![],
+            protection_pending: false,
         };
         self.write(&s)?;
         Ok(true)

@@ -18,6 +18,7 @@ use rustls_acme::{AcmeConfig, caches::DirCache, is_tls_alpn_challenge};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
@@ -30,6 +31,8 @@ const MAX_CONNECTIONS: usize = 256;
 /// Per source address (IPv4 /32, IPv6 /64), so one host can't take them all.
 const MAX_PER_SOURCE: u32 = 8;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Wait between attempts to turn pending protection on.
+const PROTECT_RETRY_SECS: i64 = 15 * 60;
 /// How long a probed RDP certificate fingerprint is reused.
 const RDP_CERT_TTL: Duration = Duration::from_secs(600);
 
@@ -47,6 +50,12 @@ pub struct App {
     conns: Mutex<HashMap<String, u32>>,
     restart: tokio::sync::Notify,
     restart_requested: std::sync::atomic::AtomicBool,
+    /// Protection waits for the first connected sign-in (see `protect`).
+    protection_pending: AtomicBool,
+    /// A lock-down is running right now.
+    protecting: AtomicBool,
+    /// Unix time before which a failed lock-down isn't tried again.
+    protect_retry_at: std::sync::atomic::AtomicI64,
 }
 
 /// Why the server stopped.
@@ -139,8 +148,10 @@ impl App {
             )
             .with_power(crate::power::for_config(&cfg)),
         );
+        let store = Store::new(&cfg.data_dir);
+        let protection_pending = store.load().map(|s| s.protection_pending).unwrap_or(false);
         Ok(Arc::new(App {
-            store: Store::new(&cfg.data_dir),
+            store,
             identity,
             webauthn,
             limiter: Limiter::default(),
@@ -151,8 +162,18 @@ impl App {
             conns: Mutex::new(HashMap::new()),
             restart: tokio::sync::Notify::new(),
             restart_requested: std::sync::atomic::AtomicBool::new(false),
+            protection_pending: AtomicBool::new(protection_pending),
+            protecting: AtomicBool::new(false),
+            protect_retry_at: std::sync::atomic::AtomicI64::new(0),
             cfg,
         }))
+    }
+
+    /// Keeps the firewall warnings for `rdpgate-server status`.
+    fn write_warnings(&self, warnings: &[String]) {
+        if let Ok(json) = serde_json::to_vec_pretty(warnings) {
+            let _ = rdpgate_core::keystore::write_private(&self.cfg.data_dir.join("warnings.json"), &json);
+        }
     }
 
     /// Asks the server to stop so the freshly installed version can start.
@@ -337,9 +358,12 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     for w in &warnings {
         crate::logln!("WARNING {w}");
     }
-    if let Ok(json) = serde_json::to_vec_pretty(&warnings) {
-        let _ = rdpgate_core::keystore::write_private(&app.cfg.data_dir.join("warnings.json"), &json);
+    if app.protection_pending.load(Ordering::SeqCst) {
+        crate::logln!(
+            "PROTECT pending: Remote Desktop is reachable as before Setup until someone signs in through RDP Gate and connects"
+        );
     }
+    app.write_warnings(&warnings);
 
     let addrs: Vec<String> = listeners.iter().filter_map(|l| l.local_addr().ok()).map(|a| a.to_string()).collect();
     crate::logln!(
@@ -454,8 +478,54 @@ async fn maintain(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
             _ = t.tick() => {
                 app.grants.tick().await;
                 app.limiter.prune();
+                protect_when_ready(&app).await;
             }
             _ = shutdown.changed() => return,
         }
     }
+}
+
+/// Turns pending protection on once a signed-in address has Remote Desktop
+/// connected. Runs in the background: inspecting every firewall rule can
+/// take a minute, and grants must keep ticking meanwhile.
+async fn protect_when_ready(app: &Arc<App>) {
+    if !app.protection_pending.load(Ordering::SeqCst)
+        || app.protecting.load(Ordering::SeqCst)
+        || now() < app.protect_retry_at.load(Ordering::SeqCst)
+        || !crate::protect::ready(&app.grants.list().await)
+    {
+        return;
+    }
+    // `rdpgate-server protect` may have done it already.
+    if !app.state().await.is_ok_and(|s| s.protection_pending) {
+        app.protection_pending.store(false, Ordering::SeqCst);
+        return;
+    }
+    app.protecting.store(true, Ordering::SeqCst);
+    let app = app.clone();
+    tokio::spawn(async move {
+        crate::logln!("PROTECT signed in and connected through RDP Gate: locking Remote Desktop down");
+        let (fw, store) = (app.grants.firewall(), app.store.clone());
+        match tokio::task::spawn_blocking(move || crate::protect::apply(&*fw, &store)).await {
+            Ok(Ok(disabled)) => {
+                for r in &disabled {
+                    crate::logln!("PROTECT disabled firewall rule {r:?}");
+                }
+                crate::logln!("PROTECT on: Remote Desktop now opens only for signed-in addresses");
+                app.protection_pending.store(false, Ordering::SeqCst);
+                let fw = app.grants.firewall();
+                let warnings = tokio::task::spawn_blocking(move || fw.audit()).await.unwrap_or_default();
+                app.write_warnings(&warnings);
+            }
+            Ok(Err(e)) => {
+                crate::logln!("ERROR turning protection on (trying again in 15 minutes): {e}");
+                app.protect_retry_at.store(now() + PROTECT_RETRY_SECS, Ordering::SeqCst);
+            }
+            Err(e) => {
+                crate::logln!("ERROR turning protection on: {e}");
+                app.protect_retry_at.store(now() + PROTECT_RETRY_SECS, Ordering::SeqCst);
+            }
+        }
+        app.protecting.store(false, Ordering::SeqCst);
+    });
 }

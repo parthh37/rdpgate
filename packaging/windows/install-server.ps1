@@ -10,6 +10,10 @@
     3. Locks down Windows Firewall: inbound blocked by default, every rule that
        exposes the Remote Desktop port disabled, HTTPS allowed for
        rdpgate-server.exe only. Stops if Group Policy still exposes RDP.
+       With -Protect AfterSignIn (the default when this runs inside a Remote
+       Desktop session) only the HTTPS rule is added now, so the session you
+       are installing over isn't cut off. The service locks down by itself
+       once a computer has signed in through RDP Gate and connected.
     4. Only then turns on Remote Desktop with Network Level Authentication and
        TLS (rolled back if anything fails).
     5. Sets an account lockout policy (unless -SkipLockout).
@@ -21,6 +25,8 @@
     8. Forwards the sign-in and Remote Desktop ports on the router with UPnP
        when the router allows it (unless -NoUpnp), and warns about
        carrier-grade NAT.
+    9. With -PublicHost or -DomainSetup, runs the guided domain setup for
+       browser (passkey) sign-in: DNS record, check, certificate, passkey.
 
     Run it again at any time to upgrade or re-apply the hardening; enrolled
     devices, passkeys, codes and the server identity are kept.
@@ -30,11 +36,22 @@
 
 .EXAMPLE
     .\install-server.ps1 -PublicHost rdp.example.com -Email me@example.com -RdpPublicPort 53389
+
+.EXAMPLE
+    # Installing over Remote Desktop: keep this session until the first sign-in
+    .\install-server.ps1 -Protect AfterSignIn
 #>
 [CmdletBinding()]
 param(
     # Optional DNS name for browser (passkey) sign-in. Not needed for the desktop app.
     [string] $PublicHost,
+    # Run the guided domain setup for browser sign-in (asks for the domain)
+    [switch] $DomainSetup,
+    # When to close Remote Desktop to everyone who hasn't signed in:
+    # Now, AfterSignIn (keeps the session you're installing over), or Auto
+    # (AfterSignIn inside a Remote Desktop session, otherwise Now)
+    [ValidateSet('Auto', 'Now', 'AfterSignIn')]
+    [string] $Protect = 'Auto',
     # Optional email for Let's Encrypt certificate notices (with -PublicHost)
     [string] $Email,
     # Local port the agent listens on
@@ -126,12 +143,33 @@ if ($os.Caption -match 'Home') {
 if (-not (Test-Path (Join-Path $Here 'rdpgate-server.exe'))) {
     throw "rdpgate-server.exe must be in the same folder as this script."
 }
+# RDP Gate depends on Windows Defender Firewall: start it if it's off.
 $fwSvc = Get-Service MpsSvc -ErrorAction SilentlyContinue
-if (-not $fwSvc -or $fwSvc.Status -ne 'Running') {
-    throw "Windows Defender Firewall (MpsSvc) is not running. RDP Gate depends on it; start it and run this again."
+if (-not $fwSvc) { throw "Windows Defender Firewall (MpsSvc) is missing from this PC. RDP Gate depends on it." }
+if ($fwSvc.Status -ne 'Running') {
+    Warn 'Windows Defender Firewall was not running: turning it on.'
+    if ($fwSvc.StartType -eq 'Disabled') {
+        # Set-Service is refused for this protected service on some versions.
+        try { Set-Service MpsSvc -StartupType Automatic }
+        catch { Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc' -Name Start -Value 2 -Type DWord }
+    }
+    Start-Service MpsSvc -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    if ((Get-Service MpsSvc).Status -ne 'Running') {
+        throw "Could not start Windows Defender Firewall (MpsSvc). Turn it on (Windows Security > Firewall & network protection, or Group Policy if it's managed), then run this again."
+    }
+    Ok 'Windows Defender Firewall service started'
 }
 $rdpPort = [int](Get-ItemProperty -Path $RdpTcpKey).PortNumber
 Ok "$($os.Caption), Remote Desktop port $rdpPort"
+$overRdp = "$env:SESSIONNAME" -like 'RDP-Tcp*'
+if ($Protect -eq 'Auto') { $Protect = if ($overRdp) { 'AfterSignIn' } else { 'Now' } }
+$deferred = $Protect -eq 'AfterSignIn'
+if ($deferred) {
+    Ok 'Protection turns on after the first sign-in through RDP Gate (this session is kept)'
+} elseif ($overRdp) {
+    Warn 'You are connected over Remote Desktop: locking down the firewall will disconnect you, and no computer can sign in yet. Use -Protect AfterSignIn to keep this session.'
+}
 
 # ---------------------------------------------------------------------------
 Step 'Installing files'
@@ -181,26 +219,95 @@ foreach ($icaclsArgs in @(
 Ok "Data folder $DataDir (SYSTEM + Administrators only)"
 
 # ---------------------------------------------------------------------------
-Step 'Locking down Windows Firewall (this can take a minute)'
-Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow
-$disabled = 0
-Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -ErrorAction SilentlyContinue |   # built-in "Remote Desktop" group
-    Where-Object { $_.Enabled -eq 'True' } |
-    ForEach-Object { $_ | Disable-NetFirewallRule; $disabled++ }
-Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
-    Where-Object { $_.DisplayName -notlike 'RDPGate-*' -and (Test-ExposesRdp $_ $rdpPort) } |
-    ForEach-Object { Write-Host "    disabling rule: $($_.DisplayName)"; $_ | Disable-NetFirewallRule; $disabled++ }
+# What this PC looked like before RDP Gate, so Uninstall can put it back.
+# Taken once: running Setup again (upgrades) keeps the original.
+$Backup = Join-Path $DataDir 'pre-install.json'
+if (-not (Test-Path $Backup)) {
+    Step 'Recording the current settings (Uninstall can restore them)'
+    function Get-RegValue($Path, $Name) {
+        $v = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+        if ($v) { return [int]$v.$Name } else { return $null }
+    }
+    # secedit's export uses fixed key names; "net accounts" output is translated.
+    $inf = Join-Path $env:TEMP "rdpgate-secpol-$PID.inf"
+    & secedit.exe /export /cfg $inf /areas SECURITYPOLICY /quiet | Out-Null
+    $secpol = @{}
+    if (Test-Path $inf) {
+        Get-Content $inf | ForEach-Object { if ($_ -match '^\s*(LockoutBadCount|ResetLockoutCount|LockoutDuration)\s*=\s*(-?\d+)') { $secpol[$Matches[1]] = [int]$Matches[2] } }
+        Remove-Item $inf -Force -ErrorAction SilentlyContinue
+    }
+    $credsspKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+    $standby = Get-SleepTimeouts 'STANDBYIDLE'
+    $hib     = Get-SleepTimeouts 'HIBERNATEIDLE'
+    $before = [ordered]@{
+        Taken            = (Get-Date).ToString('o')
+        FirewallProfiles = @(Get-NetFirewallProfile | ForEach-Object {
+            [ordered]@{ Name = "$($_.Name)"; Enabled = "$($_.Enabled)"; DefaultInboundAction = "$($_.DefaultInboundAction)" } })
+        # Rules that let Remote Desktop in now; Setup or the service disables them.
+        RdpRules         = @(Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -notlike 'RDPGate-*' -and ($_.Group -eq '@FirewallAPI.dll,-28752' -or (Test-ExposesRdp $_ $rdpPort)) } |
+            ForEach-Object { $_.Name })
+        DenyTSConnections  = Get-RegValue $TsKey 'fDenyTSConnections'
+        UserAuthentication = Get-RegValue $RdpTcpKey 'UserAuthentication'
+        SecurityLayer      = Get-RegValue $RdpTcpKey 'SecurityLayer'
+        MinEncryptionLevel = Get-RegValue $RdpTcpKey 'MinEncryptionLevel'
+        CredSspOracle      = Get-RegValue $credsspKey 'AllowEncryptionOracle'
+        CredSspKeyExisted  = [bool](Test-Path $credsspKey)
+        TermServiceStart   = "$((Get-Service TermService).StartType)"
+        LockoutThreshold   = $secpol['LockoutBadCount']
+        LockoutWindow      = $secpol['ResetLockoutCount']
+        LockoutDuration    = $secpol['LockoutDuration']
+        StandbyAcSeconds   = if ($standby) { [int64]$standby.AC } else { $null }
+        HibernateAcSeconds = if ($hib) { [int64]$hib.AC } else { $null }
+    }
+    $before | ConvertTo-Json -Depth 4 | Set-Content -Path $Backup -Encoding UTF8
+    Ok "Saved to $Backup"
+}
+
+# ---------------------------------------------------------------------------
+if ($deferred) {
+    Step 'Turning the firewall on and opening the sign-in port (Remote Desktop stays reachable for now)'
+    $off = @(Get-NetFirewallProfile | Where-Object { $_.Enabled -ne 'True' -or $_.DefaultInboundAction -ne 'Block' })
+    if ($off) {
+        # Turning the firewall on would cut this session off without a rule
+        # for Remote Desktop. This temporary one is removed at lock-down;
+        # its display name deliberately doesn't start with "RDPGate-" so
+        # every exposure check still sees it.
+        Get-NetFirewallRule -Name 'RDPGate-Temp-KeepRdp' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+        New-NetFirewallRule -Name 'RDPGate-Temp-KeepRdp' -DisplayName 'Remote Desktop (kept open by RDP Gate Setup until the first sign-in)' `
+            -Direction Inbound -Action Allow -Protocol TCP -LocalPort $rdpPort -Profile Any | Out-Null
+        Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow
+        Ok "Firewall turned on for: $(($off | ForEach-Object { $_.Name }) -join ', '); Remote Desktop kept reachable until the first sign-in"
+    }
+} else {
+    Step 'Locking down Windows Firewall (this can take a minute)'
+    Get-NetFirewallRule -Name 'RDPGate-Temp-KeepRdp' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    $wasOff = @(Get-NetFirewallProfile | Where-Object { $_.Enabled -ne 'True' } | ForEach-Object { $_.Name })
+    if ($wasOff) { Warn "Windows Firewall was off for: $($wasOff -join ', '). Turning it on." }
+    Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow
+    $disabled = 0
+    Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -ErrorAction SilentlyContinue |   # built-in "Remote Desktop" group
+        Where-Object { $_.Enabled -eq 'True' } |
+        ForEach-Object { $_ | Disable-NetFirewallRule; $disabled++ }
+    Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -notlike 'RDPGate-*' -and (Test-ExposesRdp $_ $rdpPort) } |
+        ForEach-Object { Write-Host "    disabling rule: $($_.DisplayName)"; $_ | Disable-NetFirewallRule; $disabled++ }
+}
 Get-NetFirewallRule -DisplayName 'RDPGate-*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 New-NetFirewallRule -Name 'RDPGate-Portal' -DisplayName 'RDPGate-Portal (HTTPS sign-in)' `
     -Direction Inbound -Action Allow -Protocol TCP -LocalPort $ListenPort -Program $Exe -Profile Any | Out-Null
-Ok "Inbound blocked by default; $disabled rule(s) that exposed Remote Desktop disabled"
+if (-not $deferred) { Ok "Inbound blocked by default; $disabled rule(s) that exposed Remote Desktop disabled" }
 Ok "TCP $ListenPort allowed for rdpgate-server.exe only"
 
 # The effective policy includes Group Policy, which can't be changed here.
 $profiles = Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { $_.Enabled -ne 'True' -or $_.DefaultInboundAction -eq 'Allow' }
 $stillOpen = Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
     Where-Object { $_.DisplayName -notlike 'RDPGate-*' -and (Test-ExposesRdp $_ $rdpPort) }
-if ($profiles -or $stillOpen) {
+if ($deferred) {
+    # Expected for now; the service locks these down after the first sign-in.
+    $n = @($profiles).Count + @($stillOpen).Count
+    if ($n) { Ok "$n firewall setting(s) still let Remote Desktop in; they're closed after the first sign-in" }
+} elseif ($profiles -or $stillOpen) {
     $names = @($profiles | ForEach-Object { "profile $($_.Name)" }) + @($stillOpen | ForEach-Object { "rule '$($_.DisplayName)' ($($_.PolicyStoreSourceType))" })
     throw "Group Policy still exposes Remote Desktop: $($names -join '; '). Change that policy, then run this again. Remote Desktop was NOT turned on."
 }
@@ -221,7 +328,8 @@ try {
     Set-ItemProperty -Path $TsKey -Name fDenyTSConnections -Value 1 -Type DWord
     throw "Turning on Remote Desktop failed, so it was turned off again: $_"
 }
-Ok "Remote Desktop on: NLA required, TLS, port $rdpPort, reachable only after sign-in"
+if ($deferred) { Ok "Remote Desktop on: NLA required, TLS, port $rdpPort (closed to others after the first sign-in)" }
+else { Ok "Remote Desktop on: NLA required, TLS, port $rdpPort, reachable only after sign-in" }
 
 # ---------------------------------------------------------------------------
 if (-not $SkipLockout) {
@@ -265,11 +373,9 @@ if ($sleepAc -eq 0 -and $hibernateAc -eq 0) {
 Step 'Configuring RDP Gate'
 if (-not (Test-Path (Join-Path $DataDir 'config.json'))) {
     $initArgs = @('init', '--data', $DataDir, '--public-port', $PublicPort, '--listen', "0.0.0.0:$ListenPort", '--rdp-port', $rdpPort)
-    if ($PublicHost)        { $initArgs += @('--host', $PublicHost) }
     if ($RdpPublicPort -gt 0) { $initArgs += @('--rdp-public-port', $RdpPublicPort) }
     if ($AllowUdp)          { $initArgs += '--allow-udp' }
     if ($NoUpnp)            { $initArgs += '--no-upnp' }
-    if ($Email)             { $initArgs += @('--email', $Email) }
     if ($Staging)           { $initArgs += '--staging' }
     & $Exe @initArgs
     if ($LASTEXITCODE -ne 0) { throw 'rdpgate-server init failed' }
@@ -288,6 +394,11 @@ if (-not $hasBeacon -and -not $NoBeacon) {
     if ($LASTEXITCODE -ne 0) { Warn 'Beacon not set up. Run "rdpgate-server beacon-setup" later.' }
 }
 
+# Tell the service whether it still has to lock Remote Desktop down.
+if ($deferred) { & $Exe protect --data $DataDir --after-sign-in | Out-Null }
+else { & $Exe protect --data $DataDir --already-applied | Out-Null }
+if ($LASTEXITCODE -ne 0) { throw 'Could not record the protection setting' }
+
 if (Get-Service RDPGate -ErrorAction SilentlyContinue) { & $Exe service-uninstall | Out-Null }
 & $Exe service-install --data $DataDir
 if ($LASTEXITCODE -ne 0) { throw 'service-install failed' }
@@ -301,6 +412,16 @@ if (-not $NoUpnp) {
     Step 'Setting up your router (UPnP)'
     & $Exe router --data $DataDir | ForEach-Object { Write-Host "    $_" }
     $routerDone = ($LASTEXITCODE -eq 0)
+}
+
+# ---------------------------------------------------------------------------
+if ($PublicHost -or $DomainSetup) {
+    Step 'Browser sign-in with your domain (guided)'
+    $domainArgs = @('domain-setup', '--data', $DataDir)
+    if ($PublicHost) { $domainArgs += @('--host', $PublicHost) }
+    if ($Email)      { $domainArgs += @('--email', $Email) }
+    & $Exe @domainArgs
+    if ($LASTEXITCODE -ne 0) { Warn 'Browser sign-in is not set up. Run "rdpgate-server domain-setup" later.' }
 }
 
 # ---------------------------------------------------------------------------
@@ -318,10 +439,14 @@ $routerStep = if ($routerDone) {
 } else {
     "1. On your router, forward these ports to this PC ($lan) and give it a reserved address:`n     TCP $PublicPort   ->  $($lan):$ListenPort    (sign-in)`n     TCP $rdpExt  ->  $($lan):$rdpPort   (Remote Desktop: closed until someone signs in)$udpLine"
 }
+$fwText = if ($deferred) {
+    "Windows Firewall: TCP $ListenPort is open for RDP Gate. Remote Desktop is still reachable as`nbefore, so this session keeps working. As soon as a computer signs in through RDP Gate`nand connects, the service closes Remote Desktop to everyone else (or run: rdpgate-server protect)."
+} else {
+    "Windows Firewall is configured: TCP $ListenPort is open for RDP Gate only, and Remote`nDesktop stays closed until someone signs in. The service re-checks this at every start."
+}
 Write-Host @"
 
-Windows Firewall is configured: TCP $ListenPort is open for RDP Gate only, and Remote
-Desktop stays closed until someone signs in. The service re-checks this at every start.
+$fwText
 
 $routerStep
 
@@ -338,5 +463,5 @@ Remote Desktop certificate thumbprint (the app also checks this automatically):
      $thumb
 Status: rdpgate-server status      Logs: $DataDir\logs\rdpgate.log
 "@
-if ($PublicHost) { Write-Host "Browser sign-in: add a passkey with  rdpgate-server passkey-enroll" }
+if (-not ($PublicHost -or $DomainSetup)) { Write-Host "Browser sign-in (optional): rdpgate-server domain-setup" }
 if ($FromInstaller) { Read-Host "`nPress Enter to finish" | Out-Null }
