@@ -193,13 +193,18 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      # Build first, without the key: compiling runs every dependency's build
+      # scripts and macros, and none of them should ever see the signing key.
+      - name: Build the release tool
+        run: |
+          scripts/bump-version.sh "$VERSION"
+          cargo build --release --quiet -p rdpgate-release
       - name: Sign the update manifest
         env:
           RDPGATE_UPDATE_KEY: ${{ secrets.RDPGATE_UPDATE_KEY }}
         run: |
-          scripts/bump-version.sh "$VERSION"
-          cargo run --release --quiet -p rdpgate-release -- manifest --version "$VERSION" --dir assets
-          cargo run --release --quiet -p rdpgate-release -- verify assets/rdpgate-update.json
+          target/release/rdpgate-release manifest --version "$VERSION" --dir assets
+          target/release/rdpgate-release verify assets/rdpgate-update.json
           (cd assets && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
       - name: Commit the version and tag it
         if: github.event_name == 'workflow_dispatch'

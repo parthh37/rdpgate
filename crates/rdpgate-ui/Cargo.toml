@@ -1,0 +1,9 @@
+[package]
+name = "rdpgate-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The look shared by the RDP Gate app and the RDP Gate Server window.
+[dependencies]
+egui = { version = "0.37.0", default-features = false }

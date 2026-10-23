@@ -9,6 +9,7 @@ ed25519-dalek = "3.0.0"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard", "x11", "wayland"] }
 rdpgate-client = { path = "../rdpgate-client" }
 rdpgate-core = { path = "../rdpgate-core" }
+rdpgate-ui = { path = "../rdpgate-ui" }
 tokio = { version = "1.54.1", features = ["rt", "net", "time"] }
 zeroize = "1.9.1"
 

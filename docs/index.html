@@ -14,6 +14,7 @@
 <header class="bar">
   <a class="brand" href="./"><img src="assets/logo.png" alt="" width="32" height="32"><span>RDP Gate</span></a>
   <nav aria-label="Primary">
+    <a href="#screens">Screens</a>
     <a href="#how">How it works</a>
     <a href="#setup">Setup</a>
     <a href="guide.html">Guide</a>
@@ -39,15 +40,82 @@
   <figure class="console" aria-label="Example of the RDP Gate server log">
     <figcaption><span class="dot"></span>C:\ProgramData\RDPGate\logs\rdpgate.log</figcaption>
     <ol class="log">
-      <li><time>07:41:02</time> <b class="deny">DENY</b> src=45.155.205.11 device="" reason="bad frame" ban=0s</li>
-      <li><time>07:41:09</time> <b class="deny">DENY</b> src=185.224.128.40 device="admin" reason="unknown device" ban=0s</li>
-      <li><time>07:41:31</time> <b class="deny">DENY</b> src=185.224.128.40 device="admin" reason="unknown device" ban=900s</li>
+      <li><time>07:41:02</time> <b class="deny">DENY</b> src=192.0.2.17 device="" reason="bad frame" ban=0s</li>
+      <li><time>07:41:09</time> <b class="deny">DENY</b> src=192.0.2.66 device="admin" reason="unknown device" ban=0s</li>
+      <li><time>07:41:31</time> <b class="deny">DENY</b> src=192.0.2.66 device="admin" reason="unknown device" ban=900s</li>
       <li><time>07:42:15</time> <b class="ok">GRANT open</b> ip=203.0.113.7 who="device macbook" until=07:52</li>
       <li class="quiet"><time>07:42:25</time> RDP connected ip=203.0.113.7</li>
       <li><time>09:18:52</time> <b class="ok">GRANT closed</b> ip=203.0.113.7 reason=expired</li>
     </ol>
     <p class="console-note">Scanners get refused, then ignored. The only allow rule ever created names one IP address.</p>
   </figure>
+</section>
+
+<section id="screens" class="band screens">
+  <h2>What it looks like</h2>
+  <p class="section-lede">Two small windows. One on the PC you connect <em>to</em>, one on each computer you connect <em>from</em>. Screenshots use sample data.</p>
+
+  <figure class="window wide">
+    <div class="chrome"><span></span><span></span><span></span><b>RDP Gate Server</b></div>
+    <a href="assets/screenshots/server-overview.png"><img src="assets/screenshots/server-overview.png" width="960" height="680" alt="RDP Gate Server overview: a Protected banner, tiles for the service, Remote Desktop, the beacon, 6-digit codes, computers and router, and a table of open access"></a>
+    <figcaption><strong>The server at a glance.</strong> Green means Remote Desktop is closed to everyone who hasn't signed in. Anything that would stop you getting in, or leave the port open, shows up here first.</figcaption>
+  </figure>
+
+  <h3 class="screens-sub">The app on your Mac or PC: set up once, then sign in</h3>
+  <ol class="shots">
+    <li>
+      <figure class="window">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+        <a href="assets/screenshots/app-setup.png"><img src="assets/screenshots/app-setup.png" width="500" height="640" loading="lazy" alt="Set up this computer: name, Windows user and passphrase fields, and a Create device key button"></a>
+      </figure>
+      <p><strong>Create a key.</strong> It's made on this computer and encrypted with your passphrase.</p>
+    </li>
+    <li>
+      <figure class="window">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+        <a href="assets/screenshots/app-enroll.png"><img src="assets/screenshots/app-enroll.png" width="500" height="640" loading="lazy" alt="Enroll this computer: a one-line command to copy to the server, its fingerprint, and a box for the server card"></a>
+      </figure>
+      <p><strong>Enroll it.</strong> Copy one line to the server and paste back the server card.</p>
+    </li>
+    <li>
+      <figure class="window">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+        <a href="assets/screenshots/app-signin.png"><img src="assets/screenshots/app-signin.png" width="500" height="640" loading="lazy" alt="Sign in to Remote Desktop: passphrase and 6-digit code fields and a Sign in and open Remote Desktop button"></a>
+      </figure>
+      <p><strong>Sign in.</strong> Your passphrase and a 6-digit code from your phone.</p>
+    </li>
+    <li>
+      <figure class="window">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+        <a href="assets/screenshots/app-open.png"><img src="assets/screenshots/app-open.png" width="500" height="640" loading="lazy" alt="Access open for one IP address, with the Remote Desktop certificate verified, and buttons to open Remote Desktop or close access"></a>
+      </figure>
+      <p><strong>You're in.</strong> Open for your IP only, with the Remote Desktop certificate checked.</p>
+    </li>
+  </ol>
+
+  <h3 class="screens-sub">Managing the server: no command line needed</h3>
+  <div class="grid-shots">
+    <figure class="window">
+      <div class="chrome"><span></span><span></span><span></span><b>Computers</b></div>
+      <a href="assets/screenshots/server-computers.png"><img src="assets/screenshots/server-computers.png" width="960" height="680" loading="lazy" alt="Computers page: paste a computer's key to add it, and a list of enrolled computers with fingerprints and last sign-in"></a>
+      <figcaption>Add a computer by pasting its key. Remove one and it can't sign in any more.</figcaption>
+    </figure>
+    <figure class="window">
+      <div class="chrome"><span></span><span></span><span></span><b>6-digit codes</b></div>
+      <a href="assets/screenshots/server-codes.png"><img src="assets/screenshots/server-codes.png" width="960" height="680" loading="lazy" alt="6-digit codes page with a QR code to scan into an authenticator app and a box for the first code"></a>
+      <figcaption>Scan the QR code with any authenticator app. The one shown is from a sample install.</figcaption>
+    </figure>
+    <figure class="window">
+      <div class="chrome"><span></span><span></span><span></span><b>Network</b></div>
+      <a href="assets/screenshots/server-network.png"><img src="assets/screenshots/server-network.png" width="960" height="680" loading="lazy" alt="Network page: the encrypted beacon, sign-in from the home network, and router port forwarding"></a>
+      <figcaption>The encrypted beacon, home-network sign-in and router forwarding in one place.</figcaption>
+    </figure>
+    <figure class="window">
+      <div class="chrome"><span></span><span></span><span></span><b>Activity log</b></div>
+      <a href="assets/screenshots/server-log.png"><img src="assets/screenshots/server-log.png" width="960" height="680" loading="lazy" alt="Activity log with refused connections in red and access openings in green"></a>
+      <figcaption>Refusals in red, openings in green. Scanners get refused, then ignored.</figcaption>
+    </figure>
+  </div>
 </section>
 
 <section id="how" class="band">

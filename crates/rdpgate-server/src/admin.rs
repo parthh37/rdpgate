@@ -40,7 +40,12 @@ pub fn add_device(data: &Path, name: &str, key_text: &str) -> Result<String, Str
     if !valid_name(name) {
         return Err("Computer name: 1-32 letters, digits, dots, dashes or underscores.".into());
     }
-    let token = key_text.split_whitespace().find(|t| t.starts_with("rdpgate-ed25519:")).unwrap_or(key_text.trim());
+    let Some(token) = key_text.split_whitespace().find(|t| t.starts_with("rdpgate-ed25519:")) else {
+        return Err("That isn't a computer's key. On the computer you'll connect FROM (not this server), open the RDP Gate app \
+                    and click Copy command (or This computer and server > Copy enrollment command), then paste the whole line. \
+                    The key is one long word starting with rdpgate-ed25519:"
+            .into());
+    };
     let key = wire::parse_public_key(token)?;
     let encoded = wire::encode_public_key(&key);
     Store::new(data).update(|st| {
