@@ -4,10 +4,11 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use eframe::egui::{self, Color32, RichText, TextEdit};
+use eframe::egui::{self, RichText, TextEdit};
 use ed25519_dalek::SigningKey;
 use rdpgate_client::{self as client, Grant, Identity, RdpCheck};
 use rdpgate_core::update::{Available, Component};
+use rdpgate_ui::{self as theme, MUTED, Tone, muted, primary, primary_wide};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use zeroize::Zeroizing;
@@ -21,13 +22,16 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("RDP Gate")
-            .with_inner_size([460.0, 500.0])
-            .with_min_inner_size([400.0, 440.0]),
+            .with_inner_size([500.0, 640.0])
+            .with_min_inner_size([420.0, 520.0]),
         #[cfg(windows)]
         renderer: if opengl { eframe::Renderer::Glow } else { eframe::Renderer::Wgpu },
         ..Default::default()
     };
-    let result = eframe::run_native("RDP Gate", options, Box::new(|_cc| Ok(Box::new(GateApp::new()))));
+    let result = eframe::run_native("RDP Gate", options, Box::new(|cc| {
+        theme::apply(&cc.egui_ctx);
+        Ok(Box::new(GateApp::new()))
+    }));
     // A window can only be opened once per process, so try OpenGL in a new one.
     if result.is_err()
         && !opengl
@@ -39,15 +43,8 @@ fn main() -> eframe::Result {
     result
 }
 
-/// The one prominent action on each screen.
-fn primary(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).strong().color(Color32::WHITE))
-        .fill(Color32::from_rgb(36, 87, 214))
-        .min_size(egui::vec2(220.0, 32.0))
-}
-
-const GOOD: Color32 = Color32::from_rgb(40, 150, 80);
-const BAD: Color32 = Color32::from_rgb(210, 70, 60);
+/// The steps of getting a computer ready, shown at the top of each.
+const STEPS: [&str; 3] = ["Create key", "Enroll", "Connect"];
 
 enum Screen {
     Setup,
@@ -229,54 +226,62 @@ impl GateApp {
         match &self.upd {
             Upd::Installed { version, relaunch: target } => {
                 let target = target.clone();
-                ui.horizontal(|ui| {
-                    ui.colored_label(GOOD, format!("Updated to {version}."));
-                    if ui.button("Restart now").clicked() {
-                        relaunch(&target);
-                    }
+                theme::card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        theme::pill(ui, Tone::Good, &format!("Updated to {version}"));
+                        if ui.button("Restart now").clicked() {
+                            relaunch(&target);
+                        }
+                    });
                 });
             }
             Upd::Available(av) => {
                 let av = (**av).clone();
-                ui.horizontal(|ui| {
-                    ui.label(format!("Version {} is available.", av.version));
-                    if ui.button("Install update").clicked() {
-                        self.start_update_install(&ctx, av);
-                    }
+                theme::card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        theme::pill(ui, Tone::Info, &format!("Version {} is available", av.version));
+                        if ui.button("Install update").clicked() {
+                            self.start_update_install(&ctx, av);
+                        }
+                    });
                 });
             }
             Upd::Installing => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Installing update…");
+                theme::card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Installing update…");
+                    });
                 });
             }
             _ => return,
         }
-        ui.add_space(8.0);
+        ui.add_space(10.0);
     }
 
     /// Version and "Check for updates", at the bottom of every screen.
     fn update_footer(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.small(format!("RDP Gate {}", client::VERSION));
-            let busy = matches!(self.upd, Upd::Checking | Upd::Installing);
-            if ui.add_enabled(!busy, egui::Button::new("Check for updates").small()).clicked() {
-                let ctx = ui.ctx().clone();
-                self.start_update_check(&ctx);
-            }
+            ui.label(muted(format!("RDP Gate {}", client::VERSION)).small());
             match &self.upd {
                 Upd::Checking => {
                     ui.spinner();
                 }
                 Upd::UpToDate => {
-                    ui.small("You have the latest version.");
+                    ui.label(muted("You have the latest version.").small());
                 }
                 Upd::Failed(e) => {
-                    ui.colored_label(BAD, RichText::new(format!("Update: {e}")).small());
+                    ui.label(RichText::new(format!("Update: {e}")).small().color(theme::BAD));
                 }
                 _ => {}
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let busy = matches!(self.upd, Upd::Checking | Upd::Installing);
+                if ui.add_enabled(!busy, egui::Button::new("Check for updates").small()).clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.start_update_check(&ctx);
+                }
+            });
         });
     }
 
@@ -324,36 +329,42 @@ impl GateApp {
     }
 
     fn setup_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Set up this computer");
-        ui.label("RDP Gate creates a private key for this computer. You enroll it on the server once; after that this computer can sign in.");
+        theme::steps(ui, &STEPS, 0);
         ui.add_space(12.0);
-        egui::Grid::new("setup").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-            ui.label("This computer");
-            ui.add(TextEdit::singleline(&mut self.device).hint_text("macbook"));
-            ui.end_row();
-            ui.label("Windows user");
-            ui.add(TextEdit::singleline(&mut self.username).hint_text("optional"));
-            ui.end_row();
-            ui.label("Passphrase");
-            ui.add(TextEdit::singleline(&mut *self.pass1).password(true).hint_text(format!("at least {} characters", client::MIN_PASSPHRASE)));
-            ui.end_row();
-            ui.label("Repeat");
-            ui.add(TextEdit::singleline(&mut *self.pass2).password(true));
-            ui.end_row();
-        });
-        ui.add_space(8.0);
-        ui.small("The passphrase encrypts the key on this computer. It is never sent anywhere and cannot be recovered.");
-        ui.add_space(12.0);
-        if ui.add_enabled(self.busy.is_none(), primary("Create device key")).clicked() {
-            if *self.pass1 != *self.pass2 {
-                self.status = Some((false, "The passphrases don't match.".into()));
-            } else {
-                let (dir, pass, device) = (self.dir.clone(), self.pass1.clone(), self.device.trim().to_string());
-                let user = Some(self.username.trim().to_string());
-                let ctx = ui.ctx().clone();
-                self.run(&ctx, "Creating key…", move || Done::Created(client::create_device(&dir, &device, user, &pass, false)));
-            }
-        }
+        theme::titled_card(
+            ui,
+            "Set up this computer",
+            Some("RDP Gate creates a private key for this computer. You enroll it on the server once; after that this computer can sign in."),
+            |ui| {
+                ui.add_space(4.0);
+                theme::field_label(ui, "This computer");
+                ui.add(TextEdit::singleline(&mut self.device).hint_text("macbook").desired_width(f32::INFINITY));
+                theme::field_label(ui, "Windows user (optional)");
+                ui.add(TextEdit::singleline(&mut self.username).hint_text("the account you sign in to Windows with").desired_width(f32::INFINITY));
+                theme::field_label(ui, "Passphrase");
+                ui.add(
+                    TextEdit::singleline(&mut *self.pass1)
+                        .password(true)
+                        .hint_text(format!("at least {} characters", client::MIN_PASSPHRASE))
+                        .desired_width(f32::INFINITY),
+                );
+                theme::field_label(ui, "Repeat passphrase");
+                ui.add(TextEdit::singleline(&mut *self.pass2).password(true).desired_width(f32::INFINITY));
+                ui.add_space(2.0);
+                ui.label(muted("The passphrase encrypts the key on this computer. It is never sent anywhere and cannot be recovered.").small());
+                ui.add_space(8.0);
+                if primary_wide(ui, self.busy.is_none(), "Create device key").clicked() {
+                    if *self.pass1 != *self.pass2 {
+                        self.status = Some((false, "The passphrases don't match.".into()));
+                    } else {
+                        let (dir, pass, device) = (self.dir.clone(), self.pass1.clone(), self.device.trim().to_string());
+                        let user = Some(self.username.trim().to_string());
+                        let ctx = ui.ctx().clone();
+                        self.run(&ctx, "Creating key…", move || Done::Created(client::create_device(&dir, &device, user, &pass, false)));
+                    }
+                }
+            },
+        );
     }
 
     /// Paste box for the server card. Returns true once a valid card is saved.
@@ -363,7 +374,8 @@ impl GateApp {
                 .hint_text("rdpgate-card:…")
                 .font(egui::TextStyle::Monospace)
                 .desired_rows(3)
-                .desired_width(f32::INFINITY),
+                .desired_width(f32::INFINITY)
+                .margin(egui::Margin::symmetric(10, 8)),
         );
         if ui.add_enabled(!self.card_text.trim().is_empty(), primary("Save server card")).clicked() {
             match client::set_card(&self.dir, &self.card_text) {
@@ -379,23 +391,29 @@ impl GateApp {
     }
 
     fn enroll_ui(&mut self, ui: &mut egui::Ui, id: &Identity) {
-        ui.heading("Enroll this computer");
-        ui.label("1. On the server, open RDP Gate Server > Computers and paste this into Add a computer (or run it in PowerShell as Administrator):");
-        let mut cmd = id.enroll_command();
-        // One line that never wraps: a wrapped copy pastes into PowerShell
-        // as two commands, and the key alone is "not recognized".
-        ui.add(TextEdit::singleline(&mut cmd).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
-        ui.horizontal(|ui| {
-            if ui.button("Copy command").clicked() {
-                ui.ctx().copy_text(id.enroll_command());
-                self.status = Some((true, "Copied. Paste it into RDP Gate Server > Computers on the server.".into()));
-            }
-            ui.label(RichText::new(&id.fingerprint).monospace().small());
-        });
-        ui.small("The server prints this fingerprint too; check they match.");
-        ui.add_space(14.0);
-        ui.label("2. Paste the server card it prints back here:");
-        if self.card_ui(ui) {
+        theme::steps(ui, &STEPS, 1);
+        ui.add_space(12.0);
+        theme::titled_card(
+            ui,
+            "1  Add this computer on the server",
+            Some("On the server, open RDP Gate Server > Computers and paste this into Add a computer (or run it in PowerShell as Administrator)."),
+            |ui| {
+                // One line that never wraps: a wrapped copy pastes into PowerShell
+                // as two commands, and the key alone is "not recognized".
+                theme::code_line(ui, &id.enroll_command());
+                ui.horizontal(|ui| {
+                    if ui.button("Copy command").clicked() {
+                        ui.ctx().copy_text(id.enroll_command());
+                        self.status = Some((true, "Copied. Paste it into RDP Gate Server > Computers on the server.".into()));
+                    }
+                    ui.label(RichText::new(&id.fingerprint).monospace().small().color(MUTED));
+                });
+                ui.label(muted("The server shows this fingerprint too; check they match.").small());
+            },
+        );
+        ui.add_space(10.0);
+        let saved = theme::titled_card(ui, "2  Paste the server card", Some("The server shows it once the computer is added."), |ui| self.card_ui(ui));
+        if saved {
             self.screen = Screen::Main;
         }
     }
@@ -404,105 +422,143 @@ impl GateApp {
         let cfg = match client::load_config(&self.dir) {
             Ok(c) => c,
             Err(e) => {
-                ui.colored_label(BAD, e);
+                theme::notice(ui, Tone::Bad, &e, false);
                 return;
             }
         };
-        ui.heading("Remote Desktop");
-        match client::card(&cfg) {
-            Ok(c) => {
-                let fp = rdpgate_core::wire::fingerprint(&c.server_key());
-                ui.label(format!("{} → server {}", cfg.device, &fp[..9]));
-            }
+        let server = match client::card(&cfg) {
+            Ok(c) => rdpgate_core::wire::fingerprint(&c.server_key())[..9].to_string(),
             Err(_) => {
-                ui.label("Paste the server card (RDP Gate Server > Computers on the server shows it):");
-                self.card_ui(ui);
+                theme::steps(ui, &STEPS, 1);
+                ui.add_space(12.0);
+                theme::titled_card(
+                    ui,
+                    "Paste the server card",
+                    Some("RDP Gate Server > Computers on the server shows it."),
+                    |ui| self.card_ui(ui),
+                );
                 return;
             }
-        }
-        ui.add_space(14.0);
+        };
 
         if let Some(s) = &self.session {
-            ui.label(RichText::new(format!("Open for {}", s.grant.ip)).strong());
-            ui.label(format!(
-                "Start Remote Desktop within {}. Access stays open while you're connected.",
-                client::minutes_left(s.grant.expires)
-            ));
-            if s.check == RdpCheck::Verified {
-                ui.colored_label(GOOD, "Remote Desktop certificate verified");
-            }
-            ui.add_space(10.0);
             let (file, key) = (s.rdp_file.clone(), s.key.clone());
-            ui.horizontal(|ui| {
-                if ui.button("Open Remote Desktop").clicked()
-                    && let Err(e) = client::launch_rdp(&file)
-                {
-                    self.status = Some((false, e));
-                }
-                if ui.add_enabled(self.busy.is_none(), egui::Button::new("Close access now")).clicked() {
-                    let (dir, cfg) = (self.dir.clone(), cfg.clone());
-                    let ctx = ui.ctx().clone();
-                    self.run(&ctx, "Closing…", move || {
-                        Done::Locked(rt().and_then(|rt| rt.block_on(client::lock(&dir, &cfg, &key))))
-                    });
-                }
+            let verified = s.check == RdpCheck::Verified;
+            let (ip, left) = (s.grant.ip.to_string(), client::minutes_left(s.grant.expires));
+            theme::card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    theme::pill(ui, Tone::Good, "Access open");
+                    if verified {
+                        theme::pill(ui, Tone::Info, "Certificate verified");
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(muted("Remote Desktop is open for"));
+                ui.label(RichText::new(&ip).monospace().size(26.0).strong().color(theme::TEXT));
+                ui.label(muted(format!("Start Remote Desktop within {left}. Access stays open while you're connected.")));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.add(primary("Open Remote Desktop")).clicked()
+                        && let Err(e) = client::launch_rdp(&file)
+                    {
+                        self.status = Some((false, e));
+                    }
+                    if ui.add_enabled(self.busy.is_none(), egui::Button::new("Close access now").min_size(egui::vec2(0.0, 36.0))).clicked() {
+                        let (dir, cfg) = (self.dir.clone(), cfg.clone());
+                        let ctx = ui.ctx().clone();
+                        self.run(&ctx, "Closing…", move || {
+                            Done::Locked(rt().and_then(|rt| rt.block_on(client::lock(&dir, &cfg, &key))))
+                        });
+                    }
+                });
             });
             ui.add_space(10.0);
-            ui.small("Anyone who shares your public IP (same Wi-Fi or mobile carrier) can reach the Windows login screen until access closes. They still need your Windows password.");
+            theme::notice(
+                ui,
+                Tone::Warn,
+                "Anyone who shares your public IP (same Wi-Fi or mobile carrier) can reach the Windows login screen until access closes. They still need your Windows password.",
+                false,
+            );
             return;
         }
 
-        egui::Grid::new("signin").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-            ui.label("Passphrase");
-            ui.add(TextEdit::singleline(&mut *self.passphrase).password(true));
-            ui.end_row();
-            ui.label("6-digit code");
-            ui.add(TextEdit::singleline(&mut self.code).char_limit(6).hint_text("from your authenticator app"));
-            ui.end_row();
-        });
-        ui.add_space(12.0);
-        let submit = ui.input(|i| i.key_pressed(egui::Key::Enter)) && self.code.len() == 6;
-        if (ui.add_enabled(self.busy.is_none(), primary("Sign in and open Remote Desktop")).clicked() || submit)
-            && self.busy.is_none()
-        {
-            let (dir, pass, code) = (self.dir.clone(), self.passphrase.clone(), self.code.trim().to_string());
-            let (ctx, cfg) = (ui.ctx().clone(), cfg.clone());
-            self.run(&ctx, "Finding your server and signing in…", move || {
-                let result = (|| {
-                    let key = client::unlock(&dir, &pass)?;
-                    let rt = rt()?;
-                    let grant = rt.block_on(client::sign_in(&dir, &cfg, &key, &code))?;
-                    // A certificate mismatch is an error: never launch into an interception.
-                    let check = rt.block_on(client::verify_rdp(&grant))?;
-                    let rdp_file = client::write_rdp_file(&dir, &cfg, &grant)?;
-                    client::launch_rdp(&rdp_file)?;
-                    Ok(Box::new(Session { grant, key, rdp_file, check }))
-                })();
-                Done::SignedIn(result)
+        theme::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(RichText::new("Sign in to Remote Desktop").strong().size(16.0).color(theme::TEXT));
+                    ui.label(muted(format!("{}  →  server {server}", cfg.device)).small());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    theme::pill(ui, Tone::Neutral, "Closed");
+                });
             });
-        }
-
-        ui.add_space(24.0);
-        egui::CollapsingHeader::new("This computer and server").show(ui, |ui| {
-            if let Ok(id) = client::identity(&self.dir) {
-                ui.label(format!("Device key {}", id.fingerprint));
-                if ui.button("Copy enrollment command").clicked() {
-                    ui.ctx().copy_text(id.enroll_command());
-                    self.status = Some((true, "Copied. Paste it into RDP Gate Server > Computers on the server.".into()));
-                }
+            ui.add_space(10.0);
+            theme::field_label(ui, "Passphrase");
+            ui.add(TextEdit::singleline(&mut *self.passphrase).password(true).desired_width(f32::INFINITY));
+            theme::field_label(ui, "6-digit code");
+            ui.add(
+                TextEdit::singleline(&mut self.code)
+                    .char_limit(6)
+                    .hint_text("from your authenticator app")
+                    .font(egui::FontId::monospace(18.0))
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(8.0);
+            let submit = ui.input(|i| i.key_pressed(egui::Key::Enter)) && self.code.len() == 6;
+            if (primary_wide(ui, self.busy.is_none(), "Sign in and open Remote Desktop").clicked() || submit) && self.busy.is_none() {
+                let (dir, pass, code) = (self.dir.clone(), self.passphrase.clone(), self.code.trim().to_string());
+                let (ctx, cfg) = (ui.ctx().clone(), cfg.clone());
+                self.run(&ctx, "Finding your server and signing in…", move || {
+                    let result = (|| {
+                        let key = client::unlock(&dir, &pass)?;
+                        let rt = rt()?;
+                        let grant = rt.block_on(client::sign_in(&dir, &cfg, &key, &code))?;
+                        // A certificate mismatch is an error: never launch into an interception.
+                        let check = rt.block_on(client::verify_rdp(&grant))?;
+                        let rdp_file = client::write_rdp_file(&dir, &cfg, &grant)?;
+                        client::launch_rdp(&rdp_file)?;
+                        Ok(Box::new(Session { grant, key, rdp_file, check }))
+                    })();
+                    Done::SignedIn(result)
+                });
             }
-            if let Some(a) = cfg.last_known {
-                ui.label(format!("Server last seen at {a}"));
-            }
-            ui.separator();
-            let mut auto = cfg.auto_update;
-            if ui.checkbox(&mut auto, "Update automatically (signed updates only)").changed() {
-                let _ = client::set_auto_update(&self.dir, auto);
-            }
-            ui.separator();
-            ui.label("Replace the server card:");
-            self.card_ui(ui);
         });
+
+        ui.add_space(10.0);
+        theme::card(ui, |ui| {
+            egui::CollapsingHeader::new(RichText::new("This computer and server").strong()).show(ui, |ui| {
+                if let Ok(id) = client::identity(&self.dir) {
+                    ui.label(muted("Device key"));
+                    ui.label(RichText::new(&id.fingerprint).monospace().small());
+                    if ui.button("Copy enrollment command").clicked() {
+                        ui.ctx().copy_text(id.enroll_command());
+                        self.status = Some((true, "Copied. Paste it into RDP Gate Server > Computers on the server.".into()));
+                    }
+                }
+                if let Some(a) = cfg.last_known {
+                    ui.label(muted(format!("Server last seen at {a}")));
+                }
+                ui.separator();
+                let mut auto = cfg.auto_update;
+                if ui.checkbox(&mut auto, "Update automatically (signed updates only)").changed() {
+                    let _ = client::set_auto_update(&self.dir, auto);
+                }
+                ui.separator();
+                ui.label(muted("Replace the server card:"));
+                self.card_ui(ui);
+            });
+        });
+    }
+
+    /// What the top bar says about this computer.
+    fn state_pill(&self) -> (Tone, &'static str) {
+        match self.screen {
+            Screen::Setup => (Tone::Neutral, "Not set up"),
+            Screen::Enroll(_) => (Tone::Warn, "Enrolling"),
+            Screen::Main if self.session.is_some() => (Tone::Good, "Access open"),
+            Screen::Main => (Tone::Info, "Ready"),
+        }
     }
 }
 
@@ -511,14 +567,22 @@ impl eframe::App for GateApp {
         self.poll();
         let ctx = ui.ctx().clone();
         self.poll_update(&ctx, matches!(self.screen, Screen::Main));
-        egui::Panel::bottom("updates").show(ui, |ui| {
-            ui.add_space(4.0);
-            self.update_footer(ui);
-            ui.add_space(2.0);
+        let bar = egui::Frame::new().fill(theme::BAR).inner_margin(egui::Margin::symmetric(16, 10));
+        egui::Panel::top("brand").frame(bar).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                theme::brand(ui, "RDP Gate", "Remote Desktop, closed until it's you");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (tone, text) = self.state_pill();
+                    theme::pill(ui, tone, text);
+                });
+            });
         });
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::Panel::bottom("updates").frame(bar.inner_margin(egui::Margin::symmetric(16, 6))).show(ui, |ui| {
+            self.update_footer(ui);
+        });
+        let body = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::same(16));
+        egui::CentralPanel::default().frame(body).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.add_space(6.0);
                 self.update_banner(ui);
                 match &self.screen {
                     Screen::Setup => self.setup_ui(ui),
@@ -528,17 +592,20 @@ impl eframe::App for GateApp {
                     }
                     Screen::Main => self.main_ui(ui),
                 }
-                ui.add_space(16.0);
+                ui.add_space(12.0);
                 if let Some(label) = self.busy {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(label);
                     });
                 }
-                if let Some((ok, msg)) = &self.status {
-                    ui.colored_label(if *ok { GOOD } else { BAD }, msg);
+                if let Some((ok, msg)) = &self.status
+                    && theme::notice(ui, Tone::from_ok(*ok), msg, true)
+                {
+                    self.status = None;
                 }
             });
         });
     }
 }
+

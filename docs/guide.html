@@ -108,6 +108,11 @@
       <p>Setup shows a QR code in its window, right after the beacon step: scan it with your authenticator app and type the code it shows. (Leave <em>Set up 6-digit codes now</em> ticked on the task page; a reinstall keeps the codes you already have.) To do it later, or again, run in PowerShell as Administrator:</p>
       <pre><code>rdpgate-server totp-setup            # add --invert if the QR code won't scan
 rdpgate-server totp-setup --force    # replace the secret (old codes stop working)</code></pre>
+      <p>Or open <strong>RDP Gate Server &gt; 6-digit codes</strong> from the Start menu:</p>
+      <figure class="window wide">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate Server · 6-digit codes</b></div>
+        <a href="assets/screenshots/server-codes.png"><img src="assets/screenshots/server-codes.png" width="960" height="680" loading="lazy" alt="The 6-digit codes page with a sample QR code"></a>
+      </figure>
     </li>
 
     <li id="router">
@@ -156,13 +161,26 @@ rdpgate-server router    # try the router forwards again and report</code></pre>
         <li><strong>Passphrase</strong>: encrypts the key on this computer. It never leaves it and <strong>can't be recovered</strong>, so keep it in your password manager.</li>
       </ul>
       <p>Choose <strong>Create device key</strong>.</p>
+      <figure class="window">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+        <a href="assets/screenshots/app-setup.png"><img src="assets/screenshots/app-setup.png" width="500" height="640" loading="lazy" alt="The Set up this computer screen of the RDP Gate app"></a>
+      </figure>
     </li>
 
     <li id="enroll">
       <h3>Enroll it on the server</h3>
-      <p>The app now shows <em>Enroll this computer</em> with one command. Choose <strong>Copy command</strong>, then on the server, in PowerShell <strong>as Administrator</strong>, paste and run it:</p>
+      <p>The app now shows <em>Enroll this computer</em> with one command. Choose <strong>Copy command</strong>. On the server, open <strong>RDP Gate Server &gt; Computers</strong> and paste it into <em>Add a computer</em>, or paste and run it in PowerShell <strong>as Administrator</strong>:</p>
       <pre><code>rdpgate-server device-add macbook rdpgate-ed25519:3q2+7w…</code></pre>
-      <p>The server prints the device's fingerprint. <strong>Check that it matches</strong> the fingerprint shown in the app. If it doesn't, the command was changed on the way: don't continue.</p>
+      <p>Paste the <em>whole</em> copied line: the key is the long word starting with <code>rdpgate-ed25519:</code>, and it comes from the computer you'll connect <em>from</em>, not from the server.</p>
+      <p>The server shows the device's fingerprint. <strong>Check that it matches</strong> the fingerprint shown in the app. If it doesn't, the command was changed on the way: don't continue.</p>
+      <figure class="window">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+        <a href="assets/screenshots/app-enroll.png"><img src="assets/screenshots/app-enroll.png" width="500" height="640" loading="lazy" alt="The Enroll this computer screen, with the command to copy and its fingerprint"></a>
+      </figure>
+      <figure class="window wide">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate Server · Computers</b></div>
+        <a href="assets/screenshots/server-computers.png"><img src="assets/screenshots/server-computers.png" width="960" height="680" loading="lazy" alt="The Computers page of RDP Gate Server, where you paste the key to add a computer"></a>
+      </figure>
     </li>
 
     <li id="card">
@@ -197,6 +215,16 @@ rdpgate show                                    # fingerprints, pinned server, e
         <li>checks the Remote Desktop certificate is your PC's;</li>
         <li>opens Remote Desktop. Log in to Windows with your Windows password as usual.</li>
       </ol>
+      <div class="ways tight">
+        <figure class="window">
+          <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+          <a href="assets/screenshots/app-signin.png"><img src="assets/screenshots/app-signin.png" width="500" height="640" loading="lazy" alt="Signing in with passphrase and 6-digit code"></a>
+        </figure>
+        <figure class="window">
+          <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+          <a href="assets/screenshots/app-open.png"><img src="assets/screenshots/app-open.png" width="500" height="640" loading="lazy" alt="Access open for one IP address, certificate verified"></a>
+        </figure>
+      </div>
       <p>The app shows <em>Open for &lt;your IP&gt;</em> and a countdown. You have 10 minutes to start Remote Desktop. While you're connected, access stays open (up to 12 hours). If the Remote Desktop window closed, choose <strong>Open Remote Desktop</strong> to reopen it.</p>
     </li>
 
@@ -293,6 +321,8 @@ rdpgate lock                    # close access for this network now</code></pre>
   <h2>Troubleshooting</h2>
   <table class="spec trouble">
     <tr><th>"answered but is NOT your server"</th><td>Something other than your server answered. If you reinstalled the server (new identity), paste its new card. Otherwise treat it as a spoofing attempt.</td></tr>
+    <tr><th>"key must start with rdpgate-ed25519:" or "That isn't a computer's key"</th><td><code>device-add</code> needs the key of the computer you connect <em>from</em>. In the RDP Gate app on that computer, choose <strong>Copy command</strong> (or <em>This computer and server &gt; Copy enrollment command</em>) and paste the whole line, or just the long word starting with <code>rdpgate-ed25519:</code>. <code>rdpgate show</code> prints it too.</td></tr>
+    <tr><th>RDP Gate Server says "config.json: Access is denied"</th><td>The window couldn't read <code>C:\ProgramData\RDPGate</code>, which only Administrators and SYSTEM may open. Open RDP Gate Server from the Start menu and choose <em>Yes</em> when Windows asks for administrator permission. If it still says this, run RDP Gate Server Setup again. It re-applies the folder's permissions and keeps your settings.</td></tr>
     <tr><th>"The server refused this computer"</th><td>The computer isn't enrolled (check <code>device-list</code>), or your IP is blocked for a while after repeated failures.</td></tr>
     <tr><th>"this computer is locked after too many wrong codes"</th><td>Run <code>rdpgate-server device-unlock NAME</code> on the server. Check your phone's clock is set automatically.</td></tr>
     <tr><th>"is not a public address"</th><td>You signed in from your own network. Test from outside, or allow it: <code>rdpgate-server lan on</code> (or tick <em>Also allow sign-in from computers on my home network</em> in Setup).</td></tr>

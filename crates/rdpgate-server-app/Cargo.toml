@@ -12,6 +12,7 @@ license.workspace = true
 eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "glow", "default_fonts", "accesskit", "clipboard"] }
 qrcode = { version = "0.14.1", default-features = false }
 rdpgate-core = { path = "../rdpgate-core" }
+rdpgate-ui = { path = "../rdpgate-ui" }
 rdpgate-server = { path = "../rdpgate-server" }
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
 zeroize = "1.9.1"

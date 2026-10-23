@@ -1,0 +1,8 @@
+# Every change needs the maintainer's review once branch protection requires
+# code-owner approval. The workflows, the update key and the release tool
+# decide what gets signed and shipped, so they matter most.
+*                                @parthh37
+/.github/                        @parthh37
+/crates/rdpgate-core/src/update.rs @parthh37
+/crates/rdpgate-release/         @parthh37
+/packaging/                      @parthh37

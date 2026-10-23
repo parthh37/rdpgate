@@ -1,5 +1,6 @@
 use eframe::egui::{self, Color32, RichText, TextEdit};
 use rdpgate_core::update::Available;
+use rdpgate_ui::{self as theme, MUTED, TEXT, Tone, card, muted, primary, titled_card};
 use rdpgate_server::admin::{self, DeviceInfo, Overview, TotpEnrollment, when};
 use rdpgate_server::service::{self, Status};
 use std::path::PathBuf;
@@ -7,9 +8,6 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
-const GOOD: Color32 = Color32::from_rgb(40, 150, 80);
-const BAD: Color32 = Color32::from_rgb(210, 70, 60);
-const WARN: Color32 = Color32::from_rgb(200, 130, 20);
 const REFRESH: Duration = Duration::from_secs(3);
 /// Passed to the relaunched window when Direct3D couldn't start.
 const OPENGL_ARG: &str = "--opengl";
@@ -21,12 +19,15 @@ pub fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("RDP Gate Server")
-            .with_inner_size([820.0, 600.0])
-            .with_min_inner_size([640.0, 460.0]),
+            .with_inner_size([960.0, 680.0])
+            .with_min_inner_size([720.0, 500.0]),
         renderer: if opengl { eframe::Renderer::Glow } else { eframe::Renderer::Wgpu },
         ..Default::default()
     };
-    let Err(e) = eframe::run_native("RDP Gate Server", options, Box::new(|_cc| Ok(Box::new(ServerApp::new())))) else {
+    let Err(e) = eframe::run_native("RDP Gate Server", options, Box::new(|cc| {
+        theme::apply(&cc.egui_ctx);
+        Ok(Box::new(ServerApp::new()))
+    })) else {
         return;
     };
     // A window can only be opened once per process, so try OpenGL in a new one.
@@ -50,17 +51,9 @@ fn message_box(text: &str) {
     unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR) };
 }
 
-/// The one prominent action on each page.
-fn primary(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).strong().color(Color32::WHITE))
-        .fill(Color32::from_rgb(36, 87, 214))
-        .min_size(egui::vec2(180.0, 30.0))
-}
-
-fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(14.0);
-    ui.label(RichText::new(title).strong().size(15.0));
-    ui.add_space(4.0);
+/// Space between the cards on a page.
+fn gap(ui: &mut egui::Ui) {
+    ui.add_space(12.0);
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -86,6 +79,89 @@ impl Page {
             Page::Log => "Activity log",
         }
     }
+
+    /// A small line drawing for the side bar, centred on `c`. Drawn rather
+    /// than taken from a font: the built-in fonts have no such symbols.
+    fn paint_icon(self, p: &egui::Painter, c: egui::Pos2, color: Color32) {
+        use egui::{Rect, Stroke, StrokeKind, vec2};
+        let s = Stroke::new(1.5, color);
+        let line = |a: egui::Vec2, b: egui::Vec2| {
+            p.line_segment([c + a, c + b], s);
+        };
+        match self {
+            Page::Overview => {
+                for (x, y) in [(-4.0, -4.0), (4.0, -4.0), (-4.0, 4.0), (4.0, 4.0)] {
+                    p.rect_stroke(Rect::from_center_size(c + vec2(x, y), vec2(6.0, 6.0)), 1.5, s, StrokeKind::Middle);
+                }
+            }
+            Page::Computers => {
+                p.rect_stroke(Rect::from_center_size(c + vec2(0.0, -1.5), vec2(15.0, 10.0)), 2.0, s, StrokeKind::Middle);
+                line(vec2(0.0, 3.5), vec2(0.0, 6.5));
+                line(vec2(-4.0, 6.5), vec2(4.0, 6.5));
+            }
+            Page::Codes => {
+                p.rect_stroke(Rect::from_center_size(c, vec2(16.0, 10.0)), 3.0, s, StrokeKind::Middle);
+                for x in [-4.0, 0.0, 4.0] {
+                    p.circle_filled(c + vec2(x, 0.0), 1.4, color);
+                }
+            }
+            Page::Network => {
+                p.circle_stroke(c, 7.0, s);
+                line(vec2(-7.0, 0.0), vec2(7.0, 0.0));
+                p.add(egui::Shape::ellipse_stroke(c, vec2(3.2, 7.0), s));
+            }
+            Page::Browser => {
+                p.circle_stroke(c + vec2(-3.5, 0.0), 3.5, s);
+                line(vec2(0.0, 0.0), vec2(7.5, 0.0));
+                line(vec2(5.0, 0.0), vec2(5.0, 3.0));
+                line(vec2(7.5, 0.0), vec2(7.5, 3.0));
+            }
+            Page::Log => {
+                for (y, w) in [(-5.0, 14.0), (0.0, 14.0), (5.0, 9.0)] {
+                    line(vec2(-7.0, y), vec2(-7.0 + w, y));
+                }
+            }
+        }
+    }
+}
+
+/// The service state as a pill.
+fn service_pill(s: Status) -> (Tone, &'static str) {
+    match s {
+        Status::Running => (Tone::Good, "Running"),
+        Status::Starting => (Tone::Warn, "Starting…"),
+        Status::Stopping => (Tone::Warn, "Stopping…"),
+        Status::Stopped => (Tone::Bad, "Stopped"),
+        Status::NotInstalled => (Tone::Bad, "Not installed"),
+        Status::Unknown => (Tone::Warn, "Unknown"),
+    }
+}
+
+/// One status tile on the overview: what it is, how it's doing, a line of
+/// detail and an optional button. Returns true when the button is clicked.
+fn tile(ui: &mut egui::Ui, title: &str, tone: Tone, status: &str, detail: &str, action: Option<(&str, bool)>) -> bool {
+    let mut clicked = false;
+    card(ui, |ui| {
+        ui.set_min_height(112.0);
+        // Columns stretch every widget across; a tile's button shouldn't.
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).small().strong().color(MUTED));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    theme::dot(ui, tone);
+                });
+            });
+            let color = if tone == Tone::Good || tone == Tone::Neutral { TEXT } else { tone.color() };
+            ui.label(RichText::new(status).strong().size(16.0).color(color));
+            if !detail.is_empty() {
+                ui.add(egui::Label::new(muted(detail).small()).wrap());
+            }
+            if let Some((label, enabled)) = action {
+                clicked = ui.add_enabled(enabled, egui::Button::new(label).small()).clicked();
+            }
+        });
+    });
+    clicked
 }
 
 /// A question to answer before something disruptive happens.
@@ -242,174 +318,225 @@ impl ServerApp {
     // ---- pages ---------------------------------------------------------
 
     fn overview_ui(&mut self, ui: &mut egui::Ui, o: &Overview) {
-        ui.heading("Overview");
         let ctx = ui.ctx().clone();
-        egui::Grid::new("overview").num_columns(3).spacing([16.0, 10.0]).show(ui, |ui| {
-            ui.label("Service");
-            let (text, color) = match self.service {
-                Status::Running => ("Running", GOOD),
-                Status::Starting => ("Starting…", WARN),
-                Status::Stopping => ("Stopping…", WARN),
-                Status::Stopped => ("Stopped: nobody can sign in", BAD),
-                Status::NotInstalled => ("Not installed: run RDP Gate Server Setup again", BAD),
-                Status::Unknown => ("Unknown", WARN),
-            };
-            ui.colored_label(color, text);
+        let idle = self.busy.is_none();
+
+        // Everything that stops a computer from getting in, or leaves RDP exposed.
+        let mut problems = vec![];
+        if self.service != Status::Running {
+            problems.push("the service isn't running");
+        }
+        if o.protection_pending {
+            problems.push("Remote Desktop is still reachable without RDP Gate");
+        }
+        if o.beacon.as_ref().is_none_or(|b| b.error.is_some()) {
+            problems.push("your computers can't find this PC");
+        }
+        if !o.totp {
+            problems.push("6-digit codes aren't set up");
+        }
+        if o.behind_nat {
+            problems.push("this PC can't be reached from the internet");
+        }
+        card(ui, |ui| {
             ui.horizontal(|ui| {
-                let idle = self.busy.is_none();
-                if self.service == Status::Stopped && ui.add_enabled(idle, egui::Button::new("Start")).clicked() {
+                theme::logo(ui, 52.0);
+                ui.add_space(6.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    if problems.is_empty() {
+                        theme::pill(ui, Tone::Good, "Protected");
+                        ui.label(RichText::new("Remote Desktop is closed to the internet").heading().strong().color(TEXT));
+                        ui.label(muted("It opens only for an enrolled computer that signs in, and only for that computer's address."));
+                    } else {
+                        theme::pill(ui, Tone::Warn, "Needs attention");
+                        ui.label(RichText::new(format!("{} thing(s) to fix", problems.len())).heading().strong().color(TEXT));
+                        let mut text = problems.join(", ");
+                        if let Some(c) = text.get_mut(..1) {
+                            c.make_ascii_uppercase();
+                        }
+                        ui.add(egui::Label::new(muted(format!("{text}."))).wrap());
+                    }
+                });
+            });
+        });
+        gap(ui);
+
+        let (service_tone, service_text) = service_pill(self.service);
+        let service_detail = match self.service {
+            Status::Stopped => "Nobody can sign in.",
+            Status::NotInstalled => "Run RDP Gate Server Setup again.",
+            _ => "Starts with Windows and restarts itself.",
+        };
+        let fp = &o.server_fingerprint;
+        let short_fp = fp.get(..14).unwrap_or(fp);
+        let mut go = None;
+        ui.columns(3, |cols| {
+            let service_action = match self.service {
+                Status::Stopped => Some(("Start", idle)),
+                Status::Running => Some(("Restart", idle)),
+                _ => None,
+            };
+            if tile(&mut cols[0], "SERVICE", service_tone, service_text, service_detail, service_action) {
+                if self.service == Status::Stopped {
                     self.run(&ctx, "Starting the service…", || {
                         Done::Message(service::ensure_running().map(|_| "The RDP Gate service is starting.".into()))
                     });
-                }
-                if self.service == Status::Running && ui.add_enabled(idle, egui::Button::new("Restart")).clicked() {
+                } else {
                     self.restart(&ctx, "Restarted.");
                 }
-            });
-            ui.end_row();
-
-            ui.label("Remote Desktop");
+            }
             if o.protection_pending {
-                ui.colored_label(WARN, "Still reachable without RDP Gate until a computer signs in through it");
-                if ui.add_enabled(self.busy.is_none(), egui::Button::new("Close it now")).clicked() {
+                if tile(
+                    &mut cols[1],
+                    "REMOTE DESKTOP",
+                    Tone::Warn,
+                    "Still open",
+                    "Reachable without RDP Gate until a computer signs in through it.",
+                    Some(("Close it now", idle)),
+                ) {
                     self.confirm = Some(Confirm::Protect);
                 }
             } else {
-                ui.colored_label(GOOD, "Closed to everyone who hasn't signed in");
-                ui.label("");
+                tile(&mut cols[1], "REMOTE DESKTOP", Tone::Good, "Closed", "Only to everyone who hasn't signed in.", None);
             }
-            ui.end_row();
-
-            ui.label("Finding this PC");
-            match &o.beacon {
-                Some(b) if b.error.is_some() => {
-                    ui.colored_label(BAD, format!("Beacon problem: {}", b.error.as_deref().unwrap_or_default()));
-                }
-                Some(b) => {
-                    ui.colored_label(GOOD, format!("Beacon published {} (updated {})", b.ip.as_deref().unwrap_or("?"), when(b.published)));
-                }
-                None => {
-                    ui.colored_label(BAD, "No beacon: your computers can't find this PC");
-                }
+            let (tone, status, detail) = match &o.beacon {
+                Some(b) if b.error.is_some() => (Tone::Bad, "Beacon problem".to_string(), b.error.clone().unwrap_or_default()),
+                Some(b) => (
+                    Tone::Good,
+                    format!("Published {}", b.ip.as_deref().unwrap_or("?")),
+                    format!("Updated {}", when(b.published)),
+                ),
+                None => (Tone::Bad, "No beacon".to_string(), "Your computers can't find this PC.".to_string()),
+            };
+            if tile(&mut cols[2], "FINDING THIS PC", tone, &status, &detail, Some(("Network…", true))) {
+                go = Some(Page::Network);
             }
-            if ui.button("Network…").clicked() {
-                self.page = Page::Network;
+        });
+        ui.add_space(4.0);
+        ui.columns(3, |cols| {
+            let (tone, status) = if o.totp { (Tone::Good, "Set up") } else { (Tone::Bad, "Not set up") };
+            let detail = if o.totp { "From any authenticator app." } else { "Nobody can sign in yet." };
+            if tile(&mut cols[0], "6-DIGIT CODES", tone, status, detail, Some(("6-digit codes…", true))) {
+                go = Some(Page::Codes);
             }
-            ui.end_row();
-
-            ui.label("Router");
-            ui.colored_label(if o.behind_nat { BAD } else { ui.visuals().text_color() }, &o.router);
-            ui.label("");
-            ui.end_row();
-
-            ui.label("6-digit codes");
-            if o.totp {
-                ui.colored_label(GOOD, "Set up");
-            } else {
-                ui.colored_label(BAD, "Not set up: nobody can sign in yet");
-            }
-            if ui.button("6-digit codes…").clicked() {
-                self.page = Page::Codes;
-            }
-            ui.end_row();
-
-            ui.label("Computers");
-            ui.label(match o.devices {
-                0 => "None enrolled yet".to_string(),
+            let status = match o.devices {
+                0 => "None yet".to_string(),
                 1 => "1 enrolled".to_string(),
                 n => format!("{n} enrolled"),
-            });
-            if ui.button("Computers…").clicked() {
-                self.page = Page::Computers;
+            };
+            let tone = if o.devices == 0 { Tone::Warn } else { Tone::Good };
+            if tile(&mut cols[1], "COMPUTERS", tone, &status, "Only enrolled computers can sign in.", Some(("Computers…", true))) {
+                go = Some(Page::Computers);
             }
-            ui.end_row();
-
-            ui.label("Home network");
-            ui.label(if o.lan {
-                format!("Sign-in allowed (this PC is {})", o.lan_ip.as_deref().unwrap_or("not on a home network right now"))
+            let router_tone = if o.behind_nat { Tone::Bad } else { Tone::Neutral };
+            let lan = if o.lan {
+                format!("Home network sign-in on (this PC is {}).", o.lan_ip.as_deref().unwrap_or("not on a home network right now"))
             } else {
-                "Sign-in only from outside".into()
-            });
-            ui.label("");
-            ui.end_row();
+                "Sign-in only from outside.".into()
+            };
+            tile(&mut cols[2], "ROUTER", router_tone, &o.router, &lan, None);
         });
+        if let Some(p) = go {
+            self.page = p;
+        }
 
         if o.behind_nat {
-            ui.add_space(6.0);
-            ui.colored_label(
-                BAD,
+            gap(ui);
+            theme::notice(
+                ui,
+                Tone::Bad,
                 "Your router's own internet address isn't public (carrier-grade NAT, or a second router in front). \
                  Nothing on the internet can reach this PC: ask your internet provider for a public IPv4 address.",
+                false,
             );
         }
         for w in &o.warnings {
-            ui.colored_label(WARN, format!("Warning: {w}"));
+            ui.add_space(6.0);
+            theme::notice(ui, Tone::Warn, &format!("Warning: {w}"), false);
         }
 
-        section(ui, "Open access");
-        if o.grants.is_empty() {
-            ui.label("Nobody has access open right now.");
-        } else {
-            egui::Grid::new("grants").striped(true).num_columns(3).spacing([16.0, 6.0]).show(ui, |ui| {
-                ui.strong("Address");
-                ui.strong("Who");
-                ui.strong("Until");
-                ui.end_row();
-                for g in &o.grants {
-                    ui.monospace(&g.ip);
-                    ui.label(&g.who);
-                    ui.label(when(Some(g.expires)));
-                    ui.end_row();
-                }
-            });
-        }
-
-        section(ui, "Updates");
-        ui.horizontal(|ui| {
-            ui.label(format!("Version {}", o.version));
-            let mut auto = o.auto_update;
-            if ui.checkbox(&mut auto, "Install signed updates automatically (when nobody is signed in)").changed() {
-                let r = admin::set_auto_update(&self.data, auto);
-                if r.is_ok() {
-                    self.restart(&ctx, "Automatic updates changed.");
-                } else {
-                    self.say(r.map(|()| String::new()));
-                }
-            }
-        });
-        match self.update.clone() {
-            Some(av) => {
+        gap(ui);
+        titled_card(ui, "Open access", Some("Addresses Remote Desktop is open for right now."), |ui| {
+            if o.grants.is_empty() {
                 ui.horizontal(|ui| {
-                    ui.label(format!("Version {} is available.", av.version));
-                    if ui.add_enabled(self.busy.is_none(), primary("Install update")).clicked() {
-                        self.confirm = Some(Confirm::InstallUpdate(Box::new(av)));
+                    theme::dot(ui, Tone::Neutral);
+                    ui.label(muted("Nobody has access open right now."));
+                });
+            } else {
+                egui::Grid::new("grants").striped(true).num_columns(3).spacing([28.0, 8.0]).min_col_width(120.0).show(ui, |ui| {
+                    ui.label(muted("ADDRESS").small().strong());
+                    ui.label(muted("WHO").small().strong());
+                    ui.label(muted("UNTIL").small().strong());
+                    ui.end_row();
+                    for g in &o.grants {
+                        ui.horizontal(|ui| {
+                            theme::dot(ui, Tone::Good);
+                            ui.monospace(&g.ip);
+                        });
+                        ui.label(&g.who);
+                        ui.label(when(Some(g.expires)));
+                        ui.end_row();
                     }
                 });
             }
-            None => {
-                if ui.add_enabled(self.busy.is_none(), egui::Button::new("Check for updates")).clicked() {
-                    let pre = rdpgate_server::config::Config::load(&self.data).map(|c| c.update_prereleases).unwrap_or(true);
-                    self.run(&ctx, "Checking for updates…", move || {
-                        Done::UpdateChecked(rdpgate_core::update::check(rdpgate_server::updater::VERSION, pre))
+        });
+
+        gap(ui);
+        titled_card(ui, "Updates", None, |ui| {
+            ui.horizontal(|ui| {
+                theme::pill(ui, Tone::Info, &format!("Version {}", o.version));
+                let mut auto = o.auto_update;
+                if ui.checkbox(&mut auto, "Install signed updates automatically (when nobody is signed in)").changed() {
+                    let r = admin::set_auto_update(&self.data, auto);
+                    if r.is_ok() {
+                        self.restart(&ctx, "Automatic updates changed.");
+                    } else {
+                        self.say(r.map(|()| String::new()));
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            match self.update.clone() {
+                Some(av) => {
+                    ui.horizontal(|ui| {
+                        theme::pill(ui, Tone::Good, &format!("Version {} is available", av.version));
+                        if ui.add_enabled(idle, primary("Install update")).clicked() {
+                            self.confirm = Some(Confirm::InstallUpdate(Box::new(av)));
+                        }
                     });
                 }
+                None => {
+                    if ui.add_enabled(idle, egui::Button::new("Check for updates")).clicked() {
+                        let pre = rdpgate_server::config::Config::load(&self.data).map(|c| c.update_prereleases).unwrap_or(true);
+                        self.run(&ctx, "Checking for updates…", move || {
+                            Done::UpdateChecked(rdpgate_core::update::check(rdpgate_server::updater::VERSION, pre))
+                        });
+                    }
+                }
             }
-        }
-        ui.add_space(4.0);
-        ui.small(format!("Server key fingerprint {}", o.server_fingerprint));
+            ui.add_space(4.0);
+            ui.label(muted(format!("Server key fingerprint {short_fp}…")).small()).on_hover_text(fp);
+        });
     }
 
     fn computers_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Computers");
-        ui.label("Each computer you connect from has its own key. Only enrolled computers can sign in.");
+        theme::page_title(ui, "Computers", "Each computer you connect from has its own key. Only enrolled computers can sign in.");
 
-        section(ui, "Add a computer");
-        ui.label("1. On that computer, install the RDP Gate app and set it up. It shows a key that starts with rdpgate-ed25519: (and a Copy button).");
-        ui.label("2. Paste it below. Pasting the whole \"rdpgate-server device-add …\" line works too.");
-        egui::Grid::new("add").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            let label = ui.label("Key");
+        titled_card(ui, "Add a computer", None, |ui| {
+            ui.label(muted("1. On that computer, install the RDP Gate app and set it up. It shows a key that starts with rdpgate-ed25519: (and a Copy button)."));
+            ui.label(muted("2. Paste it below. Pasting the whole \"rdpgate-server device-add …\" line works too."));
+            ui.add_space(4.0);
+            let label = theme::field_label(ui, "Key");
             let pasted = ui
-                .add(TextEdit::multiline(&mut self.add_key).hint_text("rdpgate-ed25519:…").desired_rows(2).desired_width(480.0))
+                .add(
+                    TextEdit::multiline(&mut self.add_key)
+                        .hint_text("rdpgate-ed25519:…")
+                        .font(egui::TextStyle::Monospace)
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY)
+                        .margin(egui::Margin::symmetric(10, 8)),
+                )
                 .labelled_by(label.id)
                 .changed();
             // "rdpgate-server device-add NAME KEY": take the name from it too.
@@ -421,119 +548,137 @@ impl ServerApp {
                     self.add_name = name.to_string();
                 }
             }
-            ui.end_row();
-            let label = ui.label("Name");
-            ui.add(TextEdit::singleline(&mut self.add_name).hint_text("e.g. laptop").desired_width(220.0)).labelled_by(label.id);
-            ui.end_row();
-        });
-        ui.add_space(6.0);
-        let ready = !self.add_key.trim().is_empty() && !self.add_name.trim().is_empty();
-        if ui.add_enabled(ready, primary("Add computer")).clicked() {
-            match admin::add_device(&self.data, &self.add_name, &self.add_key) {
-                Ok(fp) => {
-                    self.added = Some((self.add_name.trim().to_string(), fp));
-                    self.add_key.clear();
-                    self.add_name.clear();
-                    self.status = None;
-                    self.refresh();
+            let label = theme::field_label(ui, "Name");
+            ui.add(TextEdit::singleline(&mut self.add_name).hint_text("e.g. laptop").desired_width(260.0)).labelled_by(label.id);
+            ui.add_space(4.0);
+            let ready = !self.add_key.trim().is_empty() && !self.add_name.trim().is_empty();
+            if ui.add_enabled(ready, primary("Add computer")).clicked() {
+                match admin::add_device(&self.data, &self.add_name, &self.add_key) {
+                    Ok(fp) => {
+                        self.added = Some((self.add_name.trim().to_string(), fp));
+                        self.add_key.clear();
+                        self.add_name.clear();
+                        self.status = None;
+                        self.refresh();
+                    }
+                    Err(e) => self.say(Err(e)),
                 }
-                Err(e) => self.say(Err(e)),
             }
-        }
-        if let Some((name, fp)) = self.added.clone() {
-            ui.add_space(8.0);
-            ui.colored_label(GOOD, format!("Enrolled {name}."));
-            ui.label(format!("Its fingerprint is {fp}. Check it matches the one shown on that computer."));
-            ui.label("3. Paste this server card into the app on that computer:");
-            self.card_ui(ui);
-        }
+            if let Some((name, fp)) = self.added.clone() {
+                ui.add_space(8.0);
+                theme::notice(ui, Tone::Good, &format!("Enrolled {name}. Its fingerprint is {fp}: check it matches the one shown on that computer."), false);
+                ui.add_space(4.0);
+                ui.label(muted("3. Paste this server card into the app on that computer:"));
+                self.card_ui(ui);
+            }
+        });
 
-        section(ui, "Enrolled");
-        if self.devices.is_empty() {
-            ui.label("No computers yet.");
-        }
+        gap(ui);
         let devices = self.devices.clone();
-        egui::Grid::new("devices").striped(true).num_columns(5).spacing([16.0, 6.0]).show(ui, |ui| {
-            if !devices.is_empty() {
-                ui.strong("Name");
-                ui.strong("Fingerprint");
-                ui.strong("Last sign-in");
-                ui.strong("");
-                ui.strong("");
-                ui.end_row();
+        titled_card(ui, "Enrolled", None, |ui| {
+            if devices.is_empty() {
+                ui.label(muted("No computers yet."));
+                return;
             }
-            for d in &devices {
-                ui.label(&d.name);
-                ui.monospace(d.fingerprint.get(..14).unwrap_or(&d.fingerprint));
-                ui.label(when(d.last_auth));
-                if d.locked {
+            egui::Grid::new("devices").striped(true).num_columns(4).spacing([24.0, 8.0]).show(ui, |ui| {
+                ui.label(muted("NAME").small().strong());
+                ui.label(muted("FINGERPRINT").small().strong());
+                ui.label(muted("LAST SIGN-IN").small().strong());
+                ui.label("");
+                ui.end_row();
+                for d in &devices {
                     ui.horizontal(|ui| {
-                        ui.colored_label(BAD, "Locked (10 wrong codes)");
-                        if ui.button("Unlock").clicked() {
-                            let r = admin::unlock_device(&self.data, &d.name).map(|()| format!("Unlocked {}.", d.name));
-                            self.say(r);
-                            self.refresh();
+                        theme::dot(ui, if d.locked { Tone::Bad } else { Tone::Good });
+                        ui.label(RichText::new(&d.name).strong());
+                    });
+                    ui.monospace(d.fingerprint.get(..14).unwrap_or(&d.fingerprint));
+                    ui.label(when(d.last_auth));
+                    ui.horizontal(|ui| {
+                        if d.locked {
+                            theme::pill(ui, Tone::Bad, "Locked (10 wrong codes)");
+                            if ui.button("Unlock").clicked() {
+                                let r = admin::unlock_device(&self.data, &d.name).map(|()| format!("Unlocked {}.", d.name));
+                                self.say(r);
+                                self.refresh();
+                            }
+                        }
+                        if ui.button("Remove…").clicked() {
+                            self.confirm = Some(Confirm::RemoveComputer(d.name.clone()));
                         }
                     });
-                } else {
-                    ui.label("");
+                    ui.end_row();
                 }
-                if ui.button("Remove…").clicked() {
-                    self.confirm = Some(Confirm::RemoveComputer(d.name.clone()));
-                }
-                ui.end_row();
-            }
+            });
         });
 
         if self.added.is_none() {
-            section(ui, "Server card");
-            ui.label("Every computer needs this once (the app asks for it). It lets the app find and check this PC.");
-            self.card_ui(ui);
+            gap(ui);
+            titled_card(
+                ui,
+                "Server card",
+                Some("Every computer needs this once (the app asks for it). It lets the app find and check this PC."),
+                |ui| self.card_ui(ui),
+            );
         }
     }
 
     fn card_ui(&mut self, ui: &mut egui::Ui) {
         match admin::card(&self.data) {
             Ok(card) => {
-                let mut shown = card.clone();
-                ui.add(TextEdit::multiline(&mut shown).font(egui::TextStyle::Monospace).desired_rows(3).desired_width(f32::INFINITY));
+                theme::code_box(ui, &card, 3);
                 if ui.button("Copy server card").clicked() {
                     ui.ctx().copy_text(card);
                     self.say(Ok("Server card copied. Keep it private: it reveals where to find this PC.".into()));
                 }
             }
             Err(e) => {
-                ui.colored_label(BAD, e);
+                theme::notice(ui, Tone::Bad, &e, false);
             }
         }
     }
 
     fn codes_ui(&mut self, ui: &mut egui::Ui, o: &Overview) {
-        ui.heading("6-digit codes");
-        ui.label("Signing in takes the computer's key plus a code from an authenticator app on your phone (Google or Microsoft Authenticator, 1Password, …).");
-        ui.add_space(8.0);
+        theme::page_title(
+            ui,
+            "6-digit codes",
+            "Signing in takes the computer's key plus a code from an authenticator app on your phone (Google or Microsoft Authenticator, 1Password, …).",
+        );
         if let Some((e, qr)) = &self.enrolling {
-            ui.label("1. In the authenticator app, add an account and scan this code:");
-            ui.add_space(6.0);
-            draw_qr(ui, qr);
-            ui.add_space(6.0);
-            ui.label("Or type this key into the app instead:");
-            ui.monospace(&e.key);
-            ui.small("Don't photograph or screenshot it: anyone with this key can make your codes.");
-            ui.add_space(10.0);
-            let label = ui.label("2. Type the 6-digit code the app shows now:");
             let mut confirm = false;
-            ui.horizontal(|ui| {
-                let r = ui
-                    .add(TextEdit::singleline(&mut self.code).char_limit(6).desired_width(90.0).font(egui::TextStyle::Monospace))
-                    .labelled_by(label.id);
-                confirm = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                confirm |= ui.add_enabled(self.code.trim().len() == 6, primary("Turn codes on")).clicked();
-                if ui.button("Cancel").clicked() {
-                    self.enrolling = None;
-                    self.code.clear();
-                }
+            let mut cancel = false;
+            card(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    draw_qr(ui, qr);
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("1. Scan this with the authenticator app").strong());
+                        ui.label(muted("Add an account in the app and point the camera at the code."));
+                        ui.add_space(6.0);
+                        ui.label(muted("Or type this key into the app instead:"));
+                        ui.label(RichText::new(&e.key).monospace());
+                        ui.label(RichText::new("Don't photograph or screenshot it: anyone with this key can make your codes.").small().color(theme::WARN));
+                        ui.add_space(12.0);
+                        let label = ui.label(RichText::new("2. Type the 6-digit code the app shows now").strong());
+                        ui.horizontal(|ui| {
+                            let r = ui
+                                .add(
+                                    TextEdit::singleline(&mut self.code)
+                                        .char_limit(6)
+                                        .desired_width(110.0)
+                                        .font(egui::FontId::monospace(20.0)),
+                                )
+                                .labelled_by(label.id);
+                            confirm = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            confirm |= ui.add_enabled(self.code.trim().len() == 6, primary("Turn codes on")).clicked();
+                            cancel = ui.button("Cancel").clicked();
+                        });
+                    });
+                });
             });
+            if cancel {
+                self.enrolling = None;
+                self.code.clear();
+            }
             if confirm && let Some((e, _)) = &self.enrolling {
                 match admin::totp_confirm(&self.data, e, &self.code) {
                     Ok(true) => {
@@ -548,19 +693,23 @@ impl ServerApp {
             }
             return;
         }
-        if o.totp {
-            ui.colored_label(GOOD, "6-digit codes are set up.");
-            ui.add_space(6.0);
-            if ui.button("Use a new phone…").clicked() {
-                self.confirm = Some(Confirm::ReplaceCodes);
+        card(ui, |ui| {
+            if o.totp {
+                theme::pill(ui, Tone::Good, "Set up");
+                ui.label(muted("Every sign-in from a computer needs a fresh code. Each code works once."));
+                ui.add_space(6.0);
+                if ui.button("Use a new phone…").clicked() {
+                    self.confirm = Some(Confirm::ReplaceCodes);
+                }
+            } else {
+                theme::pill(ui, Tone::Bad, "Not set up");
+                ui.label(muted("Nobody can sign in until they are."));
+                ui.add_space(6.0);
+                if ui.add(primary("Set up 6-digit codes")).clicked() {
+                    self.begin_codes(false);
+                }
             }
-        } else {
-            ui.colored_label(BAD, "Not set up yet. Nobody can sign in until they are.");
-            ui.add_space(6.0);
-            if ui.add(primary("Set up 6-digit codes")).clicked() {
-                self.begin_codes(false);
-            }
-        }
+        });
     }
 
     fn begin_codes(&mut self, replace: bool) {
@@ -581,162 +730,188 @@ impl ServerApp {
 
     fn network_ui(&mut self, ui: &mut egui::Ui, o: &Overview) {
         let ctx = ui.ctx().clone();
-        ui.heading("Network");
+        theme::page_title(ui, "Network", "How your computers find this PC, and how they reach it.");
 
-        section(ui, "Beacon (how your computers find this PC)");
-        ui.label("This PC publishes its address, encrypted and signed, in a secret GitHub gist. It needs a GitHub token that can only use Gists, ideally from a GitHub account used just for this.");
-        match &o.beacon {
-            Some(b) => {
-                ui.label(format!("Gist {}  ·  last address {}  ·  published {}", b.gist, b.ip.as_deref().unwrap_or("?"), when(b.published)));
-                if let Some(e) = &b.error {
-                    ui.colored_label(BAD, format!("Last error: {e}"));
+        titled_card(
+            ui,
+            "Beacon",
+            Some("This PC publishes its address, encrypted and signed, in a secret GitHub gist. It needs a GitHub token that can only use Gists, ideally from a GitHub account used just for this."),
+            |ui| {
+                match &o.beacon {
+                    Some(b) => {
+                        ui.horizontal_wrapped(|ui| {
+                            theme::pill(ui, if b.error.is_some() { Tone::Bad } else { Tone::Good }, "Publishing");
+                            ui.label(muted(format!("Gist {}  ·  last address {}  ·  published {}", b.gist, b.ip.as_deref().unwrap_or("?"), when(b.published))).small());
+                        });
+                        if let Some(e) = &b.error {
+                            theme::notice(ui, Tone::Bad, &format!("Last error: {e}"), false);
+                        }
+                    }
+                    None => {
+                        theme::pill(ui, Tone::Bad, "Not set up");
+                    }
+                }
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.hyperlink_to("Create a token on GitHub", "https://github.com/settings/personal-access-tokens/new");
+                    ui.label(muted("with Account permissions > Gists: Read and write, and nothing else."));
+                });
+                let label = theme::field_label(ui, "GitHub token");
+                ui.add(TextEdit::singleline(&mut *self.token).password(true).desired_width(400.0)).labelled_by(label.id);
+                let label = theme::field_label(ui, "Gist (optional)");
+                ui.add(TextEdit::singleline(&mut self.gist).hint_text("leave empty to create a new one").desired_width(400.0))
+                    .labelled_by(label.id);
+                ui.add_space(4.0);
+                let label = if o.beacon.is_some() { "Replace token and publish" } else { "Save and publish" };
+                if ui.add_enabled(self.busy.is_none() && !self.token.trim().is_empty(), primary(label)).clicked() {
+                    let (data, token, gist) = (self.data.clone(), self.token.clone(), self.gist.clone());
+                    self.token = Zeroizing::new(String::new());
+                    let restart = self.service == Status::Running;
+                    self.run(&ctx, "Publishing the beacon…", move || {
+                        let r = admin::beacon_setup(&data, &token, Some(&gist)).and_then(|id| {
+                            // The service publishes updates only with the new settings loaded.
+                            if restart {
+                                service::restart()?;
+                            }
+                            Ok(format!("Beacon published to gist {id}. If computers were enrolled before, give them the server card again."))
+                        });
+                        Done::Message(r)
+                    });
+                }
+            },
+        );
+
+        gap(ui);
+        titled_card(ui, "Sign-in from this network", None, |ui| {
+            let mut lan = o.lan;
+            let label = match &o.lan_ip {
+                Some(ip) => format!("Allow computers on this PC's own network to sign in (this PC is {ip} here)"),
+                None => "Allow computers on this PC's own network to sign in".to_string(),
+            };
+            if ui.checkbox(&mut lan, label).changed() {
+                match admin::set_lan(&self.data, lan) {
+                    Ok(_) => self.restart(&ctx, if lan { "Sign-in from this network is on." } else { "Sign-in from this network is off." }),
+                    Err(e) => self.say(Err(e)),
                 }
             }
-            None => {
-                ui.colored_label(BAD, "Not set up.");
-            }
-        }
-        ui.horizontal(|ui| {
-            ui.hyperlink_to("Create a token on GitHub", "https://github.com/settings/personal-access-tokens/new");
-            ui.label("with Account permissions > Gists: Read and write, and nothing else.");
+            ui.label(muted("For a laptop on the same Wi-Fi. Give this PC a reserved address in your router so it keeps the same one.").small());
         });
-        egui::Grid::new("beacon").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            let label = ui.label("GitHub token");
-            ui.add(TextEdit::singleline(&mut *self.token).password(true).desired_width(360.0)).labelled_by(label.id);
-            ui.end_row();
-            let label = ui.label("Gist (optional)");
-            ui.add(TextEdit::singleline(&mut self.gist).hint_text("leave empty to create a new one").desired_width(360.0))
-                .labelled_by(label.id);
-            ui.end_row();
-        });
-        let label = if o.beacon.is_some() { "Replace token and publish" } else { "Save and publish" };
-        if ui.add_enabled(self.busy.is_none() && !self.token.trim().is_empty(), primary(label)).clicked() {
-            let (data, token, gist) = (self.data.clone(), self.token.clone(), self.gist.clone());
-            self.token = Zeroizing::new(String::new());
-            let restart = self.service == Status::Running;
-            self.run(&ctx, "Publishing the beacon…", move || {
-                let r = admin::beacon_setup(&data, &token, Some(&gist)).and_then(|id| {
-                    // The service publishes updates only with the new settings loaded.
-                    if restart {
-                        service::restart()?;
-                    }
-                    Ok(format!("Beacon published to gist {id}. If computers were enrolled before, give them the server card again."))
+
+        gap(ui);
+        titled_card(ui, "Router", None, |ui| {
+            ui.label(muted(format!(
+                "Your router must send TCP {} (sign-in) and TCP {} (Remote Desktop) to this PC. Remote Desktop stays closed in Windows Firewall until someone signs in.",
+                o.public_port, o.rdp_public_port
+            )));
+            ui.horizontal(|ui| {
+                theme::pill(ui, if o.behind_nat { Tone::Bad } else { Tone::Neutral }, &o.router);
+            });
+            if ui.add_enabled(self.busy.is_none(), egui::Button::new("Forward the ports now (UPnP)")).clicked() {
+                let data = self.data.clone();
+                self.run(&ctx, "Asking the router…", move || {
+                    let lines = match rdpgate_server::config::Config::load(&data) {
+                        Ok(cfg) => rdpgate_server::router::apply(&cfg).summary(&cfg),
+                        Err(e) => vec![e],
+                    };
+                    Done::Router(lines)
                 });
-                Done::Message(r)
-            });
-        }
-
-        section(ui, "Sign-in from this network");
-        let mut lan = o.lan;
-        let label = match &o.lan_ip {
-            Some(ip) => format!("Allow computers on this PC's own network to sign in (this PC is {ip} here)"),
-            None => "Allow computers on this PC's own network to sign in".to_string(),
-        };
-        if ui.checkbox(&mut lan, label).changed() {
-            match admin::set_lan(&self.data, lan) {
-                Ok(_) => self.restart(&ctx, if lan { "Sign-in from this network is on." } else { "Sign-in from this network is off." }),
-                Err(e) => self.say(Err(e)),
             }
-        }
-        ui.small("For a laptop on the same Wi-Fi. Give this PC a reserved address in your router so it keeps the same one.");
-
-        section(ui, "Router");
-        ui.label(format!(
-            "Your router must send TCP {} (sign-in) and TCP {} (Remote Desktop) to this PC. Remote Desktop stays closed in Windows Firewall until someone signs in.",
-            o.public_port, o.rdp_public_port
-        ));
-        ui.label(format!("Now: {}", o.router));
-        if ui.add_enabled(self.busy.is_none(), egui::Button::new("Forward the ports now (UPnP)")).clicked() {
-            let data = self.data.clone();
-            self.run(&ctx, "Asking the router…", move || {
-                let lines = match rdpgate_server::config::Config::load(&data) {
-                    Ok(cfg) => rdpgate_server::router::apply(&cfg).summary(&cfg),
-                    Err(e) => vec![e],
-                };
-                Done::Router(lines)
-            });
-        }
-        for l in &self.router_lines {
-            ui.monospace(l);
-        }
+            for l in &self.router_lines {
+                ui.monospace(l);
+            }
+        });
     }
 
     fn browser_ui(&mut self, ui: &mut egui::Ui, o: &Overview) {
-        ui.heading("Browser sign-in");
-        ui.label("Optional: sign in from a web browser with a passkey. It needs a domain name you control pointing at this PC. The RDP Gate app doesn't need any of this.");
-        ui.add_space(8.0);
-        match &o.browser_url {
-            Some(url) => {
-                ui.colored_label(GOOD, "On. Your sign-in page (bookmark the full address):");
-                let mut shown = url.clone();
-                ui.add(TextEdit::singleline(&mut shown).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+        theme::page_title(
+            ui,
+            "Browser sign-in",
+            "Optional: sign in from a web browser with a passkey. It needs a domain name you control pointing at this PC. The RDP Gate app doesn't need any of this.",
+        );
+        card(ui, |ui| {
+            match &o.browser_url {
+                Some(url) => {
+                    theme::pill(ui, Tone::Good, "On");
+                    ui.label(muted("Your sign-in page (bookmark the full address):"));
+                    theme::code_line(ui, url);
+                }
+                None => {
+                    theme::pill(ui, Tone::Neutral, "Off");
+                }
             }
-            None => {
-                ui.label("Off.");
-            }
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui.button(if o.browser_url.is_some() { "Change the domain…" } else { "Set up with my domain…" }).clicked() {
-                self.console(&["domain-setup"]);
-            }
-            if o.browser_url.is_some() && ui.button("Turn off…").clicked() {
-                self.console(&["domain-setup", "--remove"]);
-            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button(if o.browser_url.is_some() { "Change the domain…" } else { "Set up with my domain…" }).clicked() {
+                    self.console(&["domain-setup"]);
+                }
+                if o.browser_url.is_some() && ui.button("Turn off…").clicked() {
+                    self.console(&["domain-setup", "--remove"]);
+                }
+            });
+            ui.label(muted("The guided setup opens in its own window: it shows the DNS record to create and checks it for you.").small());
         });
-        ui.small("The guided setup opens in its own window: it shows the DNS record to create and checks it for you.");
 
         if o.browser_url.is_none() {
             return;
         }
-        section(ui, "Passkeys");
-        if o.passkeys.is_empty() {
-            ui.label("No passkeys yet.");
-        }
-        egui::Grid::new("passkeys").striped(true).num_columns(4).spacing([16.0, 6.0]).show(ui, |ui| {
-            for p in &o.passkeys {
-                ui.label(&p.name);
-                ui.label(format!("added {}", when(Some(p.added))));
-                ui.label(format!("last used {}", when(p.last_used)));
-                if ui.button("Remove…").clicked() {
-                    self.confirm = Some(Confirm::RemovePasskey(p.name.clone()));
+        gap(ui);
+        titled_card(ui, "Passkeys", None, |ui| {
+            if o.passkeys.is_empty() {
+                ui.label(muted("No passkeys yet."));
+            }
+            egui::Grid::new("passkeys").striped(true).num_columns(4).spacing([24.0, 8.0]).show(ui, |ui| {
+                for p in &o.passkeys {
+                    ui.label(RichText::new(&p.name).strong());
+                    ui.label(muted(format!("added {}", when(Some(p.added)))));
+                    ui.label(muted(format!("last used {}", when(p.last_used))));
+                    if ui.button("Remove…").clicked() {
+                        self.confirm = Some(Confirm::RemovePasskey(p.name.clone()));
+                    }
+                    ui.end_row();
                 }
-                ui.end_row();
+            });
+            ui.add_space(6.0);
+            if ui.button("Create a link to add a passkey").clicked() {
+                match admin::passkey_link(&self.data, 15) {
+                    Ok(l) => self.passkey_link = Some(l),
+                    Err(e) => self.say(Err(e)),
+                }
+            }
+            if let Some((link, expires)) = self.passkey_link.clone() {
+                ui.label(muted(format!("Open it on the phone or computer whose passkey you want to add. It works once, until {}:", when(Some(expires)))));
+                theme::code_line(ui, &link);
+                if ui.button("Copy link").clicked() {
+                    ui.ctx().copy_text(link);
+                    self.say(Ok("Link copied. Treat it like a password.".into()));
+                }
             }
         });
-        ui.add_space(6.0);
-        if ui.button("Create a link to add a passkey").clicked() {
-            match admin::passkey_link(&self.data, 15) {
-                Ok(l) => self.passkey_link = Some(l),
-                Err(e) => self.say(Err(e)),
-            }
-        }
-        if let Some((link, expires)) = self.passkey_link.clone() {
-            ui.label(format!("Open it on the phone or computer whose passkey you want to add. It works once, until {}:", when(Some(expires))));
-            let mut shown = link.clone();
-            ui.add(TextEdit::singleline(&mut shown).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
-            if ui.button("Copy link").clicked() {
-                ui.ctx().copy_text(link);
-                self.say(Ok("Link copied. Treat it like a password.".into()));
-            }
-        }
     }
 
     fn log_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading("Activity log");
-            if ui.button("Refresh").clicked() {
-                self.log = admin::log_tail(&self.data, 400);
-            }
-            if ui.button("Open log folder").clicked() {
-                let _ = std::process::Command::new("explorer.exe").arg(self.data.join("logs")).spawn();
-            }
+            ui.label(RichText::new("Activity log").heading().strong().color(TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Open log folder").clicked() {
+                    let _ = std::process::Command::new("explorer.exe").arg(self.data.join("logs")).spawn();
+                }
+                if ui.button("Refresh").clicked() {
+                    self.log = admin::log_tail(&self.data, 400);
+                }
+            });
         });
-        ui.small("Sign-ins, firewall openings and closings, beacon and update activity. Newest at the bottom.");
-        ui.add_space(6.0);
-        egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
-            ui.add(egui::Label::new(RichText::new(&self.log).monospace().size(12.0)).wrap_mode(egui::TextWrapMode::Extend));
-        });
+        ui.label(muted("Sign-ins, firewall openings and closings, beacon and update activity. Newest at the bottom."));
+        ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(theme::INPUT)
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+            .corner_radius(egui::CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add(egui::Label::new(log_job(&self.log)).wrap_mode(egui::TextWrapMode::Extend));
+                });
+            });
     }
 
     /// Runs `rdpgate-server <args>` in its own console window, for the
@@ -860,6 +1035,27 @@ fn draw_qr(ui: &mut egui::Ui, qr: &Qr) {
     }
 }
 
+/// The log with refusals in red and openings in green, so they stand out.
+fn log_job(log: &str) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let font = egui::FontId::monospace(12.5);
+    for line in log.lines() {
+        let color = if line.contains("DENY") || line.contains("BAN") {
+            theme::BAD
+        } else if line.contains("GRANT") {
+            theme::GOOD
+        } else if line.contains("error") || line.contains("failed") || line.contains("WARN") {
+            theme::WARN
+        } else {
+            MUTED
+        };
+        let format = |color| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
+        job.append(line, 0.0, format(color));
+        job.append("\n", 0.0, format(color));
+    }
+    job
+}
+
 impl eframe::App for ServerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
@@ -870,12 +1066,12 @@ impl eframe::App for ServerApp {
         }
         ctx.request_repaint_after(REFRESH);
 
-        egui::Panel::left("nav").resizable(false).exact_size(170.0).show(ui, |ui| {
-            ui.add_space(10.0);
-            ui.label(RichText::new("RDP Gate Server").strong().size(16.0));
-            ui.add_space(10.0);
+        let nav = egui::Frame::new().fill(theme::BAR).inner_margin(egui::Margin::symmetric(12, 14));
+        egui::Panel::left("nav").resizable(false).exact_size(214.0).frame(nav).show(ui, |ui| {
+            theme::brand(ui, "RDP Gate Server", "Manage this PC");
+            ui.add_space(18.0);
             for p in Page::ALL {
-                if ui.add_sized([150.0, 28.0], egui::Button::selectable(self.page == p, p.title())).clicked() && self.page != p {
+                if nav_item(ui, p, self.page == p) && self.page != p {
                     self.page = p;
                     self.status = None;
                     if p == Page::Log {
@@ -883,9 +1079,20 @@ impl eframe::App for ServerApp {
                     }
                 }
             }
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                ui.label(muted(format!("Version {}", rdpgate_server::updater::VERSION)).small());
+                let (tone, text) = service_pill(self.service);
+                ui.horizontal(|ui| {
+                    ui.label(muted("Service").small());
+                    theme::pill(ui, tone, text);
+                });
+                ui.add_space(2.0);
+                ui.separator();
+            });
         });
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        let body = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(22, 18));
+        egui::CentralPanel::default().frame(body).show(ui, |ui| {
             if let Some(label) = self.busy {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -894,13 +1101,10 @@ impl eframe::App for ServerApp {
                 ui.add_space(4.0);
             }
             if let Some((ok, msg)) = self.status.clone() {
-                ui.horizontal(|ui| {
-                    ui.colored_label(if ok { GOOD } else { BAD }, msg);
-                    if ui.small_button("Dismiss").clicked() {
-                        self.status = None;
-                    }
-                });
-                ui.add_space(6.0);
+                if theme::notice(ui, Tone::from_ok(ok), &msg, true) {
+                    self.status = None;
+                }
+                ui.add_space(10.0);
             }
             if self.page == Page::Log {
                 self.log_ui(ui);
@@ -908,24 +1112,60 @@ impl eframe::App for ServerApp {
             }
             let o = match &self.overview {
                 Ok(o) => o.clone(),
+                Err(e) if e.contains("os error 5") => {
+                    // The folder is there but this window may not read it: not
+                    // "isn't set up", which would send people to run init again.
+                    theme::page_title(
+                        ui,
+                        "This window can't read RDP Gate's settings",
+                        "Windows refused access to C:\\ProgramData\\RDPGate. Close this window and open RDP Gate Server again, \
+                         choosing Yes when Windows asks for administrator permission. If it still fails, run RDP Gate Server Setup \
+                         again: it repairs the folder's permissions.",
+                    );
+                    theme::notice(ui, Tone::Bad, e, false);
+                    return;
+                }
                 Err(e) => {
-                    ui.heading("RDP Gate isn't set up on this PC");
-                    ui.add_space(6.0);
-                    ui.label("Run RDP Gate Server Setup (RDP-Gate-Server-Setup-….exe) to install the service, then open this window again.");
-                    ui.add_space(6.0);
-                    ui.colored_label(BAD, e);
+                    theme::page_title(
+                        ui,
+                        "RDP Gate isn't set up on this PC",
+                        "Run RDP Gate Server Setup (RDP-Gate-Server-Setup-….exe) to install the service, then open this window again.",
+                    );
+                    theme::notice(ui, Tone::Bad, e, false);
                     return;
                 }
             };
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.page {
-                Page::Overview => self.overview_ui(ui, &o),
-                Page::Computers => self.computers_ui(ui),
-                Page::Codes => self.codes_ui(ui, &o),
-                Page::Network => self.network_ui(ui, &o),
-                Page::Browser => self.browser_ui(ui, &o),
-                Page::Log => {}
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                match self.page {
+                    Page::Overview => self.overview_ui(ui, &o),
+                    Page::Computers => self.computers_ui(ui),
+                    Page::Codes => self.codes_ui(ui, &o),
+                    Page::Network => self.network_ui(ui, &o),
+                    Page::Browser => self.browser_ui(ui, &o),
+                    Page::Log => {}
+                }
+                ui.add_space(8.0);
             });
         });
         self.confirm_ui(&ctx);
     }
+}
+
+/// A row in the side bar: icon and title, lit when it's the open page.
+fn nav_item(ui: &mut egui::Ui, page: Page, selected: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, page.title()));
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, 9.0, Color32::from_rgba_unmultiplied(59, 108, 240, 52));
+        let bar = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 8.0), egui::vec2(3.0, rect.height() - 16.0));
+        p.rect_filled(bar, 2.0, theme::ACCENT);
+    } else if response.hovered() {
+        p.rect_filled(rect, 9.0, Color32::from_white_alpha(8));
+    }
+    let color = if selected { Color32::WHITE } else if response.hovered() { TEXT } else { MUTED };
+    let y = rect.center().y;
+    page.paint_icon(p, egui::pos2(rect.min.x + 24.0, y), color);
+    p.text(egui::pos2(rect.min.x + 44.0, y), egui::Align2::LEFT_CENTER, page.title(), egui::FontId::proportional(14.0), color);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }

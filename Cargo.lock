@@ -4287,6 +4287,7 @@ dependencies = [
  "eframe",
  "rdpgate-client",
  "rdpgate-core",
+ "rdpgate-ui",
  "tokio",
  "zeroize",
 ]
@@ -4401,8 +4402,16 @@ dependencies = [
  "qrcode",
  "rdpgate-core",
  "rdpgate-server",
+ "rdpgate-ui",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "rdpgate-ui"
+version = "0.6.0"
+dependencies = [
+ "egui",
 ]
 
 [[package]]

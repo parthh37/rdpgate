@@ -24,6 +24,12 @@ Exposing Remote Desktop (TCP 3389) to the internet invites constant password gue
 
 Website: **https://parthh37.github.io/rdpgate/** · Step-by-step guide: **[Operation guide](https://parthh37.github.io/rdpgate/guide.html)**
 
+<p align="center">
+<img src="docs/assets/screenshots/server-overview.png" width="560" alt="RDP Gate Server: the overview of the PC you connect to">
+<img src="docs/assets/screenshots/app-open.png" width="230" alt="The RDP Gate app with access open for one IP address">
+</p>
+<p align="center"><sub>RDP Gate Server on the Windows PC, and the app on the computer you connect from (sample data). More on the <a href="https://parthh37.github.io/rdpgate/#screens">website</a>.</sub></p>
+
 ## How it works
 
 ```
