@@ -205,7 +205,8 @@ $hasBeacon = $cfg.PSObject.Properties.Name -contains 'beacon'
 if (-not $hasBeacon -and -not $NoBeacon) {
     Write-Host ""
     Write-Host "    Your computers find this PC through an encrypted, signed beacon in a secret GitHub gist."
-    Write-Host "    GitHub only ever sees ciphertext. You need a token limited to Gists (read and write)."
+    Write-Host "    The gist only holds ciphertext, but GitHub sees the IP address each update comes from."
+    Write-Host "    You need a token limited to Gists (read and write), ideally on a GitHub account used only for this."
     & $Exe beacon-setup --data $DataDir
     if ($LASTEXITCODE -ne 0) { Warn 'Beacon not set up. Run "rdpgate-server beacon-setup" later.' }
 }

@@ -130,7 +130,7 @@
   <ol class="setup">
     <li>
       <h3>Install the server</h3>
-      <p>On the Windows PC, unzip the server package and run PowerShell as Administrator. It asks for a GitHub token limited to Gists, which it uses to publish the encrypted beacon.</p>
+      <p>On the Windows PC, unzip the server package and run PowerShell as Administrator. It asks for a GitHub token limited to Gists, which it uses to publish the encrypted beacon. Create the token on a GitHub account used only for RDP Gate: a Gists token can read and change every gist on its account.</p>
       <pre><code>Set-ExecutionPolicy -Scope Process Bypass
 .\install-server.ps1</code></pre>
     </li>
@@ -193,7 +193,7 @@
   <h2>Questions</h2>
   <details>
     <summary>Do I need a static IP address or a domain?</summary>
-    <p>No. Your PC publishes its current address as an encrypted, signed beacon in a secret GitHub gist. GitHub only sees ciphertext, and nobody can forge a beacon without your server's key. A domain is only needed for the optional browser sign-in.</p>
+    <p>No. Your PC publishes its current address as an encrypted, signed beacon in a secret GitHub gist. The gist only ever holds ciphertext (GitHub, like any website, does see the IP address each update comes from), and nobody can forge a beacon without your server's key. A domain is only needed for the optional browser sign-in.</p>
   </details>
   <details>
     <summary>Why not just a VPN?</summary>
