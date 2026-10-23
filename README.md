@@ -69,6 +69,7 @@ What an attacker on the internet has to get past, from the outside in:
 - **Unsigned builds.** On macOS, right-click the app and choose **Open** the first time. On Windows, at the SmartScreen prompt choose **More info**, then **Run anyway**. Verify downloads with `SHA256SUMS.txt`.
 - **Nothing is unbreakable.** RDP Gate removes the internet-facing attack surface. It can't protect a Windows PC that's already compromised, or a stolen laptop together with your passphrase and phone.
 - **Windows Home** can't host Remote Desktop.
+- **Sleep.** A sleeping PC can't answer, and nothing on the internet can wake it. The installer turns off sleep on mains power for desktops (not laptops), and the service keeps the PC awake from sign-in until access closes. Choosing Sleep, closing a laptop lid or a flat battery still put it to sleep.
 
 ## Setup
 
@@ -90,6 +91,7 @@ The installer, in this order:
 - sets Windows Firewall to **block inbound by default** and disables every rule that exposes the RDP port, including "any port" and port-range rules. It **stops** if Group Policy still exposes RDP.
 - only then turns on Remote Desktop with NLA, TLS, high encryption and patched-CredSSP only.
 - sets account lockout to 15 minutes after 10 wrong passwords (skip with `-SkipLockout`).
+- stops a desktop PC sleeping or hibernating on mains power, so it can always be reached (skip with `-SkipSleep`). On a laptop it only warns, and battery settings are never changed.
 - creates the server identity, publishes the first beacon, and starts the `RDPGate` service.
 
 Other options:
@@ -167,6 +169,7 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | `allow_private_sources` | false | Grant LAN / carrier-NAT source addresses |
 | `grant_minutes` | 10 | Time to start a session after signing in |
 | `max_hours` | 12 | Hard cap on one grant |
+| `keep_awake` | true | Keep the PC from sleeping while a grant is open (`powercfg /requests` shows it) |
 | `desktop_login` / `web_login` | true / with domain | Turn either sign-in method off |
 | `public_host`, `tls` | — | Domain and certificate for browser sign-in |
 | `beacon` | — | `{ "gist_id": …, "token": … }`, set by `beacon-setup` |

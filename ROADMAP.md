@@ -39,6 +39,7 @@ address, and many people can share one (hotel Wi-Fi, carrier NAT).
 
 ## Convenience
 
+- [x] Keep the PC awake while someone is signed in
 - [ ] Sign-in notifications (email / push) and a revoke link
 - [ ] LAN allow-list (skip sign-in at home)
 - [ ] IPv6 listening by default, with dual-stack grants

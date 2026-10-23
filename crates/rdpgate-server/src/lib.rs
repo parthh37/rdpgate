@@ -9,6 +9,7 @@ pub mod grants;
 pub mod identity;
 pub mod limiter;
 pub mod log;
+pub mod power;
 pub mod secure_dir;
 pub mod service;
 pub mod state;

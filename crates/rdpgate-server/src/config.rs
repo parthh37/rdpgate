@@ -46,6 +46,9 @@ pub struct Config {
     /// Hard cap on one grant, connected or not.
     #[serde(default = "d_max")]
     pub max_hours: f64,
+    /// Keep the PC from sleeping while any grant is open.
+    #[serde(default = "d_true")]
+    pub keep_awake: bool,
     /// Allow signing in from a browser with a passkey (needs `public_host`).
     #[serde(default)]
     pub web_login: bool,
@@ -152,6 +155,7 @@ impl Config {
             portal_path: format!("/{}/", rdpgate_core::random_token::<18>()),
             grant_minutes: d_grant(),
             max_hours: d_max(),
+            keep_awake: true,
             desktop_login: true,
             firewall: d_firewall(),
             beacon: None,

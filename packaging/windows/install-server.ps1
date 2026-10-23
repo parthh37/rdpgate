@@ -13,7 +13,9 @@
     4. Only then turns on Remote Desktop with Network Level Authentication and
        TLS (rolled back if anything fails).
     5. Sets an account lockout policy (unless -SkipLockout).
-    6. Creates the configuration and server identity, sets up the encrypted
+    6. Stops a desktop PC sleeping or hibernating on mains power, so it can
+       always be reached (unless -SkipSleep). Laptops only get a warning.
+    7. Creates the configuration and server identity, sets up the encrypted
        IP beacon in a secret GitHub gist (asks for a token), and starts the
        "RDPGate" service.
 
@@ -45,7 +47,9 @@ param(
     # Use the Let's Encrypt staging CA (testing only)
     [switch] $Staging,
     # Don't change the account lockout policy
-    [switch] $SkipLockout
+    [switch] $SkipLockout,
+    # Don't stop this PC sleeping on mains power (a sleeping PC can't be reached)
+    [switch] $SkipSleep
 )
 
 #Requires -RunAsAdministrator
@@ -80,6 +84,21 @@ function Test-ExposesRdp($Rule, [int] $Port) {
     if (-not $appOk -and $svc -ne 'TermService') { return $false }
     if ($svc -notin @('Any', 'TermService')) { return $false }
     return $true
+}
+
+# Idle seconds before the PC sleeps (STANDBYIDLE) or hibernates (HIBERNATEIDLE)
+# in the active power plan, as @{ AC = ...; DC = ... }; 0 means never. $null if
+# this PC doesn't have the setting. powercfg translates its labels, but the
+# values always end with the AC index, then the DC index.
+function Get-SleepTimeouts([string] $Setting) {
+    # powercfg complains on stderr about settings this PC lacks; under 'Stop',
+    # Windows PowerShell would turn that into an exception.
+    $ErrorActionPreference = 'Continue'
+    $values = @(& powercfg.exe /query SCHEME_CURRENT SUB_SLEEP $Setting 2>$null |
+        Select-String '0x([0-9a-fA-F]{8})' |
+        ForEach-Object { [Convert]::ToUInt32($_.Matches[0].Groups[1].Value, 16) })
+    if ($values.Count -lt 2) { return $null }
+    return @{ AC = $values[-2]; DC = $values[-1] }
 }
 
 # ---------------------------------------------------------------------------
@@ -183,6 +202,36 @@ if (-not $SkipLockout) {
     & net.exe accounts /lockoutthreshold:10 /lockoutwindow:15 /lockoutduration:15 | Out-Null
     if ($LASTEXITCODE -eq 0) { Ok '10 wrong passwords lock an account for 15 minutes' }
     else { Warn 'Could not set the lockout policy (domain policy may control it).' }
+}
+
+# ---------------------------------------------------------------------------
+Step 'Sleep settings'
+# The service keeps this PC awake while someone is signed in. Before that, a
+# sleeping PC can't answer a sign-in, and nothing on the internet can wake it.
+$sleep     = Get-SleepTimeouts 'STANDBYIDLE'
+$hibernate = Get-SleepTimeouts 'HIBERNATEIDLE'
+# PCSystemType 2 = mobile. (Win32_Battery would also count a desktop's UPS.)
+$isLaptop  = (Get-CimInstance Win32_ComputerSystem).PCSystemType -eq 2
+
+$sleepAc     = if ($sleep)     { $sleep.AC }     else { 0 }
+$hibernateAc = if ($hibernate) { $hibernate.AC } else { 0 }
+$idleMinutes = [math]::Ceiling((@($sleepAc, $hibernateAc) | Where-Object { $_ -gt 0 } | Measure-Object -Minimum).Minimum / 60)
+$unreachable = "it can't be reached while asleep. Change it under Settings > System > Power"
+
+if ($sleepAc -eq 0 -and $hibernateAc -eq 0) {
+    Ok 'This PC never sleeps on mains power'
+} elseif ($SkipSleep) {
+    Warn "Left as is (-SkipSleep): this PC sleeps after $idleMinutes min idle, and $unreachable."
+} elseif ($isLaptop) {
+    # Laptops: never sleeping can drain the battery or overheat one in a bag.
+    Warn "This is a laptop and sleeps after $idleMinutes min idle on mains power; $unreachable."
+} else {
+    # Mains power only: battery settings are left alone.
+    $failed = $false
+    if ($sleepAc -gt 0)     { & powercfg.exe /change standby-timeout-ac 0;   if ($LASTEXITCODE -ne 0) { $failed = $true } }
+    if ($hibernateAc -gt 0) { & powercfg.exe /change hibernate-timeout-ac 0; if ($LASTEXITCODE -ne 0) { $failed = $true } }
+    if ($failed) { Warn "Could not change the power plan (Group Policy may control it); this PC sleeps after $idleMinutes min idle." }
+    else { Ok "Never sleeps or hibernates on mains power (was $idleMinutes min idle); skip with -SkipSleep" }
 }
 
 # ---------------------------------------------------------------------------
