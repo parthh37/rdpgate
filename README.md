@@ -22,7 +22,7 @@ Exposing Remote Desktop (TCP 3389) to the internet invites constant password gue
 - **Easy install, signed auto-updates:** Setup wizards for Windows, a drag-to-Applications disk image for Mac. Every program updates itself, but only to releases signed with the project's release key.
 - **Written in Rust**, built on rustls, RustCrypto and webauthn-rs. No OpenSSL, no runtime dependencies.
 
-Website: **https://parthh37.github.io/rdpgate/**
+Website: **https://parthh37.github.io/rdpgate/** · Step-by-step guide: **[Operation guide](https://parthh37.github.io/rdpgate/guide.html)**
 
 ## How it works
 

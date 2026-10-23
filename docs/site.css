@@ -129,8 +129,8 @@ h1 span { color: var(--allow); }
 /* ---- how it works (a real sequence) ----------------------------------- */
 .steps, .setup { list-style: none; margin: 0; padding: 0; counter-reset: s; }
 .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; }
-.steps li, .setup li { counter-increment: s; position: relative; }
-.steps li::before, .setup li::before {
+.steps > li, .setup > li { counter-increment: s; position: relative; }
+.steps > li::before, .setup > li::before {
   content: counter(s);
   display: inline-grid;
   place-items: center;
@@ -179,8 +179,8 @@ h1 span { color: var(--allow); }
 
 /* ---- setup ------------------------------------------------------------ */
 .setup { display: grid; gap: 2rem; max-width: 46rem; }
-.setup li { padding-left: 3.2rem; }
-.setup li::before { position: absolute; left: 0; top: -.2rem; }
+.setup > li { padding-left: 3.2rem; min-width: 0; }
+.setup > li::before { position: absolute; left: 0; top: -.2rem; }
 pre {
   background: var(--panel);
   color: var(--panel-text);
@@ -206,6 +206,54 @@ pre {
 .faq summary { cursor: pointer; font-weight: 600; }
 .faq details p { color: var(--ink-soft); margin: .7rem 0 0; }
 
+/* ---- operation guide (guide.html) ------------------------------------- */
+.bar nav a[aria-current="page"] { color: var(--ink); font-weight: 600; }
+.guide-head { padding-bottom: 2.5rem !important; }
+.guide-head .lede { max-width: 44rem; margin-bottom: 0; }
+.guide-layout {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 0 1.5rem 4rem;
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 3rem;
+  align-items: start;
+}
+.toc { position: sticky; top: 1.5rem; font-size: .92rem; }
+.toc p { font: 600 .75rem var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); margin: 0 0 .7rem; }
+.toc ol { margin: 0; padding: 0 0 0 1.2rem; display: grid; gap: .45rem; color: var(--ink-soft); }
+.toc a { color: var(--ink-soft); text-decoration: none; }
+.toc a:hover { color: var(--action); }
+.guide-body > section { padding: 2.8rem 0; border-top: 1px solid var(--rule); scroll-margin-top: 1rem; }
+.guide-body > section > p { color: var(--ink-soft); max-width: 46rem; }
+.guide-body .setup { max-width: none; }
+.guide-body .setup > li { scroll-margin-top: 1rem; }
+.guide-body .setup > li > * + p { margin-top: .7rem; }
+h4 { font: 700 1rem var(--mono); letter-spacing: -0.02em; margin: 0 0 .4rem; }
+
+.sub, .plain { margin: .7rem 0 0; padding-left: 1.2rem; color: var(--ink-soft); }
+.sub li + li, .plain li + li { margin-top: .35rem; }
+.sub { list-style: decimal; }
+
+.spec { width: 100%; border-collapse: collapse; margin: 1rem 0 0; background: #fff; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; font-size: .95rem; }
+.spec th, .spec td { text-align: left; vertical-align: top; padding: .7rem .9rem; border-bottom: 1px solid var(--rule); }
+.spec tr:last-child th, .spec tr:last-child td { border-bottom: 0; }
+.spec th { font: 600 .88rem var(--mono); color: var(--ink); width: 13rem; letter-spacing: -0.01em; }
+.spec td { color: var(--ink-soft); }
+.spec.ports th { width: auto; background: #f6f8fb; }
+.spec.trouble th { width: 16rem; }
+
+.note { padding: .8rem 1rem; border-left: 3px solid var(--action); background: #fff; border-radius: 0 10px 10px 0; font-size: .95rem; }
+.note.warn { border-left-color: var(--deny); }
+
+.more { margin-top: 1rem; border: 1px solid var(--rule); border-radius: 10px; background: #fff; padding: .8rem 1rem; }
+.more summary { cursor: pointer; font-weight: 600; }
+.more p { color: var(--ink-soft); margin: .7rem 0 0; }
+
+.ways.tight { gap: 1rem; margin-top: .4rem; }
+.ways.tight article { padding: 1.1rem 1.2rem; }
+.ways.tight p { color: var(--ink-soft); margin: 0; }
+
 /* ---- footer ----------------------------------------------------------- */
 .foot { max-width: var(--max); margin: 0 auto; padding: 2.5rem 1.5rem 3.5rem; border-top: 1px solid var(--rule); }
 .foot p { margin: 0 0 .3rem; }
@@ -216,6 +264,11 @@ pre {
   .layers > div { grid-template-columns: minmax(0, 1fr); gap: .3rem; }
   main > section { padding: 3.2rem 1.25rem; }
   .bar nav { gap: .9rem; }
+  .guide-layout { grid-template-columns: minmax(0, 1fr); gap: 1rem; padding: 0 1.25rem 3rem; }
+  .toc { position: static; border: 1px solid var(--rule); border-radius: 10px; background: #fff; padding: 1rem 1.2rem; }
+  .spec th, .spec td { display: block; width: auto !important; }
+  .spec th { padding-bottom: 0; }
+  .spec.ports th, .spec.ports td { display: table-cell; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
