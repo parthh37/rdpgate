@@ -51,6 +51,8 @@ WelcomeLabel2=This installs the RDP Gate agent on this PC and configures Windows
 [Tasks]
 Name: "domain"; Description: "Also sign in from a web browser with a passkey, using my own domain name (guided setup)"; Flags: unchecked
 Name: "beacon"; Description: "Set up the encrypted IP beacon now (asks for a Gists-only GitHub token, ideally from an account used only for this)"
+Name: "totp"; Description: "Set up 6-digit codes now (shows a QR code to scan with your authenticator app)"
+Name: "lan"; Description: "Also allow sign-in from computers on my home network (for example a laptop on the same Wi-Fi)"; Flags: unchecked
 Name: "router"; Description: "Forward ports on my router automatically (UPnP), if the router allows it"
 Name: "lockout"; Description: "Set an account lockout policy (10 wrong passwords lock an account for 15 minutes)"
 Name: "awake"; Description: "Stop this PC sleeping on mains power, so it can always be reached (on a laptop: only a warning)"
@@ -69,7 +71,6 @@ Name: "{autoprograms}\Check for RDP Gate updates"; Filename: "{sys}\WindowsPower
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "{code:HardenParams}"; StatusMsg: "Hardening Remote Desktop and starting the RDP Gate service..."; Flags: waituntilterminated
-Filename: "{cmd}"; Parameters: "/c """"{app}\rdpgate-server.exe"" totp-setup & pause"""; Description: "Set up 6-digit codes now (shows a QR code for your phone)"; Flags: postinstall waituntilterminated
 Filename: "https://parthh37.github.io/rdpgate/guide.html#client"; Description: "Open the guide for enrolling your computers"; Flags: postinstall shellexec nowait unchecked
 
 [UninstallDelete]
@@ -207,6 +208,12 @@ begin
   end;
   if not WizardIsTaskSelected('beacon') then
     Result := Result + ' -NoBeacon';
+  if not WizardIsTaskSelected('totp') then
+    Result := Result + ' -NoTotp';
+  if WizardIsTaskSelected('lan') then
+    Result := Result + ' -Lan On'
+  else
+    Result := Result + ' -Lan Off';
   if not WizardIsTaskSelected('router') then
     Result := Result + ' -NoUpnp';
   if not WizardIsTaskSelected('lockout') then

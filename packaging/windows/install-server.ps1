@@ -20,8 +20,9 @@
     6. Stops a desktop PC sleeping or hibernating on mains power, so it can
        always be reached (unless -SkipSleep). Laptops only get a warning.
     7. Creates the configuration and server identity, sets up the encrypted
-       IP beacon in a secret GitHub gist (asks for a token), and starts the
-       "RDPGate" service.
+       IP beacon in a secret GitHub gist (asks for a token), sets up 6-digit
+       codes (shows a QR code; unless -NoTotp), and starts the "RDPGate"
+       service.
     8. Forwards the sign-in and Remote Desktop ports on the router with UPnP
        when the router allows it (unless -NoUpnp), and warns about
        carrier-grade NAT.
@@ -62,8 +63,14 @@ param(
     [int] $RdpPublicPort = 0,
     # Also open UDP for signed-in addresses (faster, but UDP sources can be forged)
     [switch] $AllowUdp,
+    # Sign-in from computers on this PC's own network (e.g. a laptop on the
+    # same Wi-Fi): On, Off, or Keep (as configured; off on a new install)
+    [ValidateSet('Keep', 'On', 'Off')]
+    [string] $Lan = 'Keep',
     # Don't set up the GitHub gist beacon now (you can run "rdpgate-server beacon-setup" later)
     [switch] $NoBeacon,
+    # Don't set up 6-digit codes now (you can run "rdpgate-server totp-setup" later)
+    [switch] $NoTotp,
     # Use the Let's Encrypt staging CA (testing only)
     [switch] $Staging,
     # Don't change the account lockout policy
@@ -394,6 +401,20 @@ if (-not $hasBeacon -and -not $NoBeacon) {
     if ($LASTEXITCODE -ne 0) { Warn 'Beacon not set up. Run "rdpgate-server beacon-setup" later.' }
 }
 
+# In this window rather than on Setup's last page, where the step was easy to
+# miss and, after a reinstall that kept the data folder, only printed an error.
+$st = Get-Content (Join-Path $DataDir 'state.json') -Raw | ConvertFrom-Json
+$totpOn = $st.PSObject.Properties.Name -contains 'totp'
+if ($totpOn) {
+    Step '6-digit codes'
+    Ok 'Already set up (kept from an earlier install). New phone: rdpgate-server totp-setup --force'
+} elseif (-not $NoTotp) {
+    Step 'Setting up 6-digit codes (scan the QR code with your authenticator app)'
+    & $Exe totp-setup --data $DataDir
+    $totpOn = $LASTEXITCODE -eq 0
+    if (-not $totpOn) { Warn '6-digit codes not set up. Run "rdpgate-server totp-setup" later.' }
+}
+
 # Tell the service whether it still has to lock Remote Desktop down.
 if ($deferred) { & $Exe protect --data $DataDir --after-sign-in | Out-Null }
 else { & $Exe protect --data $DataDir --already-applied | Out-Null }
@@ -402,6 +423,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not record the protection setting' }
 if (Get-Service RDPGate -ErrorAction SilentlyContinue) { & $Exe service-uninstall | Out-Null }
 & $Exe service-install --data $DataDir
 if ($LASTEXITCODE -ne 0) { throw 'service-install failed' }
+if ($Lan -ne 'Keep') {
+    # Restarts the service so the beacon includes (or drops) this PC's local address.
+    & $Exe lan $Lan.ToLower() --data $DataDir | ForEach-Object { Ok $_ }
+    if ($LASTEXITCODE -ne 0) { Warn "Could not change sign-in from this network. Run: rdpgate-server lan $($Lan.ToLower())" }
+}
 Start-Sleep -Seconds 3
 $state = (Get-Service RDPGate).Status
 if ($state -ne 'Running') { Warn "Service state is $state. Check $DataDir\logs\rdpgate.log" } else { Ok 'Service RDPGate is running' }
@@ -444,14 +470,18 @@ $fwText = if ($deferred) {
 } else {
     "Windows Firewall is configured: TCP $ListenPort is open for RDP Gate only, and Remote`nDesktop stays closed until someone signs in. The service re-checks this at every start."
 }
+$totpStep = if ($totpOn) {
+    "2. 6-digit codes are set up. For a new phone: rdpgate-server totp-setup --force"
+} else {
+    "2. Set up 6-digit codes (scan the QR code with your phone):`n     rdpgate-server totp-setup"
+}
 Write-Host @"
 
 $fwText
 
 $routerStep
 
-2. Set up 6-digit codes (scan the QR code with your phone):
-     rdpgate-server totp-setup
+$totpStep
 
 3. On each Mac or PC, install the RDP Gate app and set it up. Run the
    "rdpgate-server device-add ..." command it shows you here, then paste the

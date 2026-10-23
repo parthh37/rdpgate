@@ -5,7 +5,7 @@ use crate::app::App;
 use crate::config::Config;
 use crate::identity::Identity;
 use crate::state::now;
-use rdpgate_core::beacon::{self, Location};
+use rdpgate_core::beacon::{self, LanLocation, Location};
 use serde::Serialize;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -70,10 +70,21 @@ fn write_status(app: &App, s: &Status) {
     }
 }
 
+/// This PC's address on its own network, published only when sign-in from
+/// there is allowed: computers at home then connect to it directly, instead
+/// of through the router (which many routers can't loop back, and which would
+/// make every one of them look like the router).
+pub fn lan_location(cfg: &Config) -> Option<LanLocation> {
+    if !cfg.allow_private_sources {
+        return None;
+    }
+    Some(LanLocation { ip: crate::router::lan_ip()?, port: crate::router::listen_port(cfg), rdp_port: cfg.rdp_port })
+}
+
 /// Seals the current location and pushes it to the gist (blocking).
-pub fn publish(cfg: &Config, identity: &Identity, ip: IpAddr) -> Result<(), String> {
+pub fn publish(cfg: &Config, identity: &Identity, ip: IpAddr, lan: Option<LanLocation>) -> Result<(), String> {
     let b = cfg.beacon.as_ref().ok_or("no beacon configured")?;
-    let loc = Location { ip, port: cfg.public_port, rdp_port: cfg.rdp_public_port, ts: now() };
+    let loc = Location { ip, port: cfg.public_port, rdp_port: cfg.rdp_public_port, ts: now(), lan };
     let text = beacon::seal(&loc, &identity.server, identity.beacon_key.as_ref())?;
     beacon::publish_gist(&b.gist_id, &b.token, &text)
 }
@@ -83,6 +94,7 @@ pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
         return;
     }
     let mut last: Option<(IpAddr, Instant)> = None;
+    let mut last_lan: Option<LanLocation> = None;
     let mut last_error: Option<String> = None;
     let mut tick = tokio::time::interval(CHECK_EVERY);
     loop {
@@ -102,17 +114,23 @@ pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
             }
             Err(_) => return,
         };
-        let stale = last.is_none_or(|(old, at)| old != ip || at.elapsed() > REFRESH_EVERY);
+        let lan = lan_location(&app.cfg);
+        let stale = lan != last_lan || last.is_none_or(|(old, at)| old != ip || at.elapsed() > REFRESH_EVERY);
         if !stale {
             continue;
         }
         let app2 = app.clone();
-        match tokio::task::spawn_blocking(move || publish(&app2.cfg, &app2.identity, ip)).await {
+        let lan2 = lan.clone();
+        match tokio::task::spawn_blocking(move || publish(&app2.cfg, &app2.identity, ip, lan2)).await {
             Ok(Ok(())) => {
-                if last.is_none_or(|(old, _)| old != ip) {
-                    crate::logln!("BEACON published ip={ip}");
+                if lan != last_lan || last.is_none_or(|(old, _)| old != ip) {
+                    match &lan {
+                        Some(l) => crate::logln!("BEACON published ip={ip} lan={}", l.ip),
+                        None => crate::logln!("BEACON published ip={ip}"),
+                    }
                 }
                 last = Some((ip, Instant::now()));
+                last_lan = lan;
                 last_error = None;
                 write_status(&app, &Status { ip: Some(ip.to_string()), published: Some(now()), error: None });
             }
