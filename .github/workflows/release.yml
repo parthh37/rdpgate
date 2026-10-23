@@ -1,0 +1,84 @@
+name: Release
+
+# Push a tag like v0.1.0 to build the Windows and macOS packages natively and
+# publish them, with SHA256SUMS.txt, as a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+      - run: cargo build --release -p rdpgate-server -p rdpgate-client -p rdpgate-app
+      - name: Package
+        shell: pwsh
+        run: |
+          $v = "$env:GITHUB_REF_NAME".TrimStart('v')
+          $wc = "RDP-Gate-$v-Windows-Client"
+          $ws = "RDP-Gate-$v-Windows-Server"
+          New-Item -ItemType Directory $wc, $ws | Out-Null
+          Copy-Item target/release/rdpgate-app.exe "$wc/RDP Gate.exe"
+          Copy-Item target/release/rdpgate.exe $wc
+          Copy-Item target/release/rdpgate-server.exe $ws
+          Copy-Item packaging/windows/install-server.ps1, packaging/windows/uninstall-server.ps1, packaging/windows/README.txt $ws
+          Compress-Archive $wc "$wc.zip"
+          Compress-Archive $ws "$ws.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: '*.zip'
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build (universal)
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --target "$t" -p rdpgate-app -p rdpgate-client
+          done
+      - name: Package
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          d="RDP-Gate-$v-macOS"
+          app="$d/RDP Gate.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create -output "$app/Contents/MacOS/rdpgate-app" target/aarch64-apple-darwin/release/rdpgate-app target/x86_64-apple-darwin/release/rdpgate-app
+          lipo -create -output "$d/rdpgate" target/aarch64-apple-darwin/release/rdpgate target/x86_64-apple-darwin/release/rdpgate
+          sed "s/__VERSION__/$v/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          cp packaging/macos/AppIcon.icns "$app/Contents/Resources/"
+          codesign --force --deep --sign - "$app"
+          codesign --force --sign - "$d/rdpgate"
+          ditto -c -k --keepParent "$d" "$d.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: '*.zip'
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: sha256sum *.zip > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.zip
+            SHA256SUMS.txt
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          generate_release_notes: true

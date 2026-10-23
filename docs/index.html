@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RDP Gate · Remote Desktop that stays closed until it's you</title>
+<meta name="description" content="RDP Gate keeps Windows Remote Desktop closed to the internet. Sign in with a device key and a 6-digit code, or a passkey, and the firewall opens for your IP only, then closes again.">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<header class="bar">
+  <a class="brand" href="./"><img src="assets/logo.png" alt="" width="32" height="32"><span>RDP Gate</span></a>
+  <nav aria-label="Primary">
+    <a href="#how">How it works</a>
+    <a href="#setup">Setup</a>
+    <a href="#limits">Limitations</a>
+    <a href="https://github.com/parthh37/rdpgate">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="hero-copy">
+    <p class="kicker">Open source · Windows server · Mac &amp; Windows clients · no static IP</p>
+    <h1>Port 3389 stays closed.<br><span>Until it's you.</span></h1>
+    <p class="lede">RDP Gate keeps Remote Desktop invisible to the internet. Sign in from your own computer with its device key and a 6-digit code, and Windows Firewall opens for your IP address only. When you disconnect, it closes again. No static IP, no DNS name, no VPN.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/parthh37/rdpgate/releases/latest">Download</a>
+      <a class="btn" href="#setup">Set it up in 15 minutes</a>
+    </div>
+  </div>
+
+  <figure class="console" aria-label="Example of the RDP Gate server log">
+    <figcaption><span class="dot"></span>C:\ProgramData\RDPGate\logs\rdpgate.log</figcaption>
+    <ol class="log">
+      <li><time>07:41:02</time> <b class="deny">DENY</b> src=45.155.205.11 device="" reason="bad frame" ban=0s</li>
+      <li><time>07:41:09</time> <b class="deny">DENY</b> src=185.224.128.40 device="admin" reason="unknown device" ban=0s</li>
+      <li><time>07:41:31</time> <b class="deny">DENY</b> src=185.224.128.40 device="admin" reason="unknown device" ban=900s</li>
+      <li><time>07:42:15</time> <b class="ok">GRANT open</b> ip=203.0.113.7 who="device macbook" until=07:52</li>
+      <li class="quiet"><time>07:42:25</time> RDP connected ip=203.0.113.7</li>
+      <li><time>09:18:52</time> <b class="ok">GRANT closed</b> ip=203.0.113.7 reason=expired</li>
+    </ol>
+    <p class="console-note">Scanners get refused, then ignored. The only allow rule ever created names one IP address.</p>
+  </figure>
+</section>
+
+<section id="how" class="band">
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li>
+      <h3>Remote Desktop starts closed</h3>
+      <p>The installer sets Windows Firewall to block everything inbound and disables the built-in Remote Desktop rules. Only the RDP Gate sign-in service listens, on HTTPS.</p>
+    </li>
+    <li>
+      <h3>The app finds your PC and checks it's really yours</h3>
+      <p>It reads your PC's current address from an encrypted, signed beacon, connects directly, and makes the server prove its identity key before saying a word. Then it signs in with this computer's private key and your 6-digit code.</p>
+    </li>
+    <li>
+      <h3>The firewall opens for your IP only</h3>
+      <p>RDP Gate adds one allow rule for your current public address. The app checks the Remote Desktop certificate before opening it. Access stays while you're connected and closes a few minutes after you leave, or after 12 hours at most.</p>
+    </li>
+  </ol>
+</section>
+
+<section class="two-ways">
+  <h2>Two ways to sign in</h2>
+  <div class="ways">
+    <article>
+      <h3>From your Mac or PC</h3>
+      <p class="who">RDP Gate app or the <code>rdpgate</code> command</p>
+      <ul>
+        <li>A private key created on this computer, encrypted with your passphrase (Argon2id + XChaCha20-Poly1305)</li>
+        <li>A 6-digit code from any authenticator app, each code usable once</li>
+        <li>Remote Desktop opens automatically when you're in</li>
+      </ul>
+    </article>
+    <article>
+      <h3>From a browser (optional)</h3>
+      <p class="who">With your own domain name</p>
+      <ul>
+        <li>A passkey: Touch ID, Face ID, Windows Hello or a hardware key</li>
+        <li>The page shows which IP was opened and the certificate to expect</li>
+        <li>Browsers bind passkeys to a name, so this one needs a domain</li>
+      </ul>
+    </article>
+  </div>
+</section>
+
+<section id="layers" class="band">
+  <h2>What stands between the internet and your desktop</h2>
+  <p class="section-lede">From the outside in. An attacker has to get through every one.</p>
+  <dl class="layers">
+    <div><dt>Hidden</dt><dd>Port 3389 is closed. The sign-in port only answers the RDP Gate protocol, limits each source, and goes silent for sources that keep failing.</dd></div>
+    <div><dt>Server proves itself</dt><dd>Your app pinned the server's identity key. A fake server, a hijacked address or a forged beacon is caught before the app sends anything.</dd></div>
+    <div><dt>Enrolled device</dt><dd>Every request is signed with an Ed25519 key you enrolled on the server, bound to that TLS 1.3 connection, so it can't be replayed or relayed.</dd></div>
+    <div><dt>Second factor</dt><dd>A one-time 6-digit code (10 wrong ones lock that computer), or a passkey that requires your fingerprint, face or PIN.</dd></div>
+    <div><dt>One public address, for a while</dt><dd>The allow rule names your public IP alone and expires on its own. Leftover rules are swept at every start.</dd></div>
+    <div><dt>Windows itself</dt><dd>Network Level Authentication, TLS, your Windows password and an account lockout policy, all switched on by the installer.</dd></div>
+  </dl>
+</section>
+
+<section id="download" class="downloads">
+  <h2>Download</h2>
+  <div class="cards">
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest">
+      <span class="os">Windows</span>
+      <strong>Server</strong>
+      <span>The agent and installer for the PC you connect <em>to</em>. Windows 10/11 Pro, Enterprise or Server.</span>
+    </a>
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest">
+      <span class="os">macOS 11+</span>
+      <strong>Mac client</strong>
+      <span>The RDP Gate app and command-line tool. Uses Microsoft's free Windows App for the session.</span>
+    </a>
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest">
+      <span class="os">Windows</span>
+      <strong>PC client</strong>
+      <span>The RDP Gate app and command-line tool. Uses the built-in Remote Desktop Connection.</span>
+    </a>
+  </div>
+  <p class="fine">Builds are not code-signed yet. On a Mac, right-click the app and choose Open the first time. Check downloads against <code>SHA256SUMS.txt</code> on the release page.</p>
+</section>
+
+<section id="setup" class="band">
+  <h2>Setup</h2>
+  <ol class="setup">
+    <li>
+      <h3>Install the server</h3>
+      <p>On the Windows PC, unzip the server package and run PowerShell as Administrator. It asks for a GitHub token limited to Gists, which it uses to publish the encrypted beacon.</p>
+      <pre><code>Set-ExecutionPolicy -Scope Process Bypass
+.\install-server.ps1</code></pre>
+    </li>
+    <li>
+      <h3>Forward two ports on your router</h3>
+      <p>TCP 443 for sign-in and TCP 3389 for Remote Desktop, both to that PC. Port 3389 stays shut until someone signs in.</p>
+    </li>
+    <li>
+      <h3>Set up 6-digit codes</h3>
+      <pre><code>rdpgate-server totp-setup       # scan the QR code with your phone</code></pre>
+    </li>
+    <li>
+      <h3>Enroll each computer</h3>
+      <p>Open the RDP Gate app, name the computer and choose a passphrase, then run the command it shows on the server. Paste the server card it prints back into the app.</p>
+      <pre><code>rdpgate-server device-add macbook rdpgate-ed25519:…
+# → rdpgate-card:…  (paste into the app)</code></pre>
+    </li>
+    <li>
+      <h3>Connect</h3>
+      <p>Enter your passphrase and code, choose <em>Sign in and open Remote Desktop</em>, and log in to Windows as usual.</p>
+    </li>
+  </ol>
+</section>
+
+<section id="limits" class="limits">
+  <h2>Honest limitations</h2>
+  <ul>
+    <li><strong>Shared IP addresses.</strong> While access is open, anyone behind the same public IP (hotel Wi-Fi, office, mobile carrier NAT) can reach the Windows login screen. They still need your Windows password. Close access when you're done; tunnel mode on the roadmap removes this.</li>
+    <li><strong>Not independently audited.</strong> RDP Gate is new. It builds on audited parts (rustls, RustCrypto, webauthn-rs) and passed an internal adversarial review, but has had no third-party audit.</li>
+    <li><strong>Nothing is unbreakable.</strong> A compromised Windows PC or a stolen, unlocked laptop with your passphrase and phone defeats any gate. RDP Gate removes the internet-facing attack surface; it doesn't replace updates and good passwords.</li>
+    <li><strong>Windows Home</strong> can't accept Remote Desktop connections at all.</li>
+  </ul>
+</section>
+
+<section id="roadmap" class="band roadmap">
+  <h2>Roadmap</h2>
+  <div class="columns">
+    <div>
+      <h3>Next</h3>
+      <ul>
+        <li>Tunnel mode: Remote Desktop through the authenticated connection, with no port 3389 forwarding and no shared-IP exposure</li>
+        <li>Code-signed, notarized builds and a Windows installer</li>
+        <li>Separate the internet-facing process from the part that edits the firewall</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Later</h3>
+      <ul>
+        <li>Device keys held in the Secure Enclave or TPM</li>
+        <li>Sign-in notifications and approve-from-phone</li>
+        <li>Optional "passkey and code" mode, LAN allow-list, IPv6 by default</li>
+        <li>Beacon key rotation and more beacon stores (your own HTTPS, S3/R2)</li>
+        <li>Linux and macOS servers</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="faq" class="faq">
+  <h2>Questions</h2>
+  <details>
+    <summary>Do I need a static IP address or a domain?</summary>
+    <p>No. Your PC publishes its current address as an encrypted, signed beacon in a secret GitHub gist. GitHub only sees ciphertext, and nobody can forge a beacon without your server's key. A domain is only needed for the optional browser sign-in.</p>
+  </details>
+  <details>
+    <summary>Why not just a VPN?</summary>
+    <p>A VPN is a fine answer. RDP Gate is for people who want one small thing on the server, no always-on tunnel on every laptop, and a browser fallback with a passkey.</p>
+  </details>
+  <details>
+    <summary>What happens if I lose my laptop?</summary>
+    <p>Its key is useless without your passphrase and your second factor. Remove it anyway: <code>rdpgate-server device-remove macbook</code> takes effect immediately.</p>
+  </details>
+  <details>
+    <summary>Does anything phone home?</summary>
+    <p>No. The server asks two public "what is my IP" services and updates your own gist. With a domain, it also talks to Let's Encrypt. There is no telemetry and no account with us.</p>
+  </details>
+  <details>
+    <summary>What if someone points my PC's address somewhere else?</summary>
+    <p>The app refuses to talk to any server that can't prove your server's pinned key, and refuses to open Remote Desktop if the RDP certificate doesn't match what your server vouched for. Worst case, you can't connect; you never connect to the wrong machine.</p>
+  </details>
+</section>
+
+</main>
+
+<footer class="foot">
+  <p>RDP Gate is MIT-licensed. <a href="https://github.com/parthh37/rdpgate">Source</a> · <a href="https://github.com/parthh37/rdpgate/blob/main/SECURITY.md">Report a vulnerability</a></p>
+  <p class="fine">This page loads nothing from anyone else: no fonts, trackers or scripts.</p>
+</footer>
+
+</body>
+</html>

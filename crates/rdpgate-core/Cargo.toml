@@ -1,0 +1,31 @@
+[package]
+name = "rdpgate-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2 = "0.6.0"
+base64 = "0.23.1"
+chacha20poly1305 = "0.11.0"
+data-encoding = "2.11.1"
+ed25519-dalek = { version = "3.0.0", features = ["serde", "zeroize"] }
+getrandom = "0.4.3"
+hex = "0.4.3"
+hmac = "0.13.0"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pki-types = "1.15.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+subtle = "2.6.1"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["io-util", "net", "time"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "logging", "tls12"] }
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+zeroize = "1.9.1"
+
+[dev-dependencies]
+rcgen = "0.14.10"
+tokio = { version = "1.54.1", features = ["rt", "macros", "io-util", "net", "time"] }

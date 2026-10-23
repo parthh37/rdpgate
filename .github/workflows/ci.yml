@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        shell: bash
+        # The desktop app needs a windowing system; Linux CI checks everything else.
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then EXCLUDE="--exclude rdpgate-app"; fi
+          cargo test --workspace $EXCLUDE
+      - name: Clippy
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then EXCLUDE="--exclude rdpgate-app"; fi
+          cargo clippy --workspace $EXCLUDE --all-targets -- -D warnings
+      - name: Parse PowerShell installer scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($f in Get-ChildItem packaging/windows/*.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
+            foreach ($e in $errors) { Write-Host "::error file=$($f.Name)::$($e.Message)"; $failed = $true }
+          }
+          if ($failed) { exit 1 }

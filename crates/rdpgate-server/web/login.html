@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>RDP Gate · Sign in</title>
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body data-page="login">
+<main class="card">
+  <p class="eyebrow">RDP Gate</p>
+  <h1>Sign in to open Remote Desktop</h1>
+  <p>Confirm with your passkey (Touch ID, Face ID, Windows Hello or a security key). The server then lets this network's IP address reach Remote Desktop for a short time.</p>
+  <button id="go" type="button">Sign in with passkey</button>
+
+  <section id="granted" hidden>
+    <dl class="facts">
+      <dt>Opened for</dt><dd id="ip" class="code"></dd>
+      <dt>Connect to</dt><dd id="target" class="code"></dd>
+      <dt>Start within</dt><dd id="until"></dd>
+    </dl>
+    <p class="note" id="certnote" hidden>When Remote Desktop shows the computer's certificate, it must match:<br>
+      SHA-256 <code id="sha256"></code><br>SHA-1 (thumbprint) <code id="sha1"></code><br>
+      If it doesn't, someone is intercepting the connection: don't log in.</p>
+    <p class="note">Open your Remote Desktop app now. Access stays open while you are connected (up to <span id="max"></span>), then closes by itself.</p>
+    <div class="row">
+      <button id="rdp" type="button" class="secondary">Download .rdp file</button>
+      <button id="close" type="button" class="danger">Close access now</button>
+    </div>
+    <p class="warn">Anyone sharing this network's public IP (same Wi-Fi, office or mobile carrier) can also reach the Remote Desktop login screen until access closes. They still need your Windows password.</p>
+  </section>
+
+  <p id="status" role="status" aria-live="polite"></p>
+</main>
+<script src="static/app.js"></script>
+</body>
+</html>

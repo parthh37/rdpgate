@@ -1,0 +1,29 @@
+[package]
+name = "rdpgate-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RDP Gate desktop client library and command-line tool"
+
+[lib]
+name = "rdpgate_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rdpgate"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+dirs = "7.0.0"
+ed25519-dalek = "3.0.0"
+rdpgate-core = { version = "0.1.0", path = "../rdpgate-core" }
+rpassword = "7.5.4"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "logging", "std"] }
+rustls-pki-types = "1.15.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "time", "macros"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "logging"] }
+webpki-roots = "1.0.10"
+zeroize = "1.9.1"

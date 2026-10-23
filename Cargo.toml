@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/rdpgate-core", "crates/rdpgate-server", "crates/rdpgate-client", "crates/rdpgate-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

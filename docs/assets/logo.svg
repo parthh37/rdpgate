@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f3f9e"/>
+      <stop offset="1" stop-color="#0b1a45"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8fb4ff"/>
+      <stop offset="1" stop-color="#4f7cf0"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+  <!-- screen -->
+  <rect x="232" y="250" width="560" height="380" rx="44" fill="none" stroke="#ffffff" stroke-opacity="0.9" stroke-width="40"/>
+  <rect x="452" y="630" width="120" height="70" fill="#ffffff" fill-opacity="0.9"/>
+  <rect x="352" y="700" width="320" height="40" rx="20" fill="#ffffff" fill-opacity="0.9"/>
+  <!-- shield over the screen -->
+  <path d="M512 300 L652 352 V468 C652 556 594 612 512 646 C430 612 372 556 372 468 V352 Z" fill="url(#shield)" stroke="#0b1a45" stroke-width="22" stroke-linejoin="round"/>
+  <!-- keyhole -->
+  <circle cx="512" cy="440" r="40" fill="#0b1a45"/>
+  <path d="M492 462 H532 L546 560 H478 Z" fill="#0b1a45"/>
+</svg>
