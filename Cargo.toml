@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/rdpgate-core", "crates/rdpgate-server", "crates/rdpgate-client", "crates/rdpgate-app", "crates/rdpgate-ui", "crates/rdpgate-server-app", "crates/rdpgate-release"]
 
 [workspace.package]
-version = "0.6.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 
