@@ -22,6 +22,9 @@ pub trait Firewall: Send + Sync + 'static {
     fn list_allowed(&self) -> Result<HashSet<IpAddr>, String>;
     /// Remote addresses with an established TCP connection to the RDP port.
     fn connected_peers(&self) -> Result<HashSet<IpAddr>, String>;
+    /// Makes sure the sign-in ports are open for this program (and only this
+    /// program), re-creating the rule if it is missing or out of date.
+    fn ensure_portal(&self, ports: &[u16]) -> Result<(), String>;
 }
 
 #[cfg_attr(not(windows), allow(unused_variables))]
@@ -72,6 +75,10 @@ impl Firewall for DryRun {
     }
     fn connected_peers(&self) -> Result<HashSet<IpAddr>, String> {
         Ok(self.peers.lock().unwrap().clone())
+    }
+    fn ensure_portal(&self, ports: &[u16]) -> Result<(), String> {
+        crate::logln!("FIREWALL (dry-run) would allow TCP {ports:?} for this program");
+        Ok(())
     }
 }
 
@@ -245,6 +252,20 @@ Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Allow -E
 
         fn connected_peers(&self) -> Result<HashSet<IpAddr>, String> {
             tcp_table::established_peers(self.port)
+        }
+
+        fn ensure_portal(&self, ports: &[u16]) -> Result<(), String> {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            // Single-quoted PowerShell string: double any single quote.
+            let exe = exe.display().to_string().replace('\'', "''");
+            let ports: Vec<String> = ports.iter().map(u16::to_string).collect();
+            powershell(&format!(
+                "Get-NetFirewallRule -DisplayName 'RDPGate-Portal*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; \
+                 New-NetFirewallRule -Name 'RDPGate-Portal' -DisplayName 'RDPGate-Portal (sign-in)' -Direction Inbound -Action Allow \
+                 -Protocol TCP -LocalPort {} -Program '{exe}' -Profile Any | Out-Null",
+                ports.join(",")
+            ))
+            .map(|_| ())
         }
     }
 

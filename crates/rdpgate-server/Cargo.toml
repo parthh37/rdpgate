@@ -15,9 +15,10 @@ hex = "0.4.3"
 http-body-util = "0.1.5"
 hyper = { version = "1.12.0", features = ["http1", "server"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
+igd-next = { version = "0.18.0", default-features = false, features = ["io_sync"] }
 qrcode = "0.14.1"
 rcgen = "0.14.10"
-rdpgate-core = { version = "0.1.0", path = "../rdpgate-core" }
+rdpgate-core = { path = "../rdpgate-core" }
 rpassword = "7.5.4"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-acme = { version = "0.15.4", default-features = false, features = ["ring", "tls12", "tokio", "webpki-roots"] }

@@ -16,6 +16,7 @@
   <nav aria-label="Primary">
     <a href="#how">How it works</a>
     <a href="#setup">Setup</a>
+    <a href="#download">Download</a>
     <a href="#limits">Limitations</a>
     <a href="https://github.com/parthh37/rdpgate">GitHub</a>
   </nav>
@@ -29,7 +30,7 @@
     <h1>Port 3389 stays closed.<br><span>Until it's you.</span></h1>
     <p class="lede">RDP Gate keeps Remote Desktop invisible to the internet. Sign in from your own computer with its device key and a 6-digit code, and Windows Firewall opens for your IP address only. When you disconnect, it closes again. No static IP, no DNS name, no VPN.</p>
     <div class="actions">
-      <a class="btn primary" href="https://github.com/parthh37/rdpgate/releases/latest">Download</a>
+      <a class="btn primary" href="#download">Download</a>
       <a class="btn" href="#setup">Set it up in 15 minutes</a>
     </div>
   </div>
@@ -106,53 +107,68 @@
 <section id="download" class="downloads">
   <h2>Download</h2>
   <div class="cards">
-    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest">
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases">
       <span class="os">Windows</span>
       <strong>Server</strong>
-      <span>The agent and installer for the PC you connect <em>to</em>. Windows 10/11 Pro, Enterprise or Server.</span>
+      <span><code>RDP-Gate-Server-Setup-….exe</code>: Setup wizard for the PC you connect <em>to</em>. Windows 10/11 Pro, Enterprise or Server.</span>
     </a>
-    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest">
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases">
       <span class="os">macOS 11+</span>
-      <strong>Mac client</strong>
-      <span>The RDP Gate app and command-line tool. Uses Microsoft's free Windows App for the session.</span>
+      <strong>Mac app</strong>
+      <span><code>RDP-Gate-…-macOS.dmg</code>: drag RDP Gate to Applications. Intel and Apple silicon.</span>
     </a>
-    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest">
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases">
       <span class="os">Windows</span>
-      <strong>PC client</strong>
-      <span>The RDP Gate app and command-line tool. Uses the built-in Remote Desktop Connection.</span>
+      <strong>PC app</strong>
+      <span><code>RDP-Gate-Setup-….exe</code>: installs just for you, with no administrator rights needed. Uses the built-in Remote Desktop Connection.</span>
     </a>
   </div>
-  <p class="fine">Builds are not code-signed yet. On a Mac, right-click the app and choose Open the first time. Check downloads against <code>SHA256SUMS.txt</code> on the release page.</p>
+  <p class="fine">Builds aren't Apple- or Microsoft-signed yet. On a Mac, right-click the app and choose Open the first time. On Windows, at the SmartScreen prompt choose More info, then Run anyway. Check downloads against <code>SHA256SUMS.txt</code> on the release page. Portable zips are there too.</p>
+</section>
+
+<section id="updates" class="band">
+  <h2>Updates install themselves, and only if they're genuine</h2>
+  <p class="section-lede">Each release carries a manifest of every file's checksum, signed with the RDP Gate release key. Every program has the matching public key built in.</p>
+  <dl class="layers">
+    <div><dt>Server</dt><dd>Checks once a day and installs only while nobody has access open, then restarts itself. Run <code>rdpgate-server update</code> to update now.</dd></div>
+    <div><dt>Desktop app</dt><dd>Checks at launch, installs, and offers <em>Restart now</em>. Turn it off under <em>This computer and server</em>.</dd></div>
+    <div><dt>Command line</dt><dd>Updates after a successful <code>rdpgate connect</code>, once a day. Run <code>rdpgate update</code> to update now.</dd></div>
+    <div><dt>Refused</dt><dd>Anything unsigned, a file that doesn't match its signed checksum, and anything older than what's installed, whoever serves it.</dd></div>
+  </dl>
 </section>
 
 <section id="setup" class="band">
   <h2>Setup</h2>
+  <p class="section-lede">About 15 minutes. You need a Windows 10/11 Pro, Enterprise or Education PC (or Windows Server), access to your router, and a GitHub account.</p>
   <ol class="setup">
     <li>
-      <h3>Install the server</h3>
-      <p>On the Windows PC, unzip the server package and run PowerShell as Administrator. It asks for a GitHub token limited to Gists, which it uses to publish the encrypted beacon.</p>
-      <pre><code>Set-ExecutionPolicy -Scope Process Bypass
-.\install-server.ps1</code></pre>
+      <h3>Make a GitHub token for the beacon</h3>
+      <p>Use a free GitHub account just for RDP Gate: a Gists token can read and change every gist on its account. Create a <a href="https://github.com/settings/personal-access-tokens/new">fine-grained token</a> with only <em>Account permissions → Gists: Read and write</em>. Your PC uses it to publish its encrypted, signed address.</p>
     </li>
     <li>
-      <h3>Forward two ports on your router</h3>
-      <p>TCP 443 for sign-in and TCP 3389 for Remote Desktop, both to that PC. Port 3389 stays shut until someone signs in.</p>
+      <h3>Run the server Setup</h3>
+      <p>On the Windows PC, run <code>RDP-Gate-Server-Setup.exe</code> and click through. A domain name is optional (only for browser sign-in). Setup hardens Remote Desktop, configures Windows Firewall and your router, then asks for the token. At the end, leave <em>Set up 6-digit codes now</em> ticked and scan the QR code with your authenticator app.</p>
     </li>
     <li>
-      <h3>Set up 6-digit codes</h3>
-      <pre><code>rdpgate-server totp-setup       # scan the QR code with your phone</code></pre>
+      <h3>Your firewall and router: usually nothing to do</h3>
+      <p>Setup configures Windows Firewall itself and forwards TCP 443 and 3389 on your router automatically (UPnP). It tells you if the router refuses, or if your ISP uses carrier-grade NAT. If you have to forward by hand, send both ports to this PC. Either way, give the PC a reserved address in the router. Port 3389 stays shut until someone signs in. The apps on your Mac or PC need no open ports.</p>
     </li>
     <li>
-      <h3>Enroll each computer</h3>
-      <p>Open the RDP Gate app, name the computer and choose a passphrase, then run the command it shows on the server. Paste the server card it prints back into the app.</p>
+      <h3>Install the app on each computer</h3>
+      <p>Windows: run <code>RDP-Gate-Setup.exe</code>. It installs just for you, with no administrator rights needed. Mac: open the <code>.dmg</code> and drag RDP Gate to Applications, then right-click it and choose <em>Open</em> the first time. On a Mac you also need Microsoft's free <a href="https://apps.apple.com/app/windows-app/id1295203466">Windows App</a>.</p>
+    </li>
+    <li>
+      <h3>Enroll the computer</h3>
+      <p>In the app, name the computer and choose a passphrase. It shows one command; run it on the server in PowerShell as Administrator. Check that the fingerprints match, then paste the <em>server card</em> the server prints back into the app.</p>
       <pre><code>rdpgate-server device-add macbook rdpgate-ed25519:…
-# → rdpgate-card:…  (paste into the app)</code></pre>
+# → rdpgate-card:…   paste this into the app</code></pre>
     </li>
     <li>
       <h3>Connect</h3>
-      <p>Enter your passphrase and code, choose <em>Sign in and open Remote Desktop</em>, and log in to Windows as usual.</p>
+      <p>Enter your passphrase and 6-digit code and choose <em>Sign in and open Remote Desktop</em>. The app finds your PC, checks it's really yours, checks the Remote Desktop certificate, and opens the session. Then log in to Windows as usual.</p>
     </li>
   </ol>
+  <p class="fine">Want browser sign-in with a passkey as well? Give Setup a domain you own that points at your home IP, then run <code>rdpgate-server passkey-enroll</code> and open the link on your phone or Mac.</p>
 </section>
 
 <section id="limits" class="limits">
@@ -172,7 +188,7 @@
       <h3>Next</h3>
       <ul>
         <li>Tunnel mode: Remote Desktop through the authenticated connection, with no port 3389 forwarding and no shared-IP exposure</li>
-        <li>Code-signed, notarized builds and a Windows installer</li>
+        <li>Apple- and Microsoft-signed builds</li>
         <li>Separate the internet-facing process from the part that edits the firewall</li>
       </ul>
     </div>
@@ -193,7 +209,7 @@
   <h2>Questions</h2>
   <details>
     <summary>Do I need a static IP address or a domain?</summary>
-    <p>No. Your PC publishes its current address as an encrypted, signed beacon in a secret GitHub gist. GitHub only sees ciphertext, and nobody can forge a beacon without your server's key. A domain is only needed for the optional browser sign-in.</p>
+    <p>No. Your PC publishes its current address as an encrypted, signed beacon in a secret GitHub gist. The gist only ever holds ciphertext (GitHub, like any website, does see the IP address each update comes from), and nobody can forge a beacon without your server's key. A domain is only needed for the optional browser sign-in.</p>
   </details>
   <details>
     <summary>Why not just a VPN?</summary>
@@ -206,6 +222,10 @@
   <details>
     <summary>Does anything phone home?</summary>
     <p>No. The server asks two public "what is my IP" services and updates your own gist. With a domain, it also talks to Let's Encrypt. There is no telemetry and no account with us.</p>
+  </details>
+  <details>
+    <summary>Could a fake update take over my computers?</summary>
+    <p>Not without the release key. The programs refuse updates without a valid signature and refuse to go back to older versions. A compromised download, a network attacker, or someone who can only edit the release page can't get code onto your machines.</p>
   </details>
   <details>
     <summary>What if someone points my PC's address somewhere else?</summary>

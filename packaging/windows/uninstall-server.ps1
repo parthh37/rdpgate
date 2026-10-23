@@ -16,7 +16,9 @@ param(
     # Also delete C:\ProgramData\RDPGate (devices, passkeys, TOTP secret, logs)
     [switch] $RemoveData,
     # Re-enable the built-in Windows "Remote Desktop" firewall rules
-    [switch] $RestoreRdpRules
+    [switch] $RestoreRdpRules,
+    # Run by the Setup uninstaller, which removes the program files itself
+    [switch] $FromInstaller
 )
 
 #Requires -RunAsAdministrator
@@ -44,7 +46,7 @@ $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 $newPath = (($machinePath -split ';') | Where-Object { $_ -and $_ -ne $InstallDir }) -join ';'
 [Environment]::SetEnvironmentVariable('Path', $newPath, 'Machine')
 
-if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue }
+if (-not $FromInstaller -and (Test-Path $InstallDir)) { Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue }
 if ($RemoveData -and (Test-Path $DataDir)) {
     Remove-Item $DataDir -Recurse -Force
     Write-Host "Deleted $DataDir"

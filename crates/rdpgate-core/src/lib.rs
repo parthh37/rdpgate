@@ -5,6 +5,7 @@ pub mod beacon;
 pub mod keystore;
 pub mod rdp;
 pub mod totp;
+pub mod update;
 pub mod wire;
 
 use base64::Engine as _;

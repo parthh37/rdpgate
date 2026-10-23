@@ -50,6 +50,17 @@ enum Cmd {
     Lock,
     /// Show this computer's enrollment command and the pinned server
     Show,
+    /// Check for and install a signed update of this tool
+    Update {
+        /// Only check; don't install
+        #[arg(long)]
+        check: bool,
+    },
+    /// Turn automatic updates on or off
+    AutoUpdate {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
 }
 
 fn main() {
@@ -89,6 +100,7 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 fn run(cli: Cli) -> client::Result<()> {
+    rdpgate_core::update::cleanup_previous();
     let dir = cli.dir.unwrap_or_else(client::default_dir);
     let mut input = Input { stdin_pass: cli.passphrase_stdin, lines: std::io::stdin().lock() };
     match cli.cmd {
@@ -140,6 +152,34 @@ fn run(cli: Cli) -> client::Result<()> {
             } else {
                 client::launch_rdp(&file)?;
             }
+            // Once a day, quietly take a signed update (if enabled).
+            if client::update_due(&cfg) {
+                client::mark_update_checked(&dir);
+                if let Ok(Some(av)) = client::check_update()
+                    && client::install_update(&av, rdpgate_core::update::Component::Cli).is_ok()
+                {
+                    println!("rdpgate updated to {} (takes effect next time).", av.version);
+                }
+            }
+            Ok(())
+        }
+        Cmd::Update { check } => {
+            println!("Installed: {}", client::VERSION);
+            client::mark_update_checked(&dir);
+            let Some(av) = client::check_update()? else {
+                println!("Up to date.");
+                return Ok(());
+            };
+            println!("Available: {} (signature verified)  {}", av.version, av.url);
+            if !check {
+                client::install_update(&av, rdpgate_core::update::Component::Cli)?;
+                println!("Updated rdpgate to {}.", av.version);
+            }
+            Ok(())
+        }
+        Cmd::AutoUpdate { state } => {
+            client::set_auto_update(&dir, state == "on")?;
+            println!("Automatic updates {state}.");
             Ok(())
         }
         Cmd::Lock => {
@@ -151,8 +191,9 @@ fn run(cli: Cli) -> client::Result<()> {
             Ok(())
         }
         Cmd::Show => {
-            let id = client::identity(&dir)?;
             let cfg = client::load_config(&dir)?;
+            let id = client::identity(&dir)?;
+            println!("Version:     {}{}", client::VERSION, if cfg.auto_update { " (auto-update on)" } else { " (auto-update off)" });
             println!("Device:      {}\nFingerprint: {}\n", id.device, id.fingerprint);
             match client::card(&cfg) {
                 Ok(card) => {

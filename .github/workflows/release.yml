@@ -1,47 +1,141 @@
 name: Release
 
-# Push a tag like v0.1.0 to build the Windows and macOS packages natively and
-# publish them, with SHA256SUMS.txt, as a GitHub release.
+# Two ways to release:
+# - Actions > Release > Run workflow: pick patch/minor/major. The version is
+#   bumped, everything is built and tested on Windows and macOS, and only if
+#   all of that passes is the version committed, tagged and published.
+# - Push a tag vX.Y.Z that matches the version in Cargo.toml.
+#
+# Every release carries rdpgate-update.json, signed with the release key in
+# the RDPGATE_UPDATE_KEY secret. The programs' auto-updater refuses anything
+# without a valid signature.
 on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      prerelease:
+        description: Mark as pre-release
+        type: boolean
+        default: true
   push:
     tags: ['v*']
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  windows:
-    runs-on: windows-latest
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      sha: ${{ steps.v.outputs.sha }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BUMP: ${{ inputs.bump }}
+          PRE: ${{ inputs.prerelease }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          current=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            next=$(scripts/bump-version.sh --print "$BUMP")
+            pre="$PRE"
+            if git ls-remote --exit-code --tags origin "refs/tags/v$next" >/dev/null; then
+              echo "::error::v$next already exists"; exit 1
+            fi
+          else
+            next="${REF_NAME#v}"
+            if [ "$next" != "$current" ]; then
+              echo "::error::tag $REF_NAME doesn't match Cargo.toml version $current"; exit 1
+            fi
+            case "$next" in 0.*) pre=true ;; *) pre=false ;; esac
+          fi
+          echo "Releasing v$next (pre-release: $pre) from $(git rev-parse --short HEAD)"
+          {
+            echo "version=$next"
+            echo "tag=v$next"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "prerelease=$pre"
+          } >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
+      - name: Set version
+        shell: bash
+        run: scripts/bump-version.sh "$VERSION"
       - run: cargo test --workspace
       - run: cargo build --release -p rdpgate-server -p rdpgate-client -p rdpgate-app
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
       - name: Package
         shell: pwsh
         run: |
-          $v = "$env:GITHUB_REF_NAME".TrimStart('v')
-          $wc = "RDP-Gate-$v-Windows-Client"
-          $ws = "RDP-Gate-$v-Windows-Server"
+          $v = $env:VERSION
+          New-Item -ItemType Directory out, stage | Out-Null
+          Copy-Item target/release/rdpgate-server.exe stage/
+          Copy-Item target/release/rdpgate.exe stage/
+          Copy-Item target/release/rdpgate-app.exe "stage/RDP Gate.exe"
+
+          # Installers
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc /Q "/DAppVersion=$v" "/DSourceDir=$pwd\stage" "/DOutputDir=$pwd\out" packaging\windows\server.iss
+          if ($LASTEXITCODE) { exit 1 }
+          & $iscc /Q "/DAppVersion=$v" "/DSourceDir=$pwd\stage" "/DOutputDir=$pwd\out" packaging\windows\client.iss
+          if ($LASTEXITCODE) { exit 1 }
+
+          # Portable zips
+          $wc = "RDP-Gate-$v-Windows-Client"; $ws = "RDP-Gate-$v-Windows-Server"
           New-Item -ItemType Directory $wc, $ws | Out-Null
-          Copy-Item target/release/rdpgate-app.exe "$wc/RDP Gate.exe"
-          Copy-Item target/release/rdpgate.exe $wc
-          Copy-Item target/release/rdpgate-server.exe $ws
-          Copy-Item packaging/windows/install-server.ps1, packaging/windows/uninstall-server.ps1, packaging/windows/README.txt $ws
-          Compress-Archive $wc "$wc.zip"
-          Compress-Archive $ws "$ws.zip"
+          Copy-Item "stage/RDP Gate.exe", stage/rdpgate.exe $wc
+          Copy-Item stage/rdpgate-server.exe, packaging/windows/install-server.ps1, packaging/windows/uninstall-server.ps1, packaging/windows/README.txt $ws
+          Compress-Archive $wc "out/$wc.zip"
+          Compress-Archive $ws "out/$ws.zip"
+
+          # Files the auto-updater downloads (fixed names across versions)
+          Copy-Item stage/rdpgate-server.exe out/rdpgate-server-windows-x64.exe
+          Copy-Item stage/rdpgate.exe out/rdpgate-windows-x64.exe
+          Copy-Item "stage/RDP Gate.exe" out/rdpgate-app-windows-x64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: '*.zip'
+          path: out/*
 
   macos:
+    needs: prepare
     runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Set version
+        run: scripts/bump-version.sh "$VERSION"
+      - run: cargo test --workspace
       - name: Build (universal)
         run: |
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
@@ -49,36 +143,74 @@ jobs:
           done
       - name: Package
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="$VERSION"
           d="RDP-Gate-$v-macOS"
           app="$d/RDP Gate.app"
-          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" out
           lipo -create -output "$app/Contents/MacOS/rdpgate-app" target/aarch64-apple-darwin/release/rdpgate-app target/x86_64-apple-darwin/release/rdpgate-app
           lipo -create -output "$d/rdpgate" target/aarch64-apple-darwin/release/rdpgate target/x86_64-apple-darwin/release/rdpgate
           sed "s/__VERSION__/$v/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
           cp packaging/macos/AppIcon.icns "$app/Contents/Resources/"
           codesign --force --deep --sign - "$app"
           codesign --force --sign - "$d/rdpgate"
-          ditto -c -k --keepParent "$d" "$d.zip"
+
+          # Disk image: drag RDP Gate to Applications
+          mkdir dmg
+          cp -R "$app" dmg/
+          cp "$d/rdpgate" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "RDP Gate $v" -srcfolder dmg -ov -format UDZO "out/RDP-Gate-$v-macOS.dmg"
+
+          # Portable zip
+          ditto -c -k --keepParent "$d" "out/$d.zip"
+
+          # Files the auto-updater downloads (fixed names across versions)
+          cp "$d/rdpgate" out/rdpgate-macos-universal
+          (cd "$d" && ditto -c -k --keepParent "RDP Gate.app" ../out/rdpgate-app-macos-universal.zip)
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: '*.zip'
+          path: out/*
 
   publish:
-    needs: [windows, macos]
+    needs: [prepare, windows, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      EVENT: ${{ github.event_name }}
+      BRANCH: ${{ github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
         with:
+          path: assets
           merge-multiple: true
-      - run: sha256sum *.zip > SHA256SUMS.txt
+      - name: Sign the update manifest
+        env:
+          RDPGATE_UPDATE_KEY: ${{ secrets.RDPGATE_UPDATE_KEY }}
+        run: |
+          scripts/bump-version.sh "$VERSION"
+          cargo run --release --quiet -p rdpgate-release -- manifest --version "$VERSION" --dir assets
+          cargo run --release --quiet -p rdpgate-release -- verify assets/rdpgate-update.json
+          (cd assets && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+      - name: Commit the version and tag it
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "release: $TAG"
+          git tag -a "$TAG" -m "RDP Gate $TAG"
+          git push origin "HEAD:$BRANCH" "$TAG"
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            *.zip
-            SHA256SUMS.txt
-          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: RDP Gate ${{ needs.prepare.outputs.tag }}
+          files: assets/*
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           generate_release_notes: true

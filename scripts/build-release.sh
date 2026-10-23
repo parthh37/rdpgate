@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Builds release packages into dist/ from a Mac:
-#   RDP-Gate-<v>-macOS.zip           RDP Gate.app + rdpgate CLI
+#   RDP-Gate-<v>-macOS.dmg / .zip    RDP Gate.app + rdpgate CLI
 #   RDP-Gate-<v>-Windows-Client.zip  RDP Gate.exe + rdpgate.exe
 #   RDP-Gate-<v>-Windows-Server.zip  rdpgate-server.exe + installer scripts
 # Windows binaries are cross-compiled with cargo-xwin (cargo install cargo-xwin).
-# GitHub Actions (.github/workflows/release.yml) builds the same packages natively.
+# The Setup installers (Inno Setup) and signed update manifest are only made
+# by GitHub Actions (.github/workflows/release.yml), which is how releases ship.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -39,6 +40,10 @@ if [ -f packaging/macos/AppIcon.icns ]; then cp packaging/macos/AppIcon.icns "$A
 codesign --force --deep --sign - "$APP" 2>/dev/null || true
 codesign --force --sign - "$MAC/rdpgate" 2>/dev/null || true
 (cd "$DIST" && ditto -c -k --keepParent "RDP-Gate-$VERSION-macOS" "RDP-Gate-$VERSION-macOS.zip")
+DMG_ROOT=$(mktemp -d)
+cp -R "$APP" "$DMG_ROOT/" && cp "$MAC/rdpgate" "$DMG_ROOT/" && ln -s /Applications "$DMG_ROOT/Applications"
+hdiutil create -quiet -volname "RDP Gate $VERSION" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DIST/RDP-Gate-$VERSION-macOS.dmg"
+rm -rf "$DMG_ROOT"
 
 echo "==> Windows ($WIN)"
 cargo xwin build --release --target "$WIN" -p rdpgate-server -p rdpgate-client -p rdpgate-app
@@ -52,7 +57,7 @@ cp packaging/windows/install-server.ps1 packaging/windows/uninstall-server.ps1 p
 (cd "$DIST" && zip -qr "RDP-Gate-$VERSION-Windows-Client.zip" "RDP-Gate-$VERSION-Windows-Client" \
                 && zip -qr "RDP-Gate-$VERSION-Windows-Server.zip" "RDP-Gate-$VERSION-Windows-Server")
 
-(cd "$DIST" && shasum -a 256 ./*.zip > SHA256SUMS.txt)
+(cd "$DIST" && shasum -a 256 ./*.zip ./*.dmg > SHA256SUMS.txt)
 echo "==> done"
-ls -lh "$DIST"/*.zip
+ls -lh "$DIST"/*.zip "$DIST"/*.dmg
 cat "$DIST/SHA256SUMS.txt"

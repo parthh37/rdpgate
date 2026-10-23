@@ -43,9 +43,64 @@ pub struct ClientConfig {
     /// beacon can't send the client back to an old address.
     #[serde(default)]
     pub beacon_ts: i64,
+    /// Install signed updates automatically.
+    #[serde(default = "yes")]
+    pub auto_update: bool,
+    /// Unix time of the last update check.
+    #[serde(default)]
+    pub last_update_check: i64,
     /// Connect here first (tests, or `--address`).
     #[serde(skip)]
     pub connect_override: Option<SocketAddr>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// True when automatic updates are on and the last check was over a day ago.
+pub fn update_due(cfg: &ClientConfig) -> bool {
+    cfg.auto_update && unix_now() - cfg.last_update_check > 24 * 3600
+}
+
+/// Records that an update check happened (best effort).
+pub fn mark_update_checked(dir: &Path) {
+    if let Ok(mut cfg) = load_config(dir) {
+        cfg.last_update_check = unix_now();
+        let _ = save_config(dir, &cfg);
+    }
+}
+
+pub fn set_auto_update(dir: &Path, on: bool) -> Result<()> {
+    let mut cfg = load_config(dir)?;
+    cfg.auto_update = on;
+    save_config(dir, &cfg)
+}
+
+/// Asks GitHub for a newer signed release (blocking). 0.x releases are
+/// pre-releases, so those are included.
+pub fn check_update() -> Result<Option<rdpgate_core::update::Available>> {
+    rdpgate_core::update::check(VERSION, true)
+}
+
+/// Downloads, verifies and installs the update for this program (blocking).
+/// Returns what to relaunch: the new executable, or the app bundle on macOS.
+pub fn install_update(av: &rdpgate_core::update::Available, c: rdpgate_core::update::Component) -> Result<PathBuf> {
+    use rdpgate_core::update::{Component, asset_for, download, replace_current_exe};
+    let asset = asset_for(c).ok_or("no updates are published for this system; download the new version manually")?;
+    let bytes = download(av, asset)?;
+    #[cfg(target_os = "macos")]
+    if c == Component::App {
+        return rdpgate_core::update::replace_mac_app(&bytes);
+    }
+    let _ = Component::App;
+    replace_current_exe(&bytes)
 }
 
 /// Per-user settings folder: `~/Library/Application Support/rdpgate` on
@@ -115,6 +170,8 @@ pub fn create_device(dir: &Path, device: &str, rdp_username: Option<String>, pas
         card: None,
         last_known: None,
         beacon_ts: 0,
+        auto_update: true,
+        last_update_check: 0,
         connect_override: None,
     };
     save_config(dir, &cfg)?;

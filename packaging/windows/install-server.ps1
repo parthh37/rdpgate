@@ -18,6 +18,9 @@
     7. Creates the configuration and server identity, sets up the encrypted
        IP beacon in a secret GitHub gist (asks for a token), and starts the
        "RDPGate" service.
+    8. Forwards the sign-in and Remote Desktop ports on the router with UPnP
+       when the router allows it (unless -NoUpnp), and warns about
+       carrier-grade NAT.
 
     Run it again at any time to upgrade or re-apply the hardening; enrolled
     devices, passkeys, codes and the server identity are kept.
@@ -49,7 +52,11 @@ param(
     # Don't change the account lockout policy
     [switch] $SkipLockout,
     # Don't stop this PC sleeping on mains power (a sleeping PC can't be reached)
-    [switch] $SkipSleep
+    [switch] $SkipSleep,
+    # Don't forward ports on the router automatically (UPnP)
+    [switch] $NoUpnp,
+    # Run by the Setup wizard: files are already in place; pause at the end
+    [switch] $FromInstaller
 )
 
 #Requires -RunAsAdministrator
@@ -62,6 +69,15 @@ $DataDir    = Join-Path $env:ProgramData 'RDPGate'
 $Exe        = Join-Path $InstallDir 'rdpgate-server.exe'
 $TsKey      = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
 $RdpTcpKey  = "$TsKey\WinStations\RDP-Tcp"
+
+if ($FromInstaller) {
+    # Keep the window open on failure so the message can be read.
+    trap {
+        Write-Host "`nERROR: $_" -ForegroundColor Red
+        Read-Host 'Setup could not finish. Press Enter to close'
+        exit 1
+    }
+}
 
 function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "    $m" -ForegroundColor Green }
@@ -121,7 +137,9 @@ Ok "$($os.Caption), Remote Desktop port $rdpPort"
 Step 'Installing files'
 if (Get-Service RDPGate -ErrorAction SilentlyContinue) { Stop-Service RDPGate -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item (Join-Path $Here 'rdpgate-server.exe') $Exe -Force
+if ((Resolve-Path $Here).Path.TrimEnd('\') -ne $InstallDir.TrimEnd('\')) {
+    Copy-Item (Join-Path $Here 'rdpgate-server.exe') $Exe -Force
+}
 foreach ($f in 'uninstall-server.ps1', 'install-server.ps1') {
     $src = Join-Path $Here $f
     if ((Test-Path $src) -and ((Resolve-Path $src).Path -ne (Join-Path $InstallDir $f))) { Copy-Item $src $InstallDir -Force }
@@ -132,6 +150,15 @@ if (($machinePath -split ';') -notcontains $InstallDir) {
 }
 if (($env:Path -split ';') -notcontains $InstallDir) { $env:Path += ";$InstallDir" }
 Ok "Installed $Exe"
+
+# The sign-in port must be free for the agent.
+$busy = Get-NetTCPConnection -LocalPort $ListenPort -State Listen -ErrorAction SilentlyContinue |
+    Where-Object { $_.OwningProcess -and ((Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).Path -ne $Exe) } |
+    Select-Object -First 1
+if ($busy) {
+    $who = (Get-Process -Id $busy.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+    throw "Port $ListenPort is already used by '$who'. Stop that program, or install with -ListenPort <another port> and forward your router's port $PublicPort to it."
+}
 
 # Any user can create folders in ProgramData, so one made in advance would
 # stay theirs. Refuse links, take ownership, and replace every ACL entry.
@@ -241,6 +268,7 @@ if (-not (Test-Path (Join-Path $DataDir 'config.json'))) {
     if ($PublicHost)        { $initArgs += @('--host', $PublicHost) }
     if ($RdpPublicPort -gt 0) { $initArgs += @('--rdp-public-port', $RdpPublicPort) }
     if ($AllowUdp)          { $initArgs += '--allow-udp' }
+    if ($NoUpnp)            { $initArgs += '--no-upnp' }
     if ($Email)             { $initArgs += @('--email', $Email) }
     if ($Staging)           { $initArgs += '--staging' }
     & $Exe @initArgs
@@ -254,7 +282,8 @@ $hasBeacon = $cfg.PSObject.Properties.Name -contains 'beacon'
 if (-not $hasBeacon -and -not $NoBeacon) {
     Write-Host ""
     Write-Host "    Your computers find this PC through an encrypted, signed beacon in a secret GitHub gist."
-    Write-Host "    GitHub only ever sees ciphertext. You need a token limited to Gists (read and write)."
+    Write-Host "    The gist only holds ciphertext, but GitHub sees the IP address each update comes from."
+    Write-Host "    You need a token limited to Gists (read and write), ideally on a GitHub account used only for this."
     & $Exe beacon-setup --data $DataDir
     if ($LASTEXITCODE -ne 0) { Warn 'Beacon not set up. Run "rdpgate-server beacon-setup" later.' }
 }
@@ -267,6 +296,14 @@ $state = (Get-Service RDPGate).Status
 if ($state -ne 'Running') { Warn "Service state is $state. Check $DataDir\logs\rdpgate.log" } else { Ok 'Service RDPGate is running' }
 
 # ---------------------------------------------------------------------------
+$routerDone = $false
+if (-not $NoUpnp) {
+    Step 'Setting up your router (UPnP)'
+    & $Exe router --data $DataDir | ForEach-Object { Write-Host "    $_" }
+    $routerDone = ($LASTEXITCODE -eq 0)
+}
+
+# ---------------------------------------------------------------------------
 $lan = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.PrefixOrigin -in 'Dhcp', 'Manual' -and $_.IPAddress -notlike '169.254.*' } |
     Select-Object -First 1 -ExpandProperty IPAddress
@@ -276,11 +313,17 @@ $udpLine = if ($AllowUdp) { "`n     UDP $rdpExt  ->  $($lan):$rdpPort   (faster 
 
 Write-Host ""
 Write-Host "RDP Gate is installed." -ForegroundColor Green
+$routerStep = if ($routerDone) {
+    "1. Your router was set up automatically (the service keeps it that way). In the router's`n   settings, give this PC ($lan) a reserved address so the forwards keep pointing at it."
+} else {
+    "1. On your router, forward these ports to this PC ($lan) and give it a reserved address:`n     TCP $PublicPort   ->  $($lan):$ListenPort    (sign-in)`n     TCP $rdpExt  ->  $($lan):$rdpPort   (Remote Desktop: closed until someone signs in)$udpLine"
+}
 Write-Host @"
 
-1. On your router, forward these ports to this PC ($lan) and give it a reserved address:
-     TCP $PublicPort   ->  $($lan):$ListenPort    (sign-in)
-     TCP $rdpExt  ->  $($lan):$rdpPort   (Remote Desktop: closed until someone signs in)$udpLine
+Windows Firewall is configured: TCP $ListenPort is open for RDP Gate only, and Remote
+Desktop stays closed until someone signs in. The service re-checks this at every start.
+
+$routerStep
 
 2. Set up 6-digit codes (scan the QR code with your phone):
      rdpgate-server totp-setup
@@ -296,3 +339,4 @@ Remote Desktop certificate thumbprint (the app also checks this automatically):
 Status: rdpgate-server status      Logs: $DataDir\logs\rdpgate.log
 "@
 if ($PublicHost) { Write-Host "Browser sign-in: add a passkey with  rdpgate-server passkey-enroll" }
+if ($FromInstaller) { Read-Host "`nPress Enter to finish" | Out-Null }

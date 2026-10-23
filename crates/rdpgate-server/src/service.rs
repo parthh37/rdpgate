@@ -61,8 +61,13 @@ mod imp {
         if let Err(e) = &result {
             crate::logln!("FATAL {e}");
         }
-        // A non-zero exit code makes the service manager apply the restart policy.
-        set(ServiceState::Stopped, if result.is_ok() { 0 } else { 1 });
+        // A non-zero exit code makes the service manager apply the restart
+        // policy: after a failure, and to start a freshly installed version.
+        let code = match result {
+            Ok(crate::app::Exit::Stopped) => 0,
+            Ok(crate::app::Exit::Restart) | Err(_) => 1,
+        };
+        set(ServiceState::Stopped, code);
     }
 
     pub fn install(data_dir: &std::path::Path) -> Result<(), String> {
@@ -97,6 +102,25 @@ mod imp {
         Ok(())
     }
 
+    /// Stops the service (if running) and starts it again.
+    pub fn restart() -> Result<(), String> {
+        let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|e| format!("open service manager (run as Administrator): {e}"))?;
+        let svc = m
+            .open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::START)
+            .map_err(|e| format!("open service: {e}"))?;
+        if svc.query_status().map(|s| s.current_state != ServiceState::Stopped).unwrap_or(false) {
+            let _ = svc.stop();
+            for _ in 0..60 {
+                std::thread::sleep(Duration::from_millis(500));
+                if svc.query_status().map(|s| s.current_state == ServiceState::Stopped).unwrap_or(true) {
+                    break;
+                }
+            }
+        }
+        svc.start(&[] as &[&OsStr]).map_err(|e| format!("start service: {e}"))
+    }
+
     pub fn uninstall() -> Result<(), String> {
         let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|e| format!("open service manager (run as Administrator): {e}"))?;
@@ -119,11 +143,15 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::{install, run_as_service, uninstall};
+pub use imp::{install, restart, run_as_service, uninstall};
 
 #[cfg(not(windows))]
 pub fn install(_: &std::path::Path) -> Result<(), String> {
     Err("service-install is only available on Windows".into())
+}
+#[cfg(not(windows))]
+pub fn restart() -> Result<(), String> {
+    Err("the service only exists on Windows".into())
 }
 #[cfg(not(windows))]
 pub fn uninstall() -> Result<(), String> {

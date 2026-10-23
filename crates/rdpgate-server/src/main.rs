@@ -57,6 +57,9 @@ enum Cmd {
         /// Also open UDP for signed-in addresses (faster, but UDP sources can be forged)
         #[arg(long)]
         allow_udp: bool,
+        /// Don't forward ports on the router automatically (UPnP)
+        #[arg(long)]
+        no_upnp: bool,
         /// Name shown in your passkey manager
         #[arg(long, default_value = "owner")]
         user: String,
@@ -75,6 +78,8 @@ enum Cmd {
     },
     /// Print the server card to paste into RDP Gate on your computers
     Card,
+    /// Forward the needed ports on the router now (UPnP) and report
+    Router,
     /// Run in the foreground (the Windows service does this for you)
     Run {
         #[arg(long, hide = true)]
@@ -104,6 +109,12 @@ enum Cmd {
     DeviceRemove { name: String },
     /// Unlock a computer that was locked after too many wrong codes
     DeviceUnlock { name: String },
+    /// Check for and install a signed update, then restart the service
+    Update {
+        /// Only check; don't install
+        #[arg(long)]
+        check: bool,
+    },
     /// Register and start the Windows service (Administrator)
     ServiceInstall,
     /// Stop and remove the Windows service (Administrator)
@@ -134,7 +145,7 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
     match cmd {
         Cmd::Init {
             host, public_port, listen, tls, cert, key, email, staging, rdp_port, rdp_public_port,
-            allow_udp, user, firewall, force,
+            allow_udp, no_upnp, user, firewall, force,
         } => {
             // SYSTEM + Administrators only, even if someone created the folder first.
             rdpgate_server::secure_dir::harden(data)?;
@@ -154,6 +165,7 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             c.rdp_port = rdp_port;
             c.rdp_public_port = rdp_public_port.unwrap_or(rdp_port);
             c.allow_udp = allow_udp;
+            c.upnp = !no_upnp;
             if let Some(f) = firewall {
                 c.firewall = f;
             }
@@ -195,6 +207,18 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             print_card(&cfg, &id);
             Ok(())
         }
+        Cmd::Router => {
+            let cfg = Config::load(data)?;
+            let st = rdpgate_server::router::apply(&cfg);
+            for line in st.summary(&cfg) {
+                println!("{line}");
+            }
+            if !st.all_mapped() {
+                // Distinct exit code so the installer knows to show manual steps.
+                std::process::exit(2);
+            }
+            Ok(())
+        }
         Cmd::Card => {
             let cfg = Config::load(data)?;
             let id = Identity::load_or_create(data)?;
@@ -213,7 +237,31 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
                 });
                 let _ = tx.send(true);
             });
-            rdpgate_server::run_server(data, true, rx)
+            match rdpgate_server::run_server(data, true, rx)? {
+                rdpgate_server::app::Exit::Restart => println!("Updated. Start it again to run the new version."),
+                rdpgate_server::app::Exit::Stopped => {}
+            }
+            Ok(())
+        }
+        Cmd::Update { check } => {
+            let pre = Config::load(data).map(|c| c.update_prereleases).unwrap_or(true);
+            let current = rdpgate_server::updater::VERSION;
+            println!("Installed: {current}");
+            let Some(av) = rdpgate_core::update::check(current, pre)? else {
+                println!("Up to date.");
+                return Ok(());
+            };
+            println!("Available: {} (signature verified)  {}", av.version, av.url);
+            if check {
+                return Ok(());
+            }
+            rdpgate_server::updater::install(&av)?;
+            println!("Installed {}.", av.version);
+            match rdpgate_server::service::restart() {
+                Ok(()) => println!("Service restarted on the new version."),
+                Err(e) => println!("Restart the service to finish ({e})."),
+            }
+            Ok(())
         }
         Cmd::Status => status(data),
         Cmd::TotpSetup { force, invert } => totp_setup(data, force, invert),
@@ -324,6 +372,7 @@ fn status(data: &Path) -> Result<(), String> {
     let cfg = Config::load(data)?;
     let st = Store::new(data).load()?;
     let id = Identity::load_or_create(data)?;
+    println!("Version:        {}{}", rdpgate_server::updater::VERSION, if cfg.auto_update { " (auto-update on)" } else { " (auto-update off)" });
     println!("Server key:     {}", id.fingerprint());
     println!("Listen:         {}", cfg.listen.join(", "));
     println!("RDP port:       {} (clients connect to {}){}", cfg.rdp_port, cfg.rdp_public_port, if cfg.allow_udp { ", UDP on" } else { ", TCP only" });
@@ -344,6 +393,23 @@ fn status(data: &Path) -> Result<(), String> {
             }
         }
         None => println!("Beacon:         off (rdpgate-server beacon-setup)"),
+    }
+    let router: serde_json::Value = std::fs::read(data.join("router.json"))
+        .ok()
+        .and_then(|r| serde_json::from_slice(&r).ok())
+        .unwrap_or_default();
+    match (cfg.upnp, router["found"].as_bool()) {
+        (false, _) => println!("Router:         automatic forwarding off (forward ports by hand)"),
+        (true, None) => println!("Router:         not checked yet"),
+        (true, Some(false)) => println!("Router:         no UPnP router found; forward ports by hand"),
+        (true, Some(true)) => {
+            let n = router["mapped"].as_array().map_or(0, |a| a.len());
+            println!("Router:         {n} port forward(s) in place via UPnP{}",
+                if router["failed"].as_array().is_some_and(|a| !a.is_empty()) { ", some refused" } else { "" });
+            if router["behind_nat"].as_bool() == Some(true) {
+                println!("WARNING:        the router's internet address isn't public (carrier-grade NAT?): run rdpgate-server router");
+            }
+        }
     }
     match cfg.portal_url("") {
         Some(url) if cfg.web_login => println!("Browser login:  {url}"),
