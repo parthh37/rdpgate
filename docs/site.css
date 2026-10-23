@@ -228,6 +228,156 @@ pre {
   line-height: 1.6;
 }
 
+/* ---- visual setup guide (index.html#setup) ---------------------------- */
+/* Where each step happens: one colour per place, used by the route cards
+   and the small "where" tags on every step. */
+.at-server { --place: var(--ink); }
+.at-client { --place: var(--action); }
+.at-phone { --place: var(--allow); }
+.at-anywhere { --place: #6b4fc4; }
+
+.route { list-style: none; margin: 0 0 4rem; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.6rem; }
+.route > li { position: relative; min-width: 0; background: #fff; border: 1px solid var(--rule); border-top: 4px solid var(--place); border-radius: 12px; padding: 1.3rem 1.3rem 1.25rem; }
+.route > li + li::before {
+  content: "→";
+  position: absolute;
+  left: -1.6rem;
+  top: 50%;
+  width: 1.6rem;
+  transform: translateY(-50%);
+  text-align: center;
+  font: 700 1.1rem var(--mono);
+  color: var(--ink-soft);
+}
+.route svg { display: block; width: 2.2rem; height: 2.2rem; color: var(--place); margin-bottom: .7rem; }
+.route .phase { font: 600 .72rem var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); margin: 0; }
+.route h3 { margin: .35rem 0 .15rem; }
+.route .time { font-size: .9rem; color: var(--ink-soft); margin: 0 0 1rem; }
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; list-style: none; margin: 0; padding: 0; }
+.chips a {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .2rem .65rem .2rem .25rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: .86rem;
+  text-decoration: none;
+}
+.chips a:hover { border-color: var(--place); }
+.chips b { display: inline-grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: var(--place); color: #fff; font: 700 .72rem var(--mono); }
+
+.vsteps { list-style: none; margin: 0; padding: 0; counter-reset: v; display: grid; gap: 4.5rem; }
+.vsteps > li {
+  counter-increment: v;
+  display: grid;
+  grid-template-columns: minmax(0, 21rem) minmax(0, 1fr);
+  gap: 1.5rem 3rem;
+  align-items: start;
+  scroll-margin-top: 1.5rem;
+}
+.vsteps > li.full { grid-template-columns: minmax(0, 1fr); }
+.vsteps > li.full .vstep-text { max-width: 46rem; }
+.vstep-text h3::before {
+  content: counter(v);
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink);
+  font: 700 .9rem var(--mono);
+  margin-bottom: .9rem;
+}
+.vstep-text p { color: var(--ink-soft); margin: .7rem 0 0; }
+.vstep-text .note { margin-top: 1rem; }
+.where { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 0 !important; }
+.where span {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font: 600 .74rem var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--place);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: .12rem .6rem;
+}
+.where span::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
+.vstep-visual { margin: 0; min-width: 0; }
+.vstep-visual.app, .vsteps .window.app { max-width: 19rem; }
+
+/* light mock of a browser form (the GitHub token page, not a screenshot) */
+.mock { background: #fff; border: 1px solid var(--rule); border-radius: 14px; overflow: hidden; box-shadow: 0 28px 60px -38px rgba(11, 26, 69, .45); max-width: 30rem; }
+.mock .chrome { display: flex; align-items: center; gap: .4rem; padding: .55rem .8rem; background: #f6f8fb; border-bottom: 1px solid var(--rule); }
+.mock .chrome span { width: .6rem; height: .6rem; border-radius: 50%; background: var(--rule); }
+.mock .chrome b { font: 600 .72rem var(--mono); color: var(--ink-soft); margin-left: .45rem; }
+.mock-body { padding: 1.1rem 1.3rem 1.3rem; font-size: .92rem; }
+.mock-k { font-weight: 600; margin: 1rem 0 .4rem; }
+.mock-k:first-child { margin-top: 0; }
+.mock-field { margin: 0; padding: .45rem .7rem; border: 1px solid var(--rule); border-radius: 6px; font: .85rem var(--mono); color: var(--ink-soft); }
+.perm { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .5rem .7rem; border: 1px solid var(--rule); color: var(--ink-soft); }
+.perm + .perm { border-top: 0; }
+.perm .sel { font-size: .82rem; padding: .15rem .5rem; border: 1px solid var(--rule); border-radius: 6px; background: #f6f8fb; white-space: nowrap; }
+.perm.on { color: var(--ink); font-weight: 600; background: #e7f4ef; border-color: var(--allow); }
+.perm.on .sel { border-color: var(--allow); color: var(--allow); background: #fff; }
+.mock-btn { display: inline-block; margin: 1.2rem 0 0; padding: .45rem .9rem; border-radius: 6px; background: var(--allow); color: #fff; font-weight: 600; font-size: .85rem; }
+
+/* the Setup wizard's task list, drawn on the dark window frame */
+.tasks { list-style: none; margin: 0; padding: 1.1rem 1.3rem; display: grid; gap: .6rem; color: #e6ebf7; font-size: .95rem; }
+.tasks li { display: flex; align-items: baseline; gap: .7rem; }
+.tasks li::before {
+  content: "✓";
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 4px;
+  background: var(--allow);
+  color: #fff;
+  font: 700 .7rem/1 var(--sans);
+  transform: translateY(.15rem);
+}
+.tasks li.off { color: #8c99bd; }
+.tasks li.off::before { content: ""; background: transparent; border: 1.5px solid #3a4a7c; }
+.tasks small { font: .75rem var(--mono); color: #8c99bd; }
+.vstep-visual.window { max-width: 34rem; }
+
+/* router and firewall diagram */
+.diagram { background: #fff; border: 1px solid var(--rule); border-radius: 14px; padding: 1.2rem 1.2rem .4rem; max-width: 32rem; }
+.diagram svg { display: block; width: 100%; height: auto; font-family: var(--sans); }
+.diagram figcaption { font-size: .9rem; color: var(--ink-soft); padding: .6rem 0 .6rem; border-top: 1px solid var(--rule); margin-top: .6rem; }
+.d-col { font: 700 16px var(--mono); fill: var(--ink); letter-spacing: -0.02em; }
+.d-small { font-size: 14px; fill: var(--ink-soft); }
+.d-port { font: 600 14px var(--mono); fill: var(--ink-soft); }
+.d-box { fill: #f6f8fb; stroke: var(--rule); stroke-width: 1.5; }
+.d-allow { stroke: var(--allow); stroke-width: 3; }
+.d-deny { stroke: var(--deny); stroke-width: 3; stroke-dasharray: 7 5; }
+.d-wall { stroke: var(--ink); stroke-width: 4; stroke-linecap: round; }
+.d-stop { fill: var(--deny); }
+.d-x { stroke: #fff; stroke-width: 2.4; stroke-linecap: round; }
+.d-pill-allow { fill: #e7f4ef; stroke: var(--allow); stroke-width: 1.5; }
+.d-pill-off { fill: #fff; stroke: var(--rule); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.d-pill-text { font-size: 14px; font-weight: 600; fill: var(--allow); }
+.d-pill-text.off { fill: var(--ink-soft); font-weight: 500; }
+
+/* two windows with what travels between them */
+.exchange { display: grid; grid-template-columns: minmax(0, 17rem) minmax(0, 13rem) minmax(0, 1fr); gap: 1.2rem; align-items: center; }
+.exchange .window.app { max-width: none; }
+.hops { display: grid; gap: .9rem; }
+.hop { margin: 0; display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
+.hop code { flex: 1; min-width: 0; overflow-wrap: anywhere; background: var(--panel) !important; color: var(--panel-text); padding: .45rem .6rem !important; border-radius: 8px !important; font-size: .76rem; }
+.hop span { flex: none; font: 700 1.3rem var(--mono); color: var(--action); }
+.hop.check { justify-content: center; font: 600 .78rem var(--mono); color: var(--allow); }
+.pair { display: flex; align-items: center; gap: 1rem; }
+.pair .window.app { flex: 1 1 0; }
+.pair .arrow { flex: none; font: 700 1.5rem var(--mono); color: var(--action); }
+.vsteps + .fine { margin-top: 3.5rem; }
+
 /* ---- limitations ------------------------------------------------------ */
 .limits ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1rem; max-width: 52rem; }
 .limits li { padding: 1rem 1.2rem; border-left: 3px solid var(--deny); background: #fff; border-radius: 0 10px 10px 0; color: var(--ink-soft); }
@@ -307,6 +457,18 @@ h4 { font: 700 1rem var(--mono); letter-spacing: -0.02em; margin: 0 0 .4rem; }
   .spec th, .spec td { display: block; width: auto !important; }
   .spec th { padding-bottom: 0; }
   .spec.ports th, .spec.ports td { display: table-cell; }
+  .route { grid-template-columns: minmax(0, 1fr); gap: 1.4rem; margin-bottom: 3rem; }
+  .route > li + li::before { content: "↓"; left: 50%; top: -1.4rem; width: auto; transform: translate(-50%, -.1rem); font-size: 1rem; line-height: 1.4rem; }
+  .vsteps { gap: 3.5rem; }
+  .vsteps > li { grid-template-columns: minmax(0, 1fr); }
+  .exchange { grid-template-columns: minmax(0, 1fr); max-width: 30rem; }
+  .exchange .window.app { max-width: 19rem; }
+  .hop span { transform: rotate(90deg); }
+  .diagram { padding: .9rem .8rem .3rem; }
+}
+@media (max-width: 480px) {
+  .pair { gap: .5rem; }
+  .pair .arrow { font-size: 1.1rem; }
 }
 @media (max-width: 1000px) and (min-width: 861px) {
   .shots { grid-template-columns: repeat(2, minmax(0, 1fr)); }

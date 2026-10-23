@@ -207,36 +207,199 @@
 </section>
 
 <section id="setup" class="band">
-  <h2>Setup</h2>
-  <p class="section-lede">About 15 minutes. You need a Windows 10/11 Pro, Enterprise or Education PC (or Windows Server), access to your router, and a GitHub account.</p>
-  <ol class="setup">
-    <li>
-      <h3>Make a GitHub token for the beacon</h3>
-      <p>Use a free GitHub account just for RDP Gate: a Gists token can read and change every gist on its account. Create a <a href="https://github.com/settings/personal-access-tokens/new">fine-grained token</a> with only <em>Account permissions → Gists: Read and write</em>. Your PC uses it to publish its encrypted, signed address.</p>
+  <h2>Setup, step by step</h2>
+  <p class="section-lede">About 15 minutes. You need a Windows 10/11 Pro, Enterprise or Education PC (or Windows Server), access to your router, a GitHub account and an authenticator app on your phone.</p>
+
+  <ol class="route" aria-label="Where each step happens">
+    <li class="at-server">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>
+      <p class="phase">Part 1 · once</p>
+      <h3>On the Windows PC</h3>
+      <p class="time">About 10 minutes</p>
+      <ul class="chips">
+        <li><a href="#vs-token"><b>1</b>GitHub token</a></li>
+        <li><a href="#vs-install"><b>2</b>Server Setup</a></li>
+        <li><a href="#vs-codes"><b>3</b>6-digit codes</a></li>
+        <li><a href="#vs-router"><b>4</b>Router</a></li>
+      </ul>
     </li>
-    <li>
-      <h3>Run the server Setup</h3>
-      <p>On the Windows PC, run <code>RDP-Gate-Server-Setup.exe</code> and click through. A domain name is optional (only for browser sign-in). Setup hardens Remote Desktop, configures Windows Firewall and your router, then asks for the token. At the end, leave <em>Set up 6-digit codes now</em> ticked and scan the QR code with your authenticator app.</p>
+    <li class="at-client">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="10" rx="1.2"/><path d="M2.5 19h19l-2-4h-15z"/></svg>
+      <p class="phase">Part 2 · per computer</p>
+      <h3>On each Mac or PC</h3>
+      <p class="time">About 2 minutes each</p>
+      <ul class="chips">
+        <li><a href="#vs-app"><b>5</b>App and key</a></li>
+        <li><a href="#vs-enroll"><b>6</b>Enroll</a></li>
+      </ul>
     </li>
-    <li>
-      <h3>Your firewall and router: usually nothing to do</h3>
-      <p>Setup configures Windows Firewall itself and forwards TCP 443 and 3389 on your router automatically (UPnP). It tells you if the router refuses, or if your ISP uses carrier-grade NAT. If you have to forward by hand, send both ports to this PC. Either way, give the PC a reserved address in the router. Port 3389 stays shut until someone signs in. The apps on your Mac or PC need no open ports.</p>
-    </li>
-    <li>
-      <h3>Install the app on each computer</h3>
-      <p>Windows: run <code>RDP-Gate-Setup.exe</code>. It installs just for you, with no administrator rights needed. Mac: open the <code>.dmg</code> and drag RDP Gate to Applications, then right-click it and choose <em>Open</em> the first time. On a Mac you also need Microsoft's free <a href="https://apps.apple.com/app/windows-app/id1295203466">Windows App</a>.</p>
-    </li>
-    <li>
-      <h3>Enroll the computer</h3>
-      <p>In the app, name the computer and choose a passphrase. It shows one command; run it on the server in PowerShell as Administrator. Check that the fingerprints match, then paste the <em>server card</em> the server prints back into the app.</p>
-      <pre><code>rdpgate-server device-add macbook rdpgate-ed25519:…
-# → rdpgate-card:…   paste this into the app</code></pre>
-    </li>
-    <li>
-      <h3>Connect</h3>
-      <p>Enter your passphrase and 6-digit code and choose <em>Sign in and open Remote Desktop</em>. The app finds your PC, checks it's really yours, checks the Remote Desktop certificate, and opens the session. Then log in to Windows as usual.</p>
+    <li class="at-anywhere">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.8 3 2.8 15 0 18M12 3c-2.8 3-2.8 15 0 18"/></svg>
+      <p class="phase">Part 3 · every time</p>
+      <h3>From anywhere</h3>
+      <p class="time">A few seconds</p>
+      <ul class="chips">
+        <li><a href="#vs-connect"><b>7</b>Sign in</a></li>
+      </ul>
     </li>
   </ol>
+
+  <ol class="vsteps">
+
+    <li id="vs-token">
+      <div class="vstep-text">
+        <h3>Make a GitHub token for the beacon</h3>
+        <p class="where"><span class="at-anywhere">Any browser</span></p>
+        <p>Your PC has no fixed address, so it publishes its current one in a secret gist, encrypted and signed. Create a <a href="https://github.com/settings/personal-access-tokens/new">fine-grained token</a> with one permission: <em>Gists: Read and write</em>.</p>
+        <p class="note">Use a GitHub account just for RDP Gate. A Gists token can read and change every gist on its account.</p>
+      </div>
+      <figure class="vstep-visual mock" aria-label="Illustration of the token permissions to choose">
+        <div class="chrome"><span></span><span></span><span></span><b>New fine-grained token</b></div>
+        <div class="mock-body">
+          <p class="mock-k">Token name</p>
+          <p class="mock-field">rdpgate-beacon</p>
+          <p class="mock-k">Account permissions</p>
+          <div class="perm on"><span>Gists</span><span class="sel">Read and write ▾</span></div>
+          <div class="perm"><span>Everything else</span><span class="sel">No access</span></div>
+          <p class="mock-k">Repository permissions</p>
+          <div class="perm"><span>All</span><span class="sel">No access</span></div>
+          <p class="mock-btn">Generate token, then copy it</p>
+        </div>
+      </figure>
+    </li>
+
+    <li id="vs-install">
+      <div class="vstep-text">
+        <h3>Run the server Setup</h3>
+        <p class="where"><span class="at-server">Windows PC</span></p>
+        <p>Run <code>RDP-Gate-Server-Setup.exe</code>. The ticked defaults suit most people. Paste the token when it asks. A domain name is only needed for browser sign-in.</p>
+        <p>Setup hardens Remote Desktop, closes it in Windows Firewall and starts the <code>RDPGate</code> service.</p>
+        <p class="note">Installing over Remote Desktop? Setup keeps it reachable until your first sign-in through RDP Gate, so you aren't cut off.</p>
+      </div>
+      <figure class="vstep-visual window" aria-label="Illustration of the tasks in the server Setup wizard">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate Server Setup</b></div>
+        <ul class="tasks">
+          <li class="off">Browser sign-in with my domain <small>optional</small></li>
+          <li>Set up the IP beacon now <small>asks for the token</small></li>
+          <li>Set up 6-digit codes now</li>
+          <li>Forward ports on my router</li>
+          <li>Account lockout policy</li>
+          <li>Stop this PC sleeping</li>
+          <li class="off">Also open UDP</li>
+        </ul>
+        <figcaption>The task page. Anything Setup changes is put back if you uninstall.</figcaption>
+      </figure>
+    </li>
+
+    <li id="vs-codes">
+      <div class="vstep-text">
+        <h3>Scan the QR code with your phone</h3>
+        <p class="where"><span class="at-server">Windows PC</span><span class="at-phone">Phone</span></p>
+        <p>At the end of Setup a QR code appears. Scan it with any authenticator app (Google or Microsoft Authenticator, 1Password, Bitwarden…) and type the code it shows.</p>
+        <p>To do it again later, open <em>Start → RDP Gate Server → 6-digit codes</em>.</p>
+      </div>
+      <figure class="vstep-visual window">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate Server · 6-digit codes</b></div>
+        <a href="assets/screenshots/server-codes.png"><img src="assets/screenshots/server-codes.png" width="960" height="680" loading="lazy" alt="The 6-digit codes page with a sample QR code and a box for the first code"></a>
+      </figure>
+    </li>
+
+    <li id="vs-router">
+      <div class="vstep-text">
+        <h3>The router: usually nothing to do</h3>
+        <p class="where"><span class="at-server">Windows PC</span></p>
+        <p>Setup forwards TCP 443 and 3389 to this PC by itself (UPnP), and tells you if the router refuses or your ISP uses carrier-grade NAT. Forwarding by hand? Send both ports to this PC.</p>
+        <p>Either way, give the PC a <strong>reserved address</strong> in the router. The computers you connect <em>from</em> need no open ports.</p>
+      </div>
+      <figure class="vstep-visual diagram">
+        <svg viewBox="0 0 430 250" role="img" aria-labelledby="rt-t rt-d">
+          <title id="rt-t">The two ports on the way in</title>
+          <desc id="rt-d">The router forwards TCP 443 and TCP 3389 to the Windows PC. Windows Firewall lets 443 through to the RDP Gate sign-in service, and keeps 3389 shut until you sign in.</desc>
+          <text x="0" y="26" class="d-col">Internet</text>
+          <text x="150" y="26" class="d-col" text-anchor="middle">Router</text>
+          <text x="352" y="26" class="d-col" text-anchor="middle">Windows PC</text>
+
+          <rect x="105" y="44" width="90" height="170" rx="12" class="d-box"/>
+          <text x="150" y="134" class="d-small" text-anchor="middle">forwards</text>
+          <text x="150" y="152" class="d-small" text-anchor="middle">both (UPnP)</text>
+          <rect x="274" y="44" width="156" height="170" rx="12" class="d-box"/>
+
+          <line x1="0" y1="96" x2="304" y2="96" class="d-allow"/>
+          <text x="0" y="84" class="d-port">TCP 443</text>
+          <rect x="304" y="80" width="118" height="32" rx="16" class="d-pill-allow"/>
+          <text x="363" y="101" class="d-pill-text" text-anchor="middle">Sign-in</text>
+
+          <line x1="0" y1="178" x2="279" y2="178" class="d-deny"/>
+          <text x="0" y="166" class="d-port">TCP 3389</text>
+          <rect x="304" y="162" width="118" height="32" rx="16" class="d-pill-off"/>
+          <text x="363" y="183" class="d-pill-text off" text-anchor="middle">Remote Desktop</text>
+
+          <line x1="290" y1="56" x2="290" y2="204" class="d-wall"/>
+          <circle cx="290" cy="178" r="11" class="d-stop"/>
+          <path d="M284.5 172.5l11 11M295.5 172.5l-11 11" class="d-x"/>
+          <text x="352" y="238" class="d-small" text-anchor="middle">Windows Firewall</text>
+        </svg>
+        <figcaption>Port 3389 stays shut at the firewall. After you sign in, it opens for your IP address alone, then closes again.</figcaption>
+      </figure>
+    </li>
+
+    <li id="vs-app">
+      <div class="vstep-text">
+        <h3>Install the app and create a key</h3>
+        <p class="where"><span class="at-client">Mac or PC</span></p>
+        <p><strong>Windows:</strong> run <code>RDP-Gate-Setup.exe</code>. No administrator rights needed.<br><strong>Mac:</strong> drag RDP Gate to Applications, right-click it and choose <em>Open</em> the first time, and install Microsoft's free <a href="https://apps.apple.com/app/windows-app/id1295203466">Windows App</a>.</p>
+        <p>Then name this computer and choose a passphrase. It encrypts the key on this computer and <strong>can't be recovered</strong>, so keep it in your password manager.</p>
+      </div>
+      <figure class="vstep-visual window app">
+        <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+        <a href="assets/screenshots/app-setup.png"><img src="assets/screenshots/app-setup.png" width="500" height="640" loading="lazy" alt="Set up this computer: name, Windows user and passphrase fields, and a Create device key button"></a>
+      </figure>
+    </li>
+
+    <li id="vs-enroll" class="full">
+      <div class="vstep-text">
+        <h3>Enroll it: one line there, one line back</h3>
+        <p class="where"><span class="at-client">Mac or PC</span><span class="at-server">Windows PC</span></p>
+        <p>Choose <em>Copy command</em> in the app and paste it into <em>RDP Gate Server → Computers</em> (or PowerShell as Administrator). Check the fingerprints match. The server answers with a <em>server card</em>: paste that into the app. It tells the app where to find your PC and pins the server's identity key.</p>
+      </div>
+      <div class="vstep-visual exchange">
+        <figure class="window app">
+          <div class="chrome"><span></span><span></span><span></span><b>RDP Gate · your Mac or PC</b></div>
+          <a href="assets/screenshots/app-enroll.png"><img src="assets/screenshots/app-enroll.png" width="500" height="640" loading="lazy" alt="Enroll this computer: a one-line command to copy to the server, its fingerprint, and a box for the server card"></a>
+        </figure>
+        <div class="hops" aria-hidden="true">
+          <p class="hop"><code>device-add macbook rdpgate-ed25519:…</code><span>→</span></p>
+          <p class="hop check">fingerprints match ✓</p>
+          <p class="hop back"><span>←</span><code>rdpgate-card:…</code></p>
+        </div>
+        <figure class="window">
+          <div class="chrome"><span></span><span></span><span></span><b>RDP Gate Server · Computers</b></div>
+          <a href="assets/screenshots/server-computers.png"><img src="assets/screenshots/server-computers.png" width="960" height="680" loading="lazy" alt="Computers page of RDP Gate Server: paste a computer's key to add it, and a list of enrolled computers"></a>
+        </figure>
+      </div>
+    </li>
+
+    <li id="vs-connect">
+      <div class="vstep-text">
+        <h3>Sign in</h3>
+        <p class="where"><span class="at-client">Mac or PC</span><span class="at-phone">Phone</span></p>
+        <p>Enter your passphrase and the 6-digit code, and choose <em>Sign in and open Remote Desktop</em>. The app finds your PC, checks it's really yours, opens the firewall for your IP, checks the Remote Desktop certificate and opens the session.</p>
+        <p>Log in to Windows as usual. Access closes a few minutes after you disconnect.</p>
+      </div>
+      <div class="vstep-visual pair">
+        <figure class="window app">
+          <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+          <a href="assets/screenshots/app-signin.png"><img src="assets/screenshots/app-signin.png" width="500" height="640" loading="lazy" alt="Sign in to Remote Desktop: passphrase and 6-digit code fields"></a>
+        </figure>
+        <span class="arrow" aria-hidden="true">→</span>
+        <figure class="window app">
+          <div class="chrome"><span></span><span></span><span></span><b>RDP Gate</b></div>
+          <a href="assets/screenshots/app-open.png"><img src="assets/screenshots/app-open.png" width="500" height="640" loading="lazy" alt="Access open for one IP address, with the Remote Desktop certificate verified"></a>
+        </figure>
+      </div>
+    </li>
+  </ol>
+
   <p class="fine">Want browser sign-in with a passkey as well? Give Setup a domain you own that points at your home IP, then run <code>rdpgate-server passkey-enroll</code> and open the link on your phone or Mac.</p>
   <p><a class="btn primary" href="guide.html">Read the full operation guide</a></p>
 </section>
