@@ -104,6 +104,12 @@ enum Cmd {
     DeviceRemove { name: String },
     /// Unlock a computer that was locked after too many wrong codes
     DeviceUnlock { name: String },
+    /// Check for and install a signed update, then restart the service
+    Update {
+        /// Only check; don't install
+        #[arg(long)]
+        check: bool,
+    },
     /// Register and start the Windows service (Administrator)
     ServiceInstall,
     /// Stop and remove the Windows service (Administrator)
@@ -213,7 +219,31 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
                 });
                 let _ = tx.send(true);
             });
-            rdpgate_server::run_server(data, true, rx)
+            match rdpgate_server::run_server(data, true, rx)? {
+                rdpgate_server::app::Exit::Restart => println!("Updated. Start it again to run the new version."),
+                rdpgate_server::app::Exit::Stopped => {}
+            }
+            Ok(())
+        }
+        Cmd::Update { check } => {
+            let pre = Config::load(data).map(|c| c.update_prereleases).unwrap_or(true);
+            let current = rdpgate_server::updater::VERSION;
+            println!("Installed: {current}");
+            let Some(av) = rdpgate_core::update::check(current, pre)? else {
+                println!("Up to date.");
+                return Ok(());
+            };
+            println!("Available: {} (signature verified)  {}", av.version, av.url);
+            if check {
+                return Ok(());
+            }
+            rdpgate_server::updater::install(&av)?;
+            println!("Installed {}.", av.version);
+            match rdpgate_server::service::restart() {
+                Ok(()) => println!("Service restarted on the new version."),
+                Err(e) => println!("Restart the service to finish ({e})."),
+            }
+            Ok(())
         }
         Cmd::Status => status(data),
         Cmd::TotpSetup { force, invert } => totp_setup(data, force, invert),
@@ -324,6 +354,7 @@ fn status(data: &Path) -> Result<(), String> {
     let cfg = Config::load(data)?;
     let st = Store::new(data).load()?;
     let id = Identity::load_or_create(data)?;
+    println!("Version:        {}{}", rdpgate_server::updater::VERSION, if cfg.auto_update { " (auto-update on)" } else { " (auto-update off)" });
     println!("Server key:     {}", id.fingerprint());
     println!("Listen:         {}", cfg.listen.join(", "));
     println!("RDP port:       {} (clients connect to {}){}", cfg.rdp_port, cfg.rdp_public_port, if cfg.allow_udp { ", UDP on" } else { ", TCP only" });

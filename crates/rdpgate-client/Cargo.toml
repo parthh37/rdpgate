@@ -17,7 +17,7 @@ path = "src/main.rs"
 clap = { version = "4.6.7", features = ["derive"] }
 dirs = "7.0.0"
 ed25519-dalek = "3.0.0"
-rdpgate-core = { version = "0.1.0", path = "../rdpgate-core" }
+rdpgate-core = { path = "../rdpgate-core" }
 rpassword = "7.5.4"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "logging", "std"] }
 rustls-pki-types = "1.15.1"

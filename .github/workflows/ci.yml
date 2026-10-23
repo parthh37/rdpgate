@@ -33,6 +33,21 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then EXCLUDE="--exclude rdpgate-app"; fi
           cargo clippy --workspace $EXCLUDE --all-targets -- -D warnings
+      - name: Compile the Setup installers (smoke test)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          New-Item -ItemType Directory stage | Out-Null
+          'placeholder' | Set-Content stage/rdpgate-server.exe
+          'placeholder' | Set-Content stage/rdpgate.exe
+          'placeholder' | Set-Content "stage/RDP Gate.exe"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          foreach ($iss in 'server', 'client') {
+            & $iscc /Q /DAppVersion=0.0.0 "/DSourceDir=$pwd\stage" "/DOutputDir=$pwd\iss-out" "packaging\windows\$iss.iss"
+            if ($LASTEXITCODE) { exit 1 }
+          }
+          Get-ChildItem iss-out
       - name: Parse PowerShell installer scripts
         if: runner.os == 'Windows'
         shell: pwsh

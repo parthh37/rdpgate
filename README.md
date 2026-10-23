@@ -18,7 +18,8 @@ Exposing Remote Desktop (TCP 3389) to the internet invites constant password gue
 - **Signing in** takes this computer's private key **plus** a 6-digit code from any authenticator app. You can optionally also sign in from a browser with a passkey (needs your own domain).
 - **No static IP, no DNS, no DuckDNS.** The server publishes its address as an **encrypted, signed beacon** in a secret GitHub gist. The gist only ever holds ciphertext, though GitHub (like any website) sees the IP address each update comes from.
 - **Spoof-resistant end to end.** Your computers pin the server's identity key, so a fake server, a hijacked address or a man-in-the-middle on the RDP port is detected *before* anything is sent or Remote Desktop opens. See [Spoofing](#spoofing).
-- **One thing on the server:** `rdpgate-server.exe`, installed as a Windows service by a script that also hardens RDP and the firewall.
+- **One thing on the server:** `rdpgate-server.exe`, installed by a normal Setup wizard that also hardens RDP and the firewall and runs it as a Windows service.
+- **Easy install, signed auto-updates:** Setup wizards for Windows, a drag-to-Applications disk image for Mac. Every program updates itself, but only to releases signed with the project's release key.
 - **Written in Rust**, built on rustls, RustCrypto and webauthn-rs. No OpenSSL, no runtime dependencies.
 
 Website: **https://parthh37.github.io/rdpgate/**
@@ -66,7 +67,7 @@ What an attacker on the internet has to get past, from the outside in:
 
 - **Shared public IPs.** While access is open, anyone behind the same public IP (hotel Wi-Fi, an office, mobile-carrier NAT) can reach the Windows *login screen*. They still need your Windows password. Close access when you're done (button in the app, or `rdpgate lock`). The planned [tunnel mode](ROADMAP.md) removes this.
 - **Not independently audited.** The building blocks are well reviewed, and RDP Gate has had an internal adversarial review (all findings fixed), but no third-party audit. `webauthn-rs 0.6.1-dev` is a pre-release (pure Rust; 0.5 needs OpenSSL).
-- **Unsigned builds.** On macOS, right-click the app and choose **Open** the first time. On Windows, at the SmartScreen prompt choose **More info**, then **Run anyway**. Verify downloads with `SHA256SUMS.txt`.
+- **Not code-signed by Apple/Microsoft yet.** On macOS, right-click the app and choose **Open** the first time. On Windows, at the SmartScreen prompt choose **More info**, then **Run anyway**. Verify downloads with `SHA256SUMS.txt`. (Updates are signed with RDP Gate's own release key regardless.)
 - **Nothing is unbreakable.** RDP Gate removes the internet-facing attack surface. It can't protect a Windows PC that's already compromised, or a stolen laptop together with your passphrase and phone.
 - **Windows Home** can't host Remote Desktop.
 
@@ -76,29 +77,27 @@ You need: a Windows 10/11 **Pro, Enterprise or Education** PC, or Windows Server
 
 ### 1. Install the server
 
-Download `RDP-Gate-<version>-Windows-Server.zip` from [Releases](https://github.com/parthh37/rdpgate/releases/latest), unzip it on the Windows PC, and in **PowerShell as Administrator** run:
+**First, make a GitHub token for the beacon, on a GitHub account used just for this.** A token with Gists access can read and change *every* gist on its account, including your other secret gists, and GitHub can't limit it to one gist. With a free account used only for the beacon, a leaked token exposes nothing else. (Secret gists are unlisted, not private: anyone with the link can read one. That's why the beacon is encrypted.) On that account, create a fine-grained token at <https://github.com/settings/personal-access-tokens/new> with **only** *Account permissions → Gists: Read and write*.
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install-server.ps1
-```
+Then download **`RDP-Gate-Server-Setup-<version>.exe`** from [Releases](https://github.com/parthh37/rdpgate/releases) and run it on the Windows PC. The wizard asks for:
+- an optional domain name (only for browser sign-in),
+- whether to set up the IP beacon now, set an account lockout policy, or allow UDP.
 
-It asks for a **GitHub token**: create a fine-grained token at <https://github.com/settings/personal-access-tokens/new> with **only** *Account permissions → Gists: Read and write*. The token is typed at a hidden prompt and never appears in your shell history.
+When the beacon setup opens, paste the token at its hidden prompt. At the end, leave **Set up 6-digit codes now** ticked: a QR code appears for your authenticator app.
 
-**Use a GitHub account just for this.** A token with Gists access can read and change *every* gist on its account, including your other secret gists, and GitHub can't limit it to one gist. With a free account used only for the beacon, a leaked token exposes nothing else. (Secret gists are unlisted, not private: anyone with the link can read one. That's why the beacon is encrypted.)
+<details><summary>Prefer a script? (portable zip)</summary>
 
-The installer, in this order:
+Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-PublicHost`, `-AllowUdp`, `-SkipLockout`, `-NoBeacon`, `-RdpPublicPort`.
+</details>
+
+Setup does the following, in this order:
 - installs `rdpgate-server.exe` to `C:\Program Files\RDPGate`. Its data goes in `C:\ProgramData\RDPGate`, which it takes ownership of and locks to SYSTEM and Administrators.
 - sets Windows Firewall to **block inbound by default** and disables every rule that exposes the RDP port, including "any port" and port-range rules. It **stops** if Group Policy still exposes RDP.
 - only then turns on Remote Desktop with NLA, TLS, high encryption and patched-CredSSP only.
-- sets account lockout to 15 minutes after 10 wrong passwords (skip with `-SkipLockout`).
+- sets account lockout to 15 minutes after 10 wrong passwords (unless you untick it).
 - creates the server identity, publishes the first beacon, and starts the `RDPGate` service.
 
-Other options:
-- `-RdpPublicPort 53389`: use an unusual external port for RDP.
-- `-AllowUdp`: faster RDP, but UDP sources can be forged.
-- `-ListenPort` / `-PublicPort`: use these if 443 is taken.
-- `-PublicHost rdp.example.com`: enables browser sign-in with your own domain (see below).
+Uninstall it from **Settings → Apps → RDP Gate Server**. Your settings in `C:\ProgramData\RDPGate` are kept, and Remote Desktop stays blocked from the network.
 
 ### 2. Forward ports on your router
 
@@ -111,14 +110,16 @@ Give the PC a fixed (reserved) LAN address in your router's DHCP settings.
 
 ### 3. Set up 6-digit codes (on the server)
 
+Setup offers this at the end. To do it later (or again):
+
 ```powershell
 rdpgate-server totp-setup    # scan the QR code with Google/Microsoft Authenticator, 1Password, …
 ```
 
 ### 4. Enroll each computer you'll connect from
 
-- **Mac:** download `RDP-Gate-<version>-macOS.zip`, move **RDP Gate.app** to Applications, and open it.
-- **Windows:** download `RDP-Gate-<version>-Windows-Client.zip` and run **RDP Gate.exe**.
+- **Mac:** open **`RDP-Gate-<version>-macOS.dmg`** and drag **RDP Gate** to Applications. The first time, right-click it and choose **Open** (the build isn't notarized yet).
+- **Windows:** run **`RDP-Gate-Setup-<version>.exe`**. It installs just for you, with no administrator rights needed, and adds a Start menu entry.
 
 Enter a name for this computer and a passphrase. The app then shows a command; run it on the server:
 
@@ -145,6 +146,30 @@ rdpgate-server passkey-enroll   # one-time link: open it on your Mac/iPhone/PC
 
 The sign-in page shows which IP it opened, lets you close access early, and shows the Remote Desktop certificate fingerprint to compare.
 
+## Updates
+
+Every program keeps itself up to date, and only ever installs a release signed with the RDP Gate release key:
+
+| Program | Automatic | By hand |
+|---|---|---|
+| Server | Checks daily. Installs only while nobody has access open, then restarts the service. `"auto_update": false` in config.json turns it off. | `rdpgate-server update` (`--check` to only look) |
+| Desktop app | Checks once a day at launch. Installs and offers **Restart now**. There's a toggle under *This computer and server*. | **Check for updates** in the same place |
+| `rdpgate` CLI | Once a day, after a successful `connect`. | `rdpgate update`, `rdpgate auto-update on\|off` |
+
+Each release has a manifest (`rdpgate-update.json`) listing every file's SHA-256 and size, signed with Ed25519. The programs embed the public key. They refuse a manifest with a bad signature, anything older than what they run, and any download that doesn't match its signed hash. GitHub, a network attacker or anyone who can edit release files can't push code to your machines without the release key.
+
+## Releasing (maintainers)
+
+*Actions → Release → Run workflow*, then pick `patch`, `minor` or `major`. The workflow:
+1. works out the next version;
+2. builds and tests on Windows and macOS, compiling the Setup installers and the disk image;
+3. signs the update manifest with the `RDPGATE_UPDATE_KEY` secret;
+4. **only then** commits the version bump, tags it, and publishes the release.
+
+A failed build publishes nothing. Locally, `scripts/bump-version.sh minor` bumps the version, and `scripts/build-release.sh` builds unsigned packages for testing.
+
+The release key's private half lives in the repository secret and in the maintainer's offline backup. Losing it means users must reinstall manually once to trust a new key.
+
 ## Administration
 
 ```text
@@ -153,6 +178,7 @@ rdpgate-server card                    # print the server card again
 rdpgate-server device-list | device-remove NAME | device-unlock NAME
 rdpgate-server passkey-list | passkey-remove NAME
 rdpgate-server beacon-setup            # new token or gist
+rdpgate-server update [--check]        # signed self-update
 rdpgate-server totp-setup --force      # new authenticator secret
 ```
 
@@ -172,6 +198,7 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | `desktop_login` / `web_login` | true / with domain | Turn either sign-in method off |
 | `public_host`, `tls` | — | Domain and certificate for browser sign-in |
 | `beacon` | — | `{ "gist_id": …, "token": … }`, set by `beacon-setup` |
+| `auto_update` / `update_prereleases` | true / true | Signed self-updates; include pre-releases (all 0.x) |
 
 Uninstall: `& "C:\Program Files\RDPGate\uninstall-server.ps1"` (add `-RemoveData` to delete settings).
 
@@ -198,6 +225,8 @@ cargo build --release -p rdpgate-server -p rdpgate-client -p rdpgate-app
 | `crates/rdpgate-server` | The Windows agent: TLS, beacon publisher, passkey portal, firewall grants, service |
 | `crates/rdpgate-client` | Client library and the `rdpgate` command-line tool |
 | `crates/rdpgate-app` | The desktop app (egui) for macOS and Windows |
+| `crates/rdpgate-release` | Release tooling: signing key and signed update manifest |
+| `packaging/` | Inno Setup scripts (`server.iss`, `client.iss`), PowerShell hardening, macOS bundle files |
 
 ## Roadmap
 

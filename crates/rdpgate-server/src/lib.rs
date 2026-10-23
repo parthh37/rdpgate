@@ -12,6 +12,7 @@ pub mod log;
 pub mod secure_dir;
 pub mod service;
 pub mod state;
+pub mod updater;
 pub mod web;
 
 use std::path::Path;
@@ -23,8 +24,9 @@ pub fn install_crypto() {
 }
 
 /// Loads the config in `data_dir` and serves until `shutdown` flips to true.
-pub fn run_server(data_dir: &Path, interactive: bool, shutdown: watch::Receiver<bool>) -> Result<(), String> {
+pub fn run_server(data_dir: &Path, interactive: bool, shutdown: watch::Receiver<bool>) -> Result<app::Exit, String> {
     install_crypto();
+    rdpgate_core::update::cleanup_previous();
     // First, before anything that could fail: no rule may outlive the run
     // that created it, even after a crash or power cut.
     let swept = firewall::early_sweep();
@@ -34,6 +36,7 @@ pub fn run_server(data_dir: &Path, interactive: bool, shutdown: watch::Receiver<
         logln!("ERROR removing leftover firewall rules: {e}");
     }
     let cfg = config::Config::load(data_dir)?;
+    logln!("RDP Gate server {}", updater::VERSION);
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let fw = firewall::for_config(&cfg);

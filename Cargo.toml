@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rdpgate-core", "crates/rdpgate-server", "crates/rdpgate-client", "crates/rdpgate-app"]
+members = ["crates/rdpgate-core", "crates/rdpgate-server", "crates/rdpgate-client", "crates/rdpgate-app", "crates/rdpgate-release"]
 
 [workspace.package]
 version = "0.1.0"

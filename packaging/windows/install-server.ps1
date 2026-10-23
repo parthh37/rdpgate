@@ -45,7 +45,9 @@ param(
     # Use the Let's Encrypt staging CA (testing only)
     [switch] $Staging,
     # Don't change the account lockout policy
-    [switch] $SkipLockout
+    [switch] $SkipLockout,
+    # Run by the Setup wizard: files are already in place; pause at the end
+    [switch] $FromInstaller
 )
 
 #Requires -RunAsAdministrator
@@ -58,6 +60,15 @@ $DataDir    = Join-Path $env:ProgramData 'RDPGate'
 $Exe        = Join-Path $InstallDir 'rdpgate-server.exe'
 $TsKey      = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
 $RdpTcpKey  = "$TsKey\WinStations\RDP-Tcp"
+
+if ($FromInstaller) {
+    # Keep the window open on failure so the message can be read.
+    trap {
+        Write-Host "`nERROR: $_" -ForegroundColor Red
+        Read-Host 'Setup could not finish. Press Enter to close'
+        exit 1
+    }
+}
 
 function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "    $m" -ForegroundColor Green }
@@ -102,7 +113,9 @@ Ok "$($os.Caption), Remote Desktop port $rdpPort"
 Step 'Installing files'
 if (Get-Service RDPGate -ErrorAction SilentlyContinue) { Stop-Service RDPGate -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item (Join-Path $Here 'rdpgate-server.exe') $Exe -Force
+if ((Resolve-Path $Here).Path.TrimEnd('\') -ne $InstallDir.TrimEnd('\')) {
+    Copy-Item (Join-Path $Here 'rdpgate-server.exe') $Exe -Force
+}
 foreach ($f in 'uninstall-server.ps1', 'install-server.ps1') {
     $src = Join-Path $Here $f
     if ((Test-Path $src) -and ((Resolve-Path $src).Path -ne (Join-Path $InstallDir $f))) { Copy-Item $src $InstallDir -Force }
@@ -248,3 +261,4 @@ Remote Desktop certificate thumbprint (the app also checks this automatically):
 Status: rdpgate-server status      Logs: $DataDir\logs\rdpgate.log
 "@
 if ($PublicHost) { Write-Host "Browser sign-in: add a passkey with  rdpgate-server passkey-enroll" }
+if ($FromInstaller) { Read-Host "`nPress Enter to finish" | Out-Null }

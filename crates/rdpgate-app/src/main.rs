@@ -7,11 +7,13 @@
 use eframe::egui::{self, Color32, RichText, TextEdit};
 use ed25519_dalek::SigningKey;
 use rdpgate_client::{self as client, Grant, Identity, RdpCheck};
+use rdpgate_core::update::{Available, Component};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use zeroize::Zeroizing;
 
 fn main() -> eframe::Result {
+    rdpgate_core::update::cleanup_previous();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("RDP Gate")
@@ -45,6 +47,34 @@ struct Session {
     check: RdpCheck,
 }
 
+/// Self-update progress, shown as a banner.
+enum Upd {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(Box<Available>),
+    Installing,
+    Installed { version: String, relaunch: PathBuf },
+    Failed(String),
+}
+
+enum UpdMsg {
+    Checked(Result<Option<Available>, String>),
+    Installed(Result<(String, PathBuf), String>),
+}
+
+/// Starts the freshly installed version and quits this one.
+fn relaunch(target: &std::path::Path) {
+    let started = if cfg!(target_os = "macos") {
+        std::process::Command::new("/usr/bin/open").arg("-n").arg(target).spawn()
+    } else {
+        std::process::Command::new(target).spawn()
+    };
+    if started.is_ok() {
+        std::process::exit(0);
+    }
+}
+
 /// Results of work done off the UI thread (Argon2 and the network are slow).
 enum Done {
     Created(Result<Identity, String>),
@@ -69,6 +99,9 @@ struct GateApp {
     busy: Option<&'static str>,
     status: Option<(bool, String)>,
     rx: Option<Receiver<Done>>,
+    upd: Upd,
+    upd_rx: Option<Receiver<UpdMsg>>,
+    upd_started: bool,
 }
 
 fn default_device_name() -> String {
@@ -118,7 +151,93 @@ impl GateApp {
             busy: None,
             status: None,
             rx: None,
+            upd: Upd::Idle,
+            upd_rx: None,
+            upd_started: false,
         }
+    }
+
+    fn start_update_check(&mut self, ctx: &egui::Context) {
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        client::mark_update_checked(&self.dir);
+        std::thread::spawn(move || {
+            let _ = tx.send(UpdMsg::Checked(client::check_update()));
+            ctx.request_repaint();
+        });
+        self.upd = Upd::Checking;
+        self.upd_rx = Some(rx);
+    }
+
+    fn start_update_install(&mut self, ctx: &egui::Context, av: Available) {
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let r = client::install_update(&av, Component::App).map(|p| (av.version.to_string(), p));
+            let _ = tx.send(UpdMsg::Installed(r));
+            ctx.request_repaint();
+        });
+        self.upd = Upd::Installing;
+        self.upd_rx = Some(rx);
+    }
+
+    /// Checks once a day at launch (if enabled) and installs automatically
+    /// when the user allowed it.
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        if !self.upd_started {
+            self.upd_started = true;
+            if client::load_config(&self.dir).map(|c| client::update_due(&c)).unwrap_or(false) {
+                self.start_update_check(ctx);
+            }
+        }
+        let Some(rx) = &self.upd_rx else { return };
+        let Ok(msg) = rx.try_recv() else { return };
+        self.upd_rx = None;
+        match msg {
+            UpdMsg::Checked(Ok(None)) => self.upd = Upd::UpToDate,
+            UpdMsg::Checked(Ok(Some(av))) => {
+                let auto = client::load_config(&self.dir).map(|c| c.auto_update).unwrap_or(false);
+                if auto {
+                    self.start_update_install(ctx, av);
+                } else {
+                    self.upd = Upd::Available(Box::new(av));
+                }
+            }
+            UpdMsg::Installed(Ok((version, relaunch))) => self.upd = Upd::Installed { version, relaunch },
+            UpdMsg::Checked(Err(e)) | UpdMsg::Installed(Err(e)) => self.upd = Upd::Failed(e),
+        }
+    }
+
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        match &self.upd {
+            Upd::Installed { version, relaunch: target } => {
+                let target = target.clone();
+                ui.horizontal(|ui| {
+                    ui.colored_label(GOOD, format!("Updated to {version}."));
+                    if ui.button("Restart now").clicked() {
+                        relaunch(&target);
+                    }
+                });
+            }
+            Upd::Available(av) => {
+                let av = (**av).clone();
+                ui.horizontal(|ui| {
+                    ui.label(format!("Version {} is available.", av.version));
+                    if ui.button("Install update").clicked() {
+                        self.start_update_install(&ctx, av);
+                    }
+                });
+            }
+            Upd::Installing => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Installing update…");
+                });
+            }
+            _ => return,
+        }
+        ui.add_space(8.0);
     }
 
     fn run(&mut self, ctx: &egui::Context, label: &'static str, job: impl FnOnce() -> Done + Send + 'static) {
@@ -246,6 +365,7 @@ impl GateApp {
                 return;
             }
         };
+        self.update_banner(ui);
         ui.heading("Remote Desktop");
         match client::card(&cfg) {
             Ok(c) => {
@@ -331,6 +451,32 @@ impl GateApp {
             if let Some(a) = cfg.last_known {
                 ui.label(format!("Server last seen at {a}"));
             }
+            ui.separator();
+            let mut auto = cfg.auto_update;
+            if ui.checkbox(&mut auto, "Update automatically (signed updates only)").changed() {
+                let _ = client::set_auto_update(&self.dir, auto);
+            }
+            ui.horizontal(|ui| {
+                ui.label(format!("Version {}", client::VERSION));
+                let checking = matches!(self.upd, Upd::Checking | Upd::Installing);
+                if ui.add_enabled(!checking, egui::Button::new("Check for updates")).clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.start_update_check(&ctx);
+                }
+            });
+            match &self.upd {
+                Upd::Checking => {
+                    ui.small("Checking…");
+                }
+                Upd::UpToDate => {
+                    ui.small("You have the latest version.");
+                }
+                Upd::Failed(e) => {
+                    ui.colored_label(BAD, format!("Update: {e}"));
+                }
+                _ => {}
+            }
+            ui.separator();
             ui.label("Replace the server card:");
             self.card_ui(ui);
         });
@@ -340,6 +486,10 @@ impl GateApp {
 impl eframe::App for GateApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
+        if matches!(self.screen, Screen::Main) {
+            let ctx = ui.ctx().clone();
+            self.poll_update(&ctx);
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(6.0);

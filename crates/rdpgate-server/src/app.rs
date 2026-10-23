@@ -45,6 +45,16 @@ pub struct App {
     pub enrolls: Pending<(String, PasskeyRegistration)>,
     rdp_cert: tokio::sync::Mutex<Option<(RdpCert, Instant)>>,
     conns: Mutex<HashMap<String, u32>>,
+    restart: tokio::sync::Notify,
+    restart_requested: std::sync::atomic::AtomicBool,
+}
+
+/// Why the server stopped.
+#[derive(Debug, PartialEq)]
+pub enum Exit {
+    Stopped,
+    /// A new version was installed; the service manager should start it.
+    Restart,
 }
 
 /// Short-lived WebAuthn ceremony state, keyed by a random id. Each source
@@ -136,8 +146,16 @@ impl App {
             enrolls: Pending::new(4),
             rdp_cert: tokio::sync::Mutex::new(None),
             conns: Mutex::new(HashMap::new()),
+            restart: tokio::sync::Notify::new(),
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
             cfg,
         }))
+    }
+
+    /// Asks the server to stop so the freshly installed version can start.
+    pub fn request_restart(&self) {
+        self.restart_requested.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.restart.notify_one();
     }
 
     fn take_slot(&self, src: &str) -> Option<ConnSlot<'_>> {
@@ -256,7 +274,7 @@ fn tls_setup(cfg: &Config, shutdown: watch::Receiver<bool>) -> Result<Tls, Strin
 }
 
 /// Binds the configured addresses and serves until `shutdown` flips to true.
-pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) -> Result<(), String> {
+pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) -> Result<Exit, String> {
     let mut listeners = Vec::new();
     for l in &app.cfg.listen {
         let addr: SocketAddr = l.parse().map_err(|e| format!("listen {l}: {e}"))?;
@@ -292,7 +310,7 @@ fn bind(addr: SocketAddr) -> std::io::Result<TcpListener> {
     TcpListener::from_std(sock.into())
 }
 
-pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut watch::Receiver<bool>) -> Result<(), String> {
+pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut watch::Receiver<bool>) -> Result<Exit, String> {
     let tls = Arc::new(tls_setup(&app.cfg, shutdown.clone())?);
 
     // Nothing from a previous run may stay open, then check for anything
@@ -331,6 +349,7 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
 
     let maint = tokio::spawn(maintain(app.clone(), shutdown.clone()));
     let beacon = tokio::spawn(crate::beacon::run(app.clone(), shutdown.clone()));
+    let updater = tokio::spawn(crate::updater::run(app.clone(), shutdown.clone()));
 
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut accepts = Vec::new();
@@ -354,9 +373,13 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
         }));
     }
 
-    while !*shutdown.borrow() {
-        if shutdown.changed().await.is_err() {
+    loop {
+        if *shutdown.borrow() || app.restart_requested.load(std::sync::atomic::Ordering::SeqCst) {
             break;
+        }
+        tokio::select! {
+            r = shutdown.changed() => if r.is_err() { break },
+            _ = app.restart.notified() => {}
         }
     }
     crate::logln!("STOP closing all firewall grants");
@@ -365,8 +388,9 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     }
     maint.abort();
     beacon.abort();
+    updater.abort();
     app.grants.shutdown().await;
-    Ok(())
+    if app.restart_requested.load(std::sync::atomic::Ordering::SeqCst) { Ok(Exit::Restart) } else { Ok(Exit::Stopped) }
 }
 
 async fn connection(app: Arc<App>, tls: Arc<Tls>, tcp: TcpStream, peer: SocketAddr) {

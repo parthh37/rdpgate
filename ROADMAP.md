@@ -12,6 +12,8 @@
 - [x] Per-device lockout after 10 wrong codes
 - [x] Installer that hardens RDP (NLA, TLS, CredSSP), the firewall (incl. Group Policy check) and the data folder
 - [x] Mac and Windows desktop app plus `rdpgate` CLI
+- [x] Setup wizards (Inno Setup) for the Windows server and client, a disk image for Mac
+- [x] Signed auto-updates for server, apps and CLIs; one-click automated version bump and release
 
 ## v0.2: Tunnel mode
 
@@ -29,7 +31,8 @@ address, and many people can share one (hotel Wi-Fi, carrier NAT).
 
 - [ ] Privilege separation: an unprivileged internet-facing process and a tiny
       firewall helper running as SYSTEM
-- [ ] Code-signed Windows binaries, notarized macOS app, MSI installer
+- [ ] Code-signed Windows binaries and installers (Authenticode), notarized macOS app
+- [ ] Release-key rotation built into the updater
 - [ ] Device keys held in hardware: Secure Enclave (macOS), TPM (Windows)
 - [ ] Optional "passkey **and** code" mode
 - [ ] Beacon key rotation (`rdpgate-server beacon-rotate`) and per-device beacon encryption
@@ -44,7 +47,6 @@ address, and many people can share one (hotel Wi-Fi, carrier NAT).
 - [ ] IPv6 listening by default, with dual-stack grants
 - [ ] Multiple users with their own devices and passkeys
 - [ ] Small admin web page on the server (localhost only)
-- [ ] Auto-update with signature verification
 
 ## Platforms
 

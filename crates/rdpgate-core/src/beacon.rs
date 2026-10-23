@@ -2,8 +2,9 @@
 //!
 //! The server publishes its current public address as a *beacon*: signed with
 //! the server's identity key (so nobody can forge one) and encrypted with a
-//! beacon key that only enrolled computers hold (so the storage, a secret
-//! GitHub gist, never sees your home IP). Clients learn the server's public
+//! beacon key that only enrolled computers hold (so the gist's contents never
+//! reveal your address; GitHub, like any website, does see the IP each update
+//! comes from). Clients learn the server's public
 //! key and the beacon key once, from the *server card* printed at enrollment.
 
 use base64::Engine as _;
