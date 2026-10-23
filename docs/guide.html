@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operation guide · RDP Gate</title>
+<meta name="description" content="Step-by-step guide to RDP Gate: install the server on your Windows PC, set up the Mac or Windows app, and sign in from the app, the command line or a browser.">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<header class="bar">
+  <a class="brand" href="./"><img src="assets/logo.png" alt="" width="32" height="32"><span>RDP Gate</span></a>
+  <nav aria-label="Primary">
+    <a href="./#how">How it works</a>
+    <a href="guide.html" aria-current="page">Guide</a>
+    <a href="./#download">Download</a>
+    <a href="./#limits">Limitations</a>
+    <a href="https://github.com/parthh37/rdpgate">GitHub</a>
+  </nav>
+</header>
+
+<main class="guide">
+
+<section class="guide-head">
+  <p class="kicker">Operation guide</p>
+  <h1>Set up RDP Gate,<br><span>then sign in from anywhere.</span></h1>
+  <p class="lede">This guide has three parts. First install the agent on the Windows PC you connect <em>to</em> (the server). Then set up the app on each Mac or PC you connect <em>from</em> (the client). Finally, sign in: from the app, the command line or a browser.</p>
+</section>
+
+<div class="guide-layout">
+
+<nav class="toc" aria-label="On this page">
+  <p>On this page</p>
+  <ol>
+    <li><a href="#before">Before you start</a></li>
+    <li><a href="#server">Server: the Windows PC</a></li>
+    <li><a href="#client">Client: your Mac or PC</a></li>
+    <li><a href="#access">Signing in and connecting</a></li>
+    <li><a href="#browser">Browser sign-in (optional)</a></li>
+    <li><a href="#operate">Day-to-day operation</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ol>
+</nav>
+
+<div class="guide-body">
+
+<!-- ================================================================== -->
+<section id="before">
+  <h2>Before you start</h2>
+  <p>Setup takes about 15 minutes. Have these ready:</p>
+  <table class="spec">
+    <tr><th>Server</th><td>A Windows 10/11 <strong>Pro, Enterprise or Education</strong> PC, or Windows Server. Windows Home can't accept Remote Desktop connections. You need an administrator account and a Windows password (Remote Desktop doesn't work with passwordless sign-in).</td></tr>
+    <tr><th>Router</th><td>Admin access, in case UPnP is off and you have to forward ports by hand. You'll also reserve a fixed LAN address for the PC.</td></tr>
+    <tr><th>GitHub</th><td>A free GitHub account, ideally one used <strong>only</strong> for RDP Gate. The server publishes its encrypted address in a secret gist on this account.</td></tr>
+    <tr><th>Phone</th><td>Any authenticator app: Google or Microsoft Authenticator, 1Password, Bitwarden and so on.</td></tr>
+    <tr><th>Mac client</th><td>macOS 11 or later, and Microsoft's free <a href="https://apps.apple.com/app/windows-app/id1295203466">Windows App</a> for the Remote Desktop session itself.</td></tr>
+    <tr><th>Windows client</th><td>Nothing extra: RDP Gate uses the built-in Remote Desktop Connection.</td></tr>
+  </table>
+  <p>Download everything from the <a href="https://github.com/parthh37/rdpgate/releases">Releases page</a>, and check files against <code>SHA256SUMS.txt</code> there.</p>
+</section>
+
+<!-- ================================================================== -->
+<section id="server">
+  <h2>Part 1 · Server: the Windows PC</h2>
+  <p class="section-lede">Everything in this part happens on the PC you want to reach from outside.</p>
+
+  <ol class="setup">
+    <li id="token">
+      <h3>Make a GitHub token for the beacon</h3>
+      <p>Your PC has no fixed address, so it publishes its current IP in a secret gist, encrypted and signed. To do that it needs a token.</p>
+      <ol class="sub">
+        <li>Sign in to GitHub with the account you'll use only for RDP Gate.</li>
+        <li>Open <a href="https://github.com/settings/personal-access-tokens/new">Settings → Developer settings → Fine-grained tokens → Generate new token</a>.</li>
+        <li>Under <em>Account permissions</em>, set <strong>Gists</strong> to <strong>Read and write</strong>. Leave everything else at <em>No access</em>.</li>
+        <li>Generate the token and copy it. You paste it into Setup in the next step.</li>
+      </ol>
+      <p class="note">Why a separate account? A Gists token can read and change <em>every</em> gist on its account, and GitHub can't narrow it to one. On an account used only for this, a leaked token exposes nothing else.</p>
+    </li>
+
+    <li id="install">
+      <h3>Run the server Setup</h3>
+      <p>Run <code>RDP-Gate-Server-Setup-&lt;version&gt;.exe</code>. At the SmartScreen prompt choose <em>More info</em>, then <em>Run anyway</em> (the build isn't Microsoft-signed yet). The wizard asks for:</p>
+      <table class="spec">
+        <tr><th>Domain name</th><td>Leave it empty unless you want <a href="#browser">browser sign-in</a>. The desktop app never needs one.</td></tr>
+        <tr><th>Set up the IP beacon now</th><td>Keep this ticked. A window opens and asks for the token from step 1 at a hidden prompt.</td></tr>
+        <tr><th>Forward ports on my router</th><td>Keep ticked. Setup asks the router (UPnP) to forward TCP 443 and 3389 to this PC.</td></tr>
+        <tr><th>Account lockout policy</th><td>Keep ticked. 10 wrong Windows passwords lock that account for 15 minutes.</td></tr>
+        <tr><th>Stop this PC sleeping</th><td>Keep ticked on a desktop. A sleeping PC can't answer, and nothing on the internet can wake it. On a laptop this only warns.</td></tr>
+        <tr><th>Also open UDP</th><td>Off by default. UDP makes Remote Desktop smoother, but UDP senders can be forged. Leave it off unless you need it.</td></tr>
+      </table>
+      <p>Setup then blocks inbound traffic in Windows Firewall, turns on Remote Desktop with Network Level Authentication, creates the server identity, publishes the first beacon and starts the <code>RDPGate</code> Windows service. If Group Policy still exposes Remote Desktop, it stops and tells you why.</p>
+      <details class="more">
+        <summary>Prefer a script? (portable zip)</summary>
+        <p>Unzip <code>RDP-Gate-&lt;version&gt;-Windows-Server.zip</code>, open PowerShell <strong>as Administrator</strong> in that folder and run:</p>
+        <pre><code>Set-ExecutionPolicy -Scope Process Bypass
+.\install-server.ps1</code></pre>
+        <p>Switches: <code>-PublicHost rdp.example.com</code>, <code>-AllowUdp</code>, <code>-SkipLockout</code>, <code>-SkipSleep</code>, <code>-NoBeacon</code>, <code>-RdpPublicPort 53389</code>, <code>-ListenPort 8443</code>.</p>
+      </details>
+    </li>
+
+    <li id="totp">
+      <h3>Set up 6-digit codes</h3>
+      <p>On the last page of Setup, leave <em>Set up 6-digit codes now</em> ticked. A window shows a QR code: scan it with your authenticator app. To do it later, or again, run in PowerShell as Administrator:</p>
+      <pre><code>rdpgate-server totp-setup            # add --invert if the QR code won't scan
+rdpgate-server totp-setup --force    # replace the secret (old codes stop working)</code></pre>
+    </li>
+
+    <li id="router">
+      <h3>Check the router</h3>
+      <p>Usually there's nothing to do. Check what happened:</p>
+      <pre><code>rdpgate-server status    # identity, beacon, router forwards, warnings
+rdpgate-server router    # try the router forwards again and report</code></pre>
+      <p>If the router refused UPnP, forward these by hand in its admin page, to this PC's LAN address:</p>
+      <table class="spec ports">
+        <tr><th scope="col">External</th><th scope="col">To this PC</th><th scope="col">Purpose</th></tr>
+        <tr><td>TCP 443</td><td>443</td><td>Sign-in</td></tr>
+        <tr><td>TCP 3389</td><td>3389</td><td>Remote Desktop. Windows Firewall keeps it closed until someone signs in.</td></tr>
+      </table>
+      <p>Either way, give the PC a <strong>reserved (fixed) address</strong> in the router's DHCP settings, so the forwards keep pointing at it.</p>
+      <p class="note warn">If <code>status</code> reports <strong>carrier-grade NAT</strong>, your ISP shares one public IP among many customers, and nothing from outside can reach your PC. Ask the ISP for a public IPv4 address. It's often free.</p>
+    </li>
+  </ol>
+</section>
+
+<!-- ================================================================== -->
+<section id="client">
+  <h2>Part 2 · Client: your Mac or PC</h2>
+  <p class="section-lede">Do this once on every computer you want to connect from. Each gets its own key, so you can remove one without affecting the others.</p>
+
+  <ol class="setup">
+    <li id="client-install">
+      <h3>Install the app</h3>
+      <div class="ways tight">
+        <article>
+          <h4>Mac</h4>
+          <p>Open <code>RDP-Gate-&lt;version&gt;-macOS.dmg</code> and drag <strong>RDP Gate</strong> to Applications. The first time, <strong>right-click</strong> it and choose <em>Open</em> (the build isn't notarized yet). Install Microsoft's <a href="https://apps.apple.com/app/windows-app/id1295203466">Windows App</a> too.</p>
+        </article>
+        <article>
+          <h4>Windows</h4>
+          <p>Run <code>RDP-Gate-Setup-&lt;version&gt;.exe</code>. It installs just for you, with no administrator rights, and adds RDP Gate to the Start menu. At SmartScreen choose <em>More info → Run anyway</em>.</p>
+        </article>
+      </div>
+    </li>
+
+    <li id="device-key">
+      <h3>Create this computer's key</h3>
+      <p>Open RDP Gate. On <em>Set up this computer</em>, fill in:</p>
+      <ul class="plain">
+        <li><strong>This computer</strong>: a short name, e.g. <code>macbook</code>.</li>
+        <li><strong>Windows user</strong>: your Windows account on the server (optional; it's pre-filled in Remote Desktop).</li>
+        <li><strong>Passphrase</strong>: encrypts the key on this computer. It never leaves it and <strong>can't be recovered</strong>, so keep it in your password manager.</li>
+      </ul>
+      <p>Choose <strong>Create device key</strong>.</p>
+    </li>
+
+    <li id="enroll">
+      <h3>Enroll it on the server</h3>
+      <p>The app now shows <em>Enroll this computer</em> with one command. Choose <strong>Copy command</strong>, then on the server, in PowerShell <strong>as Administrator</strong>, paste and run it:</p>
+      <pre><code>rdpgate-server device-add macbook rdpgate-ed25519:3q2+7w…</code></pre>
+      <p>The server prints the device's fingerprint. <strong>Check that it matches</strong> the fingerprint shown in the app. If it doesn't, the command was changed on the way: don't continue.</p>
+    </li>
+
+    <li id="card">
+      <h3>Paste the server card into the app</h3>
+      <p>The server also prints a <strong>server card</strong>, a line starting with <code>rdpgate-card:</code>. Paste it into the app and choose <strong>Save server card</strong>.</p>
+      <p>The card tells the app how to find your PC, and pins the server's identity key so that a fake server is caught. Keep it private: it can't sign in by itself, but it reveals where your PC is. Print it again any time with <code>rdpgate-server card</code>.</p>
+    </li>
+  </ol>
+
+  <details class="more">
+    <summary>Using the command line instead of the app</summary>
+    <p>The <code>rdpgate</code> tool does the same steps:</p>
+    <pre><code>rdpgate init --name macbook --username you     # prints the device-add command
+rdpgate card rdpgate-card:…                     # after running device-add on the server
+rdpgate show                                    # fingerprints, pinned server, enroll command</code></pre>
+  </details>
+</section>
+
+<!-- ================================================================== -->
+<section id="access">
+  <h2>Part 3 · Signing in and connecting</h2>
+  <p class="section-lede">Test from <em>outside</em> your home network first, for example over your phone's hotspot. From inside, see <a href="#trouble">"is not a public address"</a>.</p>
+
+  <ol class="setup">
+    <li id="connect-app">
+      <h3>Sign in from the app</h3>
+      <p>Enter your <strong>passphrase</strong> and the current <strong>6-digit code</strong>, then choose <strong>Sign in and open Remote Desktop</strong>. In a few seconds the app:</p>
+      <ol class="sub">
+        <li>reads and decrypts the beacon to find your PC's current address;</li>
+        <li>makes the server prove its identity key before sending anything;</li>
+        <li>signs in with this computer's key and your code;</li>
+        <li>checks the Remote Desktop certificate is your PC's;</li>
+        <li>opens Remote Desktop. Log in to Windows with your Windows password as usual.</li>
+      </ol>
+      <p>The app shows <em>Open for &lt;your IP&gt;</em> and a countdown. You have 10 minutes to start Remote Desktop. While you're connected, access stays open (up to 12 hours). If the Remote Desktop window closed, choose <strong>Open Remote Desktop</strong> to reopen it.</p>
+    </li>
+
+    <li id="close">
+      <h3>Close access when you're done</h3>
+      <p>Choose <strong>Close access now</strong> in the app, or run <code>rdpgate lock</code>. Otherwise access closes by itself a few minutes after you disconnect.</p>
+      <p class="note warn">While access is open, anyone behind the same public IP (hotel Wi-Fi, an office, a mobile carrier) can reach the Windows login screen. They still need your Windows password, but close access when you leave.</p>
+    </li>
+
+    <li id="connect-cli">
+      <h3>Or from the command line</h3>
+      <pre><code>rdpgate connect                 # asks for passphrase and code, then opens Remote Desktop
+rdpgate connect --no-launch     # only open the firewall; prints the address and .rdp file
+rdpgate connect --address 203.0.113.7:443   # try this address first
+rdpgate lock                    # close access for this network now</code></pre>
+    </li>
+  </ol>
+</section>
+
+<!-- ================================================================== -->
+<section id="browser">
+  <h2>Browser sign-in with a passkey (optional)</h2>
+  <p class="section-lede">Use this from a computer without the app, such as a work laptop or a friend's PC. Sign in with Touch ID, Face ID, Windows Hello or a security key.</p>
+  <p>Browsers tie passkeys to a domain name, never an IP address, so you need a domain you control (e.g. <code>rdp.example.com</code>) with a DNS record pointing at your home IP. If your home IP changes, keep it updated with a dynamic DNS service. The desktop app doesn't need any of this.</p>
+
+  <ol class="setup">
+    <li>
+      <h3>Give the server your domain</h3>
+      <p>Enter the domain in Setup, or add it later in PowerShell as Administrator, then restart the service:</p>
+      <pre><code>rdpgate-server init --force --host rdp.example.com
+Restart-Service RDPGate</code></pre>
+      <p>The server gets a certificate from Let's Encrypt by itself, through port 443. Your devices, passkeys and identity are kept.</p>
+    </li>
+    <li>
+      <h3>Find your sign-in page</h3>
+      <pre><code>rdpgate-server status
+# Browser login:  https://rdp.example.com/Xk3…random…/</code></pre>
+      <p>The page lives at a random path, so scanners never find it. <strong>Bookmark the full URL</strong> on each device you'll use. The domain alone shows nothing.</p>
+    </li>
+    <li>
+      <h3>Add a passkey</h3>
+      <pre><code>rdpgate-server passkey-enroll     # prints a one-time link, valid 15 minutes</code></pre>
+      <p>Open the link <strong>on the device</strong> whose passkey you want to add (your iPhone, Mac or PC), give it a name and choose <strong>Create passkey</strong>. Treat the link like a password. Repeat for each device. <code>passkey-list</code> and <code>passkey-remove NAME</code> manage them.</p>
+    </li>
+    <li>
+      <h3>Sign in from the browser</h3>
+      <p>Open your bookmarked sign-in page and choose <strong>Sign in with passkey</strong>. The page then shows:</p>
+      <ul class="plain">
+        <li><strong>Opened for</strong>: your network's public IP;</li>
+        <li><strong>Connect to</strong>: the address for your Remote Desktop app, or use <strong>Download .rdp file</strong>;</li>
+        <li><strong>The certificate fingerprints</strong> (SHA-256 and SHA-1). When Remote Desktop shows the PC's certificate, they must match. If they don't, someone is intercepting the connection: don't log in.</li>
+      </ul>
+      <p>Choose <strong>Close access now</strong> on the same page when you're done.</p>
+    </li>
+  </ol>
+</section>
+
+<!-- ================================================================== -->
+<section id="operate">
+  <h2>Day-to-day operation</h2>
+  <p class="section-lede">Run these on the server in PowerShell as Administrator.</p>
+  <table class="spec cmds">
+    <tr><th>See what's going on</th><td><code>rdpgate-server status</code>: identity, beacon, router, warnings and every open firewall grant.</td></tr>
+    <tr><th>Add another computer</th><td>Repeat <a href="#client">Part 2</a> on it. Each computer gets its own <code>device-add</code>.</td></tr>
+    <tr><th>List or remove computers</th><td><code>rdpgate-server device-list</code>, <code>rdpgate-server device-remove macbook</code>. Removing takes effect immediately.</td></tr>
+    <tr><th>Lost or stolen laptop</th><td><code>device-remove</code> it. Its key is useless without your passphrase and code anyway, but remove it.</td></tr>
+    <tr><th>Too many wrong codes</th><td>After 10 wrong codes that computer is locked: <code>rdpgate-server device-unlock macbook</code>.</td></tr>
+    <tr><th>New phone</th><td><code>rdpgate-server totp-setup --force</code> and scan the new QR code.</td></tr>
+    <tr><th>Replace the GitHub token</th><td><code>rdpgate-server beacon-setup</code>.</td></tr>
+    <tr><th>Updates</th><td>Automatic and signed. The server installs them only while nobody has access open. Update now with <code>rdpgate-server update</code>; in the app, open <em>This computer and server → Check for updates</em>.</td></tr>
+    <tr><th>Logs</th><td><code>C:\ProgramData\RDPGate\logs\rdpgate.log</code>: every refusal (<code>DENY</code>), sign-in (<code>GRANT open</code>), RDP connection and closure.</td></tr>
+    <tr><th>Settings</th><td><code>C:\ProgramData\RDPGate\config.json</code>, then <code>Restart-Service RDPGate</code>. See the <a href="https://github.com/parthh37/rdpgate#administration">settings table</a>.</td></tr>
+    <tr><th>Uninstall</th><td><em>Settings → Apps → RDP Gate Server</em>. Settings are kept, and Remote Desktop stays blocked from the network.</td></tr>
+  </table>
+</section>
+
+<!-- ================================================================== -->
+<section id="trouble">
+  <h2>Troubleshooting</h2>
+  <table class="spec trouble">
+    <tr><th>"answered but is NOT your server"</th><td>Something other than your server answered. If you reinstalled the server (new identity), paste its new card. Otherwise treat it as a spoofing attempt.</td></tr>
+    <tr><th>"The server refused this computer"</th><td>The computer isn't enrolled (check <code>device-list</code>), or your IP is blocked for a while after repeated failures.</td></tr>
+    <tr><th>"this computer is locked after too many wrong codes"</th><td>Run <code>rdpgate-server device-unlock NAME</code> on the server. Check your phone's clock is set automatically.</td></tr>
+    <tr><th>"is not a public address"</th><td>You signed in from your own network. Test from outside, or set <code>"allow_private_sources": true</code> in config.json.</td></tr>
+    <tr><th>Can't reach the server from outside</th><td>Run <code>rdpgate-server router</code>. It retries the forwards and tells you if UPnP is off or your ISP uses carrier-grade NAT. Check the PC isn't asleep.</td></tr>
+    <tr><th>"Port 443 is already used by …"</th><td>Another program (IIS, a VPN server) holds the port. Stop it, or install with <code>-ListenPort 8443</code> and forward the router's 443 to 8443.</td></tr>
+    <tr><th>Beacon errors in <code>status</code></th><td>The GitHub token expired or lost Gists access. Run <code>rdpgate-server beacon-setup</code>.</td></tr>
+    <tr><th>Windows rejects your password in Remote Desktop</th><td>Microsoft accounts with "passwordless" sign-in have no usable password. Turn off <em>Require Windows Hello sign-in for Microsoft accounts</em>, or use a local account.</td></tr>
+  </table>
+  <p class="fine">Still stuck? Open an <a href="https://github.com/parthh37/rdpgate/issues">issue on GitHub</a> with the relevant lines from the log. Report security problems privately: see <a href="https://github.com/parthh37/rdpgate/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+</section>
+
+</div>
+</div>
+
+</main>
+
+<footer class="foot">
+  <p>RDP Gate is MIT-licensed. <a href="https://github.com/parthh37/rdpgate">Source</a> · <a href="https://github.com/parthh37/rdpgate/blob/main/SECURITY.md">Report a vulnerability</a></p>
+  <p class="fine">This page loads nothing from anyone else: no fonts, trackers or scripts.</p>
+</footer>
+
+</body>
+</html>

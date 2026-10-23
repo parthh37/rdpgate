@@ -62,7 +62,7 @@ Source: "rdpgate.ico"; DestDir: "{app}"; Flags: ignoreversion
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "{code:HardenParams}"; StatusMsg: "Hardening Remote Desktop and starting the RDP Gate service..."; Flags: waituntilterminated
 Filename: "{cmd}"; Parameters: "/c """"{app}\rdpgate-server.exe"" totp-setup & pause"""; Description: "Set up 6-digit codes now (shows a QR code for your phone)"; Flags: postinstall waituntilterminated
-Filename: "https://github.com/parthh37/rdpgate#4-enroll-each-computer-youll-connect-from"; Description: "Open the guide for enrolling your computers"; Flags: postinstall shellexec nowait unchecked
+Filename: "https://parthh37.github.io/rdpgate/guide.html#client"; Description: "Open the guide for enrolling your computers"; Flags: postinstall shellexec nowait unchecked
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\uninstall-server.ps1"" -FromInstaller"; RunOnceId: "RDPGateUninstall"; Flags: waituntilterminated runhidden
