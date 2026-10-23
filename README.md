@@ -81,17 +81,18 @@ You need: a Windows 10/11 **Pro, Enterprise or Education** PC, or Windows Server
 **First, make a GitHub token for the beacon, on a GitHub account used just for this.** A token with Gists access can read and change *every* gist on its account, including your other secret gists, and GitHub can't limit it to one gist. With a free account used only for the beacon, a leaked token exposes nothing else. (Secret gists are unlisted, not private: anyone with the link can read one. That's why the beacon is encrypted.) On that account, create a fine-grained token at <https://github.com/settings/personal-access-tokens/new> with **only** *Account permissions → Gists: Read and write*.
 
 Then download **`RDP-Gate-Server-Setup-<version>.exe`** from [Releases](https://github.com/parthh37/rdpgate/releases) and run it on the Windows PC. The wizard asks for:
-- an optional domain name (only for browser sign-in),
+- **when to close Remote Desktop**: *now*, or *after your first sign-in* through RDP Gate. Pick the second if you're installing over Remote Desktop (Setup pre-selects it when it detects that), because closing it now would disconnect you and nothing is enrolled yet to get back in;
+- whether to set up browser sign-in with your own domain (a guided step; only for passkeys),
 - whether to set up the IP beacon now, set an account lockout policy, stop the PC sleeping, or allow UDP.
 
 When the beacon setup opens, paste the token at its hidden prompt. At the end, leave **Set up 6-digit codes now** ticked: a QR code appears for your authenticator app.
 
 <details><summary>Prefer a script? (portable zip)</summary>
 
-Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-PublicHost`, `-AllowUdp`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-RdpPublicPort`.
+Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-Protect Now|AfterSignIn`, `-DomainSetup` / `-PublicHost`, `-AllowUdp`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-RdpPublicPort`.
 </details>
 
-Setup does the following, in this order:
+Setup does the following, in this order (with *after your first sign-in*, the two firewall steps wait: the service does them once a computer has signed in through RDP Gate **and** connected to Remote Desktop, and that address keeps its own opening so its session stays up; `rdpgate-server status` shows `Protection: PENDING` until then, and `rdpgate-server protect` does it immediately):
 - installs `rdpgate-server.exe` to `C:\Program Files\RDPGate`. Its data goes in `C:\ProgramData\RDPGate`, which it takes ownership of and locks to SYSTEM and Administrators.
 - sets Windows Firewall to **block inbound by default** and disables every rule that exposes the RDP port, including "any port" and port-range rules. It **stops** if Group Policy still exposes RDP.
 - only then turns on Remote Desktop with NLA, TLS, high encryption and patched-CredSSP only.
@@ -99,7 +100,9 @@ Setup does the following, in this order:
 - stops a desktop PC sleeping or hibernating on mains power, so it can always be reached (unless you untick it). On a laptop it only warns, and battery settings are never changed.
 - creates the server identity, publishes the first beacon, and starts the `RDPGate` service.
 
-Uninstall it from **Settings → Apps → RDP Gate Server**. Your settings in `C:\ProgramData\RDPGate` are kept, and Remote Desktop stays blocked from the network.
+Uninstall it from **Settings → Apps → RDP Gate Server**. It asks whether to **put back the settings Setup changed**: Windows Firewall (on or off, as before), the Remote Desktop firewall rules and settings, the lockout policy, sleep on mains power, and the router forwards RDP Gate added. Setup records these before its first change. Answer *No* to keep Remote Desktop blocked from the network. Your RDP Gate data in `C:\ProgramData\RDPGate` is kept either way. From a script: `uninstall-server.ps1 -Restore [-RemoveData]`.
+
+If Windows Firewall is off when you install, Setup turns it on (it's what keeps Remote Desktop closed).
 
 ### 2. Your router (usually automatic)
 
@@ -146,11 +149,14 @@ Test from outside your home network, for example over a phone hotspot. To sign i
 
 ### Optional: browser sign-in with a passkey
 
-Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control that points at your home IP. Run `.\install-server.ps1 -PublicHost rdp.example.com` (or `rdpgate-server init --force --host rdp.example.com`), restart the service, then add a passkey:
+Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control with a DNS "A" record pointing at your home IP (plus dynamic DNS if that IP changes). Tick it in Setup, or run the guided setup at any time:
 
 ```powershell
-rdpgate-server passkey-enroll   # one-time link: open it on your Mac/iPhone/PC
+rdpgate-server domain-setup      # domain, DNS record + live check, certificate, first passkey
+rdpgate-server passkey-enroll    # more passkeys: one-time link, open it on your Mac/iPhone/PC
 ```
+
+It shows the exact DNS record to create, checks it until it resolves to your IP (and warns about a Cloudflare proxy or a stray AAAA record), and keeps your beacon, devices and other settings. `domain-setup --remove` turns browser sign-in off.
 
 The sign-in page shows which IP it opened, lets you close access early, and shows the Remote Desktop certificate fingerprint to compare.
 
@@ -186,6 +192,8 @@ rdpgate-server card                    # print the server card again
 rdpgate-server device-list | device-remove NAME | device-unlock NAME
 rdpgate-server passkey-list | passkey-remove NAME
 rdpgate-server beacon-setup            # new token or gist
+rdpgate-server domain-setup            # browser sign-in with your domain (guided); --remove to turn off
+rdpgate-server protect                 # close Remote Desktop to non-signed-in addresses now (if pending)
 rdpgate-server update [--check]        # signed self-update
 rdpgate-server router                  # forward router ports now (UPnP) and report
 rdpgate-server totp-setup --force      # new authenticator secret

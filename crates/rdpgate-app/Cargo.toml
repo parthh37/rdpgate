@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 ed25519-dalek = "3.0.0"
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "x11", "wayland"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard", "x11", "wayland"] }
 rdpgate-client = { path = "../rdpgate-client" }
 rdpgate-core = { path = "../rdpgate-core" }
 tokio = { version = "1.54.1", features = ["rt", "net", "time"] }

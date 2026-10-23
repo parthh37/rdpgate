@@ -84,20 +84,22 @@
       <h3>Run the server Setup</h3>
       <p>Run <code>RDP-Gate-Server-Setup-&lt;version&gt;.exe</code>. At the SmartScreen prompt choose <em>More info</em>, then <em>Run anyway</em> (the build isn't Microsoft-signed yet). The wizard asks for:</p>
       <table class="spec">
-        <tr><th>Domain name</th><td>Leave it empty unless you want <a href="#browser">browser sign-in</a>. The desktop app never needs one.</td></tr>
+        <tr><th>Browser sign-in with my domain</th><td>Leave it unticked unless you want <a href="#browser">browser sign-in</a>. If you tick it, the next page explains what you need and asks for the domain; at the end a window shows the exact DNS record and checks it. The desktop app never needs a domain.</td></tr>
         <tr><th>Set up the IP beacon now</th><td>Keep this ticked. A window opens and asks for the token from step 1 at a hidden prompt.</td></tr>
         <tr><th>Forward ports on my router</th><td>Keep ticked. Setup asks the router (UPnP) to forward TCP 443 and 3389 to this PC.</td></tr>
         <tr><th>Account lockout policy</th><td>Keep ticked. 10 wrong Windows passwords lock that account for 15 minutes.</td></tr>
         <tr><th>Stop this PC sleeping</th><td>Keep ticked on a desktop. A sleeping PC can't answer, and nothing on the internet can wake it. On a laptop this only warns.</td></tr>
         <tr><th>Also open UDP</th><td>Off by default. UDP makes Remote Desktop smoother, but UDP senders can be forged. Leave it off unless you need it.</td></tr>
+        <tr><th>When to close Remote Desktop</th><td><strong>Now</strong> if you're sitting at the PC. <strong>After my first sign-in</strong> if you're installing over Remote Desktop: closing it now would disconnect you, with no enrolled computer to get back in. Setup picks this one for you when it sees a Remote Desktop session.</td></tr>
       </table>
-      <p>Setup then blocks inbound traffic in Windows Firewall, turns on Remote Desktop with Network Level Authentication, creates the server identity, publishes the first beacon and starts the <code>RDPGate</code> Windows service. If Group Policy still exposes Remote Desktop, it stops and tells you why.</p>
+      <p>Setup then turns on Remote Desktop with Network Level Authentication, creates the server identity, publishes the first beacon and starts the <code>RDPGate</code> Windows service. With <em>Now</em> it first blocks inbound traffic in Windows Firewall, and stops if Group Policy still exposes Remote Desktop.</p>
+      <p class="note"><strong>Installing over Remote Desktop?</strong> With <em>After my first sign-in</em>, Remote Desktop stays reachable as before. Once one of your computers has signed in through RDP Gate <em>and</em> connected to Remote Desktop, the service closes it to everyone else by itself. Your address keeps its own opening, so that session stays up. <code>rdpgate-server status</code> shows <em>Protection: PENDING</em> until then. To close it earlier, run <code>rdpgate-server protect</code>.</p>
       <details class="more">
         <summary>Prefer a script? (portable zip)</summary>
         <p>Unzip <code>RDP-Gate-&lt;version&gt;-Windows-Server.zip</code>, open PowerShell <strong>as Administrator</strong> in that folder and run:</p>
         <pre><code>Set-ExecutionPolicy -Scope Process Bypass
 .\install-server.ps1</code></pre>
-        <p>Switches: <code>-PublicHost rdp.example.com</code>, <code>-AllowUdp</code>, <code>-SkipLockout</code>, <code>-SkipSleep</code>, <code>-NoBeacon</code>, <code>-RdpPublicPort 53389</code>, <code>-ListenPort 8443</code>.</p>
+        <p>Switches: <code>-Protect Now|AfterSignIn</code> (default: <code>AfterSignIn</code> inside a Remote Desktop session, otherwise <code>Now</code>), <code>-DomainSetup</code> or <code>-PublicHost rdp.example.com</code>, <code>-AllowUdp</code>, <code>-SkipLockout</code>, <code>-SkipSleep</code>, <code>-NoBeacon</code>, <code>-RdpPublicPort 53389</code>, <code>-ListenPort 8443</code>.</p>
       </details>
     </li>
 
@@ -218,15 +220,28 @@ rdpgate lock                    # close access for this network now</code></pre>
 <section id="browser">
   <h2>Browser sign-in with a passkey (optional)</h2>
   <p class="section-lede">Use this from a computer without the app, such as a work laptop or a friend's PC. Sign in with Touch ID, Face ID, Windows Hello or a security key.</p>
-  <p>Browsers tie passkeys to a domain name, never an IP address, so you need a domain you control (e.g. <code>rdp.example.com</code>) with a DNS record pointing at your home IP. If your home IP changes, keep it updated with a dynamic DNS service. The desktop app doesn't need any of this.</p>
+  <p>Browsers tie passkeys to a domain name, never an IP address, so you need:</p>
+  <ul class="plain">
+    <li><strong>A domain you control</strong>, e.g. <code>example.com</code>, from any registrar or Cloudflare.</li>
+    <li><strong>A DNS "A" record</strong> for a name under it, e.g. <code>rdp.example.com</code>, pointing at your home's public IP.</li>
+    <li><strong>Dynamic DNS</strong> if your home IP changes. Most registrars and routers have it built in ("DDNS").</li>
+    <li><strong>Port 443</strong> on your router reaching the PC (already done for the app). Let's Encrypt only checks port 443.</li>
+  </ul>
+  <p>The desktop app doesn't need any of this.</p>
 
   <ol class="setup">
     <li>
-      <h3>Give the server your domain</h3>
-      <p>Enter the domain in Setup, or add it later in PowerShell as Administrator, then restart the service:</p>
-      <pre><code>rdpgate-server init --force --host rdp.example.com
-Restart-Service RDPGate</code></pre>
-      <p>The server gets a certificate from Let's Encrypt by itself, through port 443. Your devices, passkeys and identity are kept.</p>
+      <h3>Run the guided domain setup</h3>
+      <p>Tick <em>browser sign-in</em> in Setup, or run this later in PowerShell as Administrator:</p>
+      <pre><code>rdpgate-server domain-setup</code></pre>
+      <p>It walks you through four steps:</p>
+      <ol class="plain">
+        <li><strong>Domain name.</strong> Enter e.g. <code>rdp.example.com</code>.</li>
+        <li><strong>DNS record.</strong> It finds your public IP and shows the exact record to create (type <code>A</code>, name, value, TTL). Then it checks the record, and keeps checking every time you press Enter until it's right. It warns about a Cloudflare proxy (set it to <em>DNS only</em>) and a stray IPv6 (AAAA) record.</li>
+        <li><strong>Certificate.</strong> It's free and automatic from Let's Encrypt. An email for expiry notices is optional.</li>
+        <li><strong>Turn it on.</strong> It saves the settings and restarts the service. If access is open, it asks first, because a restart closes it. Then it prints your sign-in page and offers a link for your first passkey.</li>
+      </ol>
+      <p>Your devices, passkeys, beacon and other settings are kept. To turn browser sign-in off again: <code>rdpgate-server domain-setup --remove</code>.</p>
     </li>
     <li>
       <h3>Find your sign-in page</h3>
@@ -258,7 +273,9 @@ Restart-Service RDPGate</code></pre>
   <p class="section-lede">Run these on the server in PowerShell as Administrator.</p>
   <table class="spec cmds">
     <tr><th>See what's going on</th><td><code>rdpgate-server status</code>: identity, beacon, router, warnings and every open firewall grant.</td></tr>
-    <tr><th>Add another computer</th><td>Repeat <a href="#client">Part 2</a> on it. Each computer gets its own <code>device-add</code>.</td></tr>
+    <tr><th>Add another computer</th><td>Repeat <a href="#client">Part 2</a> on it. Each computer gets its own <code>device-add</code> and key, and they all use the same 6-digit codes. Two computers can't use the <em>same</em> code: if one just signed in, wait for the next code.</td></tr>
+    <tr><th>Protection still pending</th><td><code>rdpgate-server protect</code> closes Remote Desktop to everyone who hasn't signed in, now. It asks first if you're connected over Remote Desktop.</td></tr>
+    <tr><th>Add or change a domain</th><td><code>rdpgate-server domain-setup</code> (see <a href="#browser">browser sign-in</a>).</td></tr>
     <tr><th>List or remove computers</th><td><code>rdpgate-server device-list</code>, <code>rdpgate-server device-remove macbook</code>. Removing takes effect immediately.</td></tr>
     <tr><th>Lost or stolen laptop</th><td><code>device-remove</code> it. Its key is useless without your passphrase and code anyway, but remove it.</td></tr>
     <tr><th>Too many wrong codes</th><td>After 10 wrong codes that computer is locked: <code>rdpgate-server device-unlock macbook</code>.</td></tr>
@@ -267,7 +284,7 @@ Restart-Service RDPGate</code></pre>
     <tr><th>Updates</th><td>Automatic and signed. The server installs them only while nobody has access open. Update now with <code>rdpgate-server update</code>; in the app, open <em>This computer and server → Check for updates</em>.</td></tr>
     <tr><th>Logs</th><td><code>C:\ProgramData\RDPGate\logs\rdpgate.log</code>: every refusal (<code>DENY</code>), sign-in (<code>GRANT open</code>), RDP connection and closure.</td></tr>
     <tr><th>Settings</th><td><code>C:\ProgramData\RDPGate\config.json</code>, then <code>Restart-Service RDPGate</code>. See the <a href="https://github.com/parthh37/rdpgate#administration">settings table</a>.</td></tr>
-    <tr><th>Uninstall</th><td><em>Settings → Apps → RDP Gate Server</em>. Settings are kept, and Remote Desktop stays blocked from the network.</td></tr>
+    <tr><th>Uninstall</th><td><em>Settings → Apps → RDP Gate Server</em>. Answer <em>Yes</em> to put back everything Setup changed (firewall, Remote Desktop rules and settings, lockout policy, sleep, router forwards) as it was before installing. Answer <em>No</em> to keep Remote Desktop blocked from the network. Your RDP Gate data is kept either way.</td></tr>
   </table>
 </section>
 

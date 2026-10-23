@@ -17,10 +17,15 @@ or static IP needed). Then:
 Router: forward TCP 443 and TCP 3389 to this PC. Remote Desktop stays closed
 until someone signs in.
 
-Optional browser sign-in with passkeys needs your own DNS name:
-    .\install-server.ps1 -PublicHost rdp.example.com
-    rdpgate-server passkey-enroll
+Installing over Remote Desktop? Use -Protect AfterSignIn (the default inside a
+Remote Desktop session): Remote Desktop stays reachable until one of your
+computers has signed in through RDP Gate and connected, then the service
+closes it to everyone else. "rdpgate-server protect" does it sooner.
 
-Uninstall:  .\uninstall-server.ps1  (add -RemoveData to delete settings)
+Optional browser sign-in with passkeys needs your own domain name. Guided:
+    rdpgate-server domain-setup
+
+Uninstall:  .\uninstall-server.ps1 -Restore   (puts back what Setup changed;
+            add -RemoveData to delete RDP Gate's data too)
 
 Full guide: https://github.com/parthh37/rdpgate

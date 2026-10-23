@@ -79,7 +79,11 @@ enum Cmd {
     /// Print the server card to paste into RDP Gate on your computers
     Card,
     /// Forward the needed ports on the router now (UPnP) and report
-    Router,
+    Router {
+        /// Remove the forwards RDP Gate made instead (used when uninstalling)
+        #[arg(long)]
+        remove: bool,
+    },
     /// Run in the foreground (the Windows service does this for you)
     Run {
         #[arg(long, hide = true)]
@@ -87,6 +91,20 @@ enum Cmd {
     },
     /// Show configuration, identity, beacon and open firewall grants
     Status,
+    /// Close Remote Desktop to everyone who hasn't signed in (Administrator).
+    /// Drops Remote Desktop sessions that didn't come through RDP Gate.
+    Protect {
+        /// Don't do it now: let the service do it once someone has signed in
+        /// through RDP Gate and connected (safe while installing over RDP)
+        #[arg(long)]
+        after_sign_in: bool,
+        /// Don't ask before disconnecting this Remote Desktop session
+        #[arg(long)]
+        yes: bool,
+        /// Only record that Setup has already locked Remote Desktop down
+        #[arg(long, hide = true)]
+        already_applied: bool,
+    },
     /// Set up 6-digit codes for desktop sign-in (shows a QR code)
     TotpSetup {
         #[arg(long)]
@@ -95,7 +113,20 @@ enum Cmd {
         #[arg(long)]
         invert: bool,
     },
-    /// Print a one-time link that adds a passkey (needs --host)
+    /// Guided setup for browser (passkey) sign-in with your own domain name:
+    /// DNS record, a live check, certificate, and the first passkey
+    DomainSetup {
+        /// Domain name, e.g. rdp.example.com (asked if not given)
+        #[arg(long)]
+        host: Option<String>,
+        /// Email for Let's Encrypt certificate notices (optional)
+        #[arg(long)]
+        email: Option<String>,
+        /// Turn browser sign-in off again
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Print a one-time link that adds a passkey (needs domain-setup first)
     PasskeyEnroll {
         #[arg(long, default_value_t = 15)]
         minutes: u32,
@@ -103,7 +134,11 @@ enum Cmd {
     PasskeyList,
     PasskeyRemove { name: String },
     /// Enroll a computer (paste the line its RDP Gate app printed)
-    DeviceAdd { name: String, public_key: String },
+    DeviceAdd {
+        name: String,
+        /// The computer's key (rdpgate-ed25519:…); asked for if left out
+        public_key: Option<String>,
+    },
     DeviceList,
     /// Remove a computer; it can no longer sign in
     DeviceRemove { name: String },
@@ -207,7 +242,13 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             print_card(&cfg, &id);
             Ok(())
         }
-        Cmd::Router => {
+        Cmd::Router { remove: true } => {
+            for line in rdpgate_server::router::remove() {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Cmd::Router { remove: false } => {
             let cfg = Config::load(data)?;
             let st = rdpgate_server::router::apply(&cfg);
             for line in st.summary(&cfg) {
@@ -264,28 +305,10 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             Ok(())
         }
         Cmd::Status => status(data),
+        Cmd::Protect { after_sign_in, yes, already_applied } => protect(data, after_sign_in, yes, already_applied),
         Cmd::TotpSetup { force, invert } => totp_setup(data, force, invert),
-        Cmd::PasskeyEnroll { minutes } => {
-            if !(1..=60).contains(&minutes) {
-                return Err("--minutes must be 1-60".into());
-            }
-            let cfg = Config::load(data)?;
-            let Some(url) = cfg.portal_url("enroll").filter(|_| cfg.web_login) else {
-                return Err("browser sign-in needs a DNS name: run init --force --host rdp.example.com".into());
-            };
-            let token = rdpgate_core::random_token::<24>();
-            let expires = now() + minutes as i64 * 60;
-            Store::new(data).update(|st| {
-                st.enroll_tokens.retain(|t| t.expires > now());
-                st.enroll_tokens.push(EnrollToken { hash: token_hash(&token), expires });
-                Ok(())
-            })?;
-            println!("Open this link on the device whose passkey you want to add.");
-            println!("It works once, until {}:\n", local(expires));
-            println!("    {url}#{token}\n");
-            println!("Treat it like a password. The service must be running and reachable for the page to load.");
-            Ok(())
-        }
+        Cmd::PasskeyEnroll { minutes } => passkey_enroll(data, minutes),
+        Cmd::DomainSetup { host, email, remove } => domain_setup(data, host, email, remove),
         Cmd::PasskeyList => {
             let st = Store::new(data).load()?;
             if st.passkeys.is_empty() {
@@ -309,6 +332,20 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             if !valid_name(&name) {
                 return Err("device name: 1-32 letters, digits, dots, dashes or underscores".into());
             }
+            let public_key = match public_key {
+                Some(k) => k,
+                // The command often arrives split over two lines; then
+                // PowerShell runs the first line alone, and when both were
+                // pasted together the second line answers this prompt.
+                None => ask("Paste this computer's key (rdpgate-ed25519:…), shown in its RDP Gate app: ")?
+                    .ok_or("no key entered")?,
+            };
+            // Accept the whole command line too: use the token that is the key.
+            let public_key = public_key
+                .split_whitespace()
+                .find(|t| t.starts_with("rdpgate-ed25519:"))
+                .unwrap_or(public_key.trim())
+                .to_string();
             let key = wire::parse_public_key(&public_key)?;
             let encoded = wire::encode_public_key(&key);
             let cfg = Config::load(data)?;
@@ -368,6 +405,268 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
     }
 }
 
+fn passkey_enroll(data: &Path, minutes: u32) -> Result<(), String> {
+    if !(1..=60).contains(&minutes) {
+        return Err("--minutes must be 1-60".into());
+    }
+    let cfg = Config::load(data)?;
+    let Some(url) = cfg.portal_url("enroll").filter(|_| cfg.web_login) else {
+        return Err("browser sign-in needs a domain name: run rdpgate-server domain-setup".into());
+    };
+    let token = rdpgate_core::random_token::<24>();
+    let expires = now() + minutes as i64 * 60;
+    Store::new(data).update(|st| {
+        st.enroll_tokens.retain(|t| t.expires > now());
+        st.enroll_tokens.push(EnrollToken { hash: token_hash(&token), expires });
+        Ok(())
+    })?;
+    println!("Open this link on the device whose passkey you want to add.");
+    println!("It works once, until {}:\n", local(expires));
+    println!("    {url}#{token}\n");
+    println!("Treat it like a password. The service must be running and reachable for the page to load.");
+    Ok(())
+}
+
+/// Reads one line; `None` at end of input.
+fn ask(prompt: &str) -> Result<Option<String>, String> {
+    print!("{prompt}");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(line.trim().to_string()))
+}
+
+fn yes_no(prompt: &str, default: bool) -> Result<bool, String> {
+    let hint = if default { "[Y/n]" } else { "[y/N]" };
+    Ok(match ask(&format!("{prompt} {hint} "))?.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        Some("y" | "yes") => true,
+        Some("n" | "no") => false,
+        _ => default,
+    })
+}
+
+/// What the domain currently resolves to, as (IPv4, IPv6) addresses.
+fn resolve(host: &str) -> (Vec<std::net::IpAddr>, Vec<std::net::IpAddr>) {
+    use std::net::ToSocketAddrs;
+    let mut addrs: Vec<std::net::IpAddr> =
+        (host, 443).to_socket_addrs().map(|i| i.map(|a| a.ip()).collect()).unwrap_or_default();
+    addrs.sort();
+    addrs.dedup();
+    addrs.into_iter().partition(|a| a.is_ipv4())
+}
+
+fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove: bool) -> Result<(), String> {
+    let mut cfg = Config::load(data)?;
+    if remove {
+        cfg.web_login = false;
+        cfg.public_host = None;
+        cfg.save(data)?;
+        restart_service(data)?;
+        println!("Browser sign-in is off. Passkeys are kept and work again if you set the same domain up later.");
+        return Ok(());
+    }
+
+    println!("Browser sign-in with a passkey: guided setup");
+    println!("============================================\n");
+    println!("Browsers only use passkeys with a domain name, never an IP address. You need:");
+    println!("  - a domain you control, e.g. example.com (from any registrar, or Cloudflare);");
+    println!("  - a name under it for this PC, e.g. rdp.example.com, with a DNS \"A\" record pointing at");
+    println!("    your home's public IP address;");
+    println!("  - if your home IP changes, dynamic DNS to keep that record current (most registrars and");
+    println!("    routers have it built in: look for \"DDNS\" or \"Dynamic DNS\");");
+    println!("  - port {} on your router reaching this PC (already done for the app).", cfg.public_port);
+    println!("The desktop app doesn't need any of this.\n");
+
+    // ---- 1. domain
+    println!("Step 1 of 4: domain name");
+    let host = match host {
+        Some(h) => h,
+        None => {
+            let current = cfg.public_host.clone().unwrap_or_default();
+            let prompt = if current.is_empty() {
+                "  Domain name for this PC (e.g. rdp.example.com): ".to_string()
+            } else {
+                format!("  Domain name for this PC [{current}]: ")
+            };
+            match ask(&prompt)? {
+                Some(h) if !h.is_empty() => h,
+                _ if !current.is_empty() => current,
+                _ => return Err("no domain name entered".into()),
+            }
+        }
+    };
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if !rdpgate_server::config::valid_host(&host) {
+        return Err(format!("{host:?} isn't a domain name like rdp.example.com"));
+    }
+
+    // ---- 2. DNS
+    println!("\nStep 2 of 4: DNS record");
+    print!("  Finding this network's public IP… ");
+    std::io::stdout().flush().ok();
+    let public = rdpgate_server::beacon::discover_public_ip()?;
+    println!("{public}\n");
+    let label = host.split('.').next().unwrap_or(&host);
+    println!("  At your DNS provider, create (or update) this record:\n");
+    println!("      Type   Name                         Value              TTL");
+    println!("      A      {:<28} {:<18} 300 (or Auto)\n", format!("{label}  (= {host})"), public.to_string());
+    println!("  Most providers want only the part before your domain in Name (\"{label}\").");
+    println!("  Cloudflare: set Proxy status to \"DNS only\" (grey cloud). The proxy would hide this PC.");
+    loop {
+        let (v4, v6) = resolve(&host);
+        let ipv6_listen = cfg.listen.iter().any(|l| l.starts_with('['));
+        if v4.contains(&public) && (v6.is_empty() || ipv6_listen) {
+            println!("  ✓ {host} points at {public}.");
+            break;
+        }
+        if v4.is_empty() && v6.is_empty() {
+            println!("  ✗ {host} doesn't resolve yet. New records can take a few minutes to appear.");
+        } else if !v4.contains(&public) {
+            let seen: Vec<String> = v4.iter().chain(&v6).map(|a| a.to_string()).collect();
+            println!("  ✗ {host} points at {}, not {public}.", seen.join(", "));
+            println!("    If that's a Cloudflare address, switch the record to \"DNS only\".");
+        } else {
+            println!("  ! {host} also has an IPv6 (AAAA) record, but RDP Gate listens on IPv4 only.");
+            println!("    Browsers may try IPv6 first and fail: delete the AAAA record for this name.");
+        }
+        match ask("  Press Enter to check again, or type \"skip\" to continue anyway: ")? {
+            Some(a) if a.eq_ignore_ascii_case("skip") => {
+                println!("  Continuing. Sign-in and the certificate only work once the record is right.");
+                break;
+            }
+            None => return Err("cancelled; nothing was changed".into()),
+            _ => {}
+        }
+    }
+
+    // ---- 3. certificate
+    println!("\nStep 3 of 4: certificate");
+    if cfg.tls.mode == "acme" {
+        println!("  The server gets a free certificate from Let's Encrypt by itself, through port 443.");
+        if cfg.public_port != 443 {
+            println!("  ! Your router forwards port {} instead of 443. Let's Encrypt only checks port 443,", cfg.public_port);
+            println!("    so also forward the router's TCP 443 to this PC's port {}.", listen_port(&cfg));
+        }
+        let email = match email {
+            Some(e) => Some(e),
+            None => {
+                let current = cfg.tls.email.clone().unwrap_or_default();
+                let prompt = if current.is_empty() {
+                    "  Email for certificate expiry notices (optional, Enter to skip): ".to_string()
+                } else {
+                    format!("  Email for certificate expiry notices [{current}]: ")
+                };
+                match ask(&prompt)? {
+                    Some(e) if !e.is_empty() => Some(e),
+                    _ => cfg.tls.email.clone(),
+                }
+            }
+        };
+        if let Some(e) = &email
+            && (!e.contains('@') || e.chars().any(char::is_whitespace))
+        {
+            return Err(format!("{e:?} isn't an email address"));
+        }
+        cfg.tls.email = email;
+    } else {
+        println!("  Using your own certificate files ({}).", cfg.tls.cert_file.as_ref().map(|p| p.display().to_string()).unwrap_or_default());
+        println!("  Make sure the certificate covers {host}.");
+    }
+
+    // ---- 4. save
+    println!("\nStep 4 of 4: turning browser sign-in on");
+    if cfg.public_host.as_deref().is_some_and(|h| h != host) {
+        println!("  ! The domain changes, so passkeys made for the old one stop working. Add new ones below.");
+    }
+    cfg.public_host = Some(host.clone());
+    cfg.web_login = true;
+    cfg.save(data)?;
+    restart_service(data)?;
+    let url = cfg.portal_url("").unwrap_or_default();
+    println!("\n  Your sign-in page (bookmark the FULL address on each device; the domain alone shows nothing):\n");
+    println!("      {url}\n");
+    println!("  The first visit may take up to a minute while the certificate is issued.");
+    println!("  Test it from outside your network, e.g. a phone on mobile data: many routers can't");
+    println!("  reach their own public address from inside.\n");
+
+    if Store::new(data).load()?.passkeys.is_empty() {
+        if yes_no("Create a link to add your first passkey now?", true)? {
+            println!();
+            passkey_enroll(data, 15)?;
+        } else {
+            println!("Add one later with: rdpgate-server passkey-enroll");
+        }
+    } else {
+        println!("Add more passkeys with: rdpgate-server passkey-enroll");
+    }
+    Ok(())
+}
+
+/// The local port the router should forward to.
+fn listen_port(cfg: &Config) -> u16 {
+    cfg.listen.first().and_then(|l| l.parse::<std::net::SocketAddr>().ok()).map_or(443, |a| a.port())
+}
+
+/// Restarts the service to apply new settings. Restarting closes every open
+/// grant, which drops Remote Desktop sessions that came through RDP Gate,
+/// so it asks first while anyone has access open.
+fn restart_service(data: &Path) -> Result<(), String> {
+    let open = std::fs::read(data.join("grants.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Vec<serde_json::Value>>(&b).ok())
+        .map_or(0, |g| g.len());
+    if open > 0 {
+        println!("  Access is open right now ({open} address(es), probably including yours). Restarting the");
+        println!("  service closes it and disconnects Remote Desktop sessions that came through RDP Gate.");
+        if !yes_no("  Restart now?", false)? {
+            println!("  Not restarted. The new settings apply at the next restart: Restart-Service RDPGate");
+            return Ok(());
+        }
+    }
+    match rdpgate_server::service::restart() {
+        Ok(()) => println!("  Service restarted with the new settings."),
+        Err(e) => println!("  Restart the service to apply the settings: Restart-Service RDPGate ({e})"),
+    }
+    Ok(())
+}
+
+fn protect(data: &Path, after_sign_in: bool, yes: bool, already_applied: bool) -> Result<(), String> {
+    let cfg = Config::load(data)?;
+    let store = Store::new(data);
+    if after_sign_in || already_applied {
+        rdpgate_server::protect::set_pending(&store, after_sign_in)?;
+        if after_sign_in {
+            println!("Protection is pending. Remote Desktop stays reachable as it is now until a computer signs in");
+            println!("through RDP Gate and connects; then the service closes it to everyone else by itself.");
+            println!("To do it sooner: rdpgate-server protect");
+        }
+        return Ok(());
+    }
+    // SESSIONNAME is RDP-Tcp#N inside a Remote Desktop session.
+    let over_rdp = std::env::var("SESSIONNAME").is_ok_and(|s| s.to_ascii_uppercase().starts_with("RDP-TCP"));
+    if over_rdp && !yes {
+        println!("You are connected over Remote Desktop. Turning protection on disconnects every session that");
+        println!("didn't come through RDP Gate, including this one unless you signed in through RDP Gate first.");
+        print!("Continue? [y/N] ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line).map_err(|e| e.to_string())?;
+        if !line.trim().eq_ignore_ascii_case("y") {
+            return Err("cancelled; nothing was changed".into());
+        }
+    }
+    println!("Locking Remote Desktop behind RDP Gate (this can take a minute)…");
+    let fw = rdpgate_server::firewall::for_config(&cfg);
+    let disabled = rdpgate_server::protect::apply(&*fw, &store)?;
+    for r in &disabled {
+        println!("  disabled firewall rule: {r}");
+    }
+    println!("Protection is on: Remote Desktop opens only for addresses that sign in through RDP Gate.");
+    Ok(())
+}
+
 fn status(data: &Path) -> Result<(), String> {
     let cfg = Config::load(data)?;
     let st = Store::new(data).load()?;
@@ -380,6 +679,12 @@ fn status(data: &Path) -> Result<(), String> {
         println!("                private source addresses are allowed (LAN sign-in)");
     }
     println!("Firewall:       {}", cfg.firewall);
+    if st.protection_pending {
+        println!("Protection:     PENDING: Remote Desktop is reachable without RDP Gate until a computer signs in");
+        println!("                and connects through it (or run: rdpgate-server protect)");
+    } else {
+        println!("Protection:     on");
+    }
     match &cfg.beacon {
         Some(b) => {
             let s: serde_json::Value = std::fs::read(data.join("beacon.json"))

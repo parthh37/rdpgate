@@ -25,6 +25,12 @@ pub trait Firewall: Send + Sync + 'static {
     /// Makes sure the sign-in ports are open for this program (and only this
     /// program), re-creating the rule if it is missing or out of date.
     fn ensure_portal(&self, ports: &[u16]) -> Result<(), String>;
+    /// Puts Remote Desktop behind RDP Gate: inbound blocked by default and
+    /// every rule that exposes the RDP port disabled, then Remote Desktop
+    /// turned on. Drops RDP connections that have no grant. Returns the rules
+    /// it disabled; fails (leaving Remote Desktop alone) if anything, such as
+    /// Group Policy, still exposes the port afterwards.
+    fn lock_down(&self) -> Result<Vec<String>, String>;
 }
 
 #[cfg_attr(not(windows), allow(unused_variables))]
@@ -50,6 +56,7 @@ pub fn early_sweep() -> Result<(), String> {
 pub struct DryRun {
     pub allowed: Mutex<HashSet<IpAddr>>,
     pub peers: Mutex<HashSet<IpAddr>>,
+    pub locked_down: std::sync::atomic::AtomicBool,
 }
 
 impl Firewall for DryRun {
@@ -80,6 +87,11 @@ impl Firewall for DryRun {
         crate::logln!("FIREWALL (dry-run) would allow TCP {ports:?} for this program");
         Ok(())
     }
+    fn lock_down(&self) -> Result<Vec<String>, String> {
+        crate::logln!("FIREWALL (dry-run) would block Remote Desktop for everyone without a grant");
+        self.locked_down.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(vec![])
+    }
 }
 
 #[cfg(windows)]
@@ -92,6 +104,29 @@ pub mod windows_fw {
     pub const RULE_PREFIX: &str = "RDPGate-Allow-";
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const CHILD_TIMEOUT: Duration = Duration::from_secs(20);
+    /// Lock-down inspects every firewall rule, which can take a minute.
+    const SLOW_TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// PowerShell `Test-ExposesRdp $rule $port`, the same test as
+    /// install-server.ps1: the rule allows inbound TCP to the RDP port (or
+    /// any port, or a range containing it) and isn't limited to some
+    /// unrelated program or service.
+    const EXPOSES_RDP_PS: &str = r#"function Test-ExposesRdp($r, [int] $p) {
+  $pf = $r | Get-NetFirewallPortFilter
+  if ($pf.Protocol -notin @('TCP','Any')) { return $false }
+  $hit = $false
+  foreach ($lp in @($pf.LocalPort)) {
+    if ($lp -eq 'Any' -or $lp -eq "$p") { $hit = $true }
+    elseif ($lp -match '^(\d+)-(\d+)$' -and [int]$Matches[1] -le $p -and [int]$Matches[2] -ge $p) { $hit = $true }
+  }
+  if (-not $hit) { return $false }
+  $app = ($r | Get-NetFirewallApplicationFilter).Program
+  $svc = ($r | Get-NetFirewallServiceFilter).Service
+  if ($app -notin @('Any','System','%SystemRoot%\system32\svchost.exe',"$env:SystemRoot\system32\svchost.exe") -and $svc -ne 'TermService') { return $false }
+  if ($svc -notin @('Any','TermService')) { return $false }
+  return $true
+}
+"#;
 
     pub struct WindowsFirewall {
         port: u16,
@@ -113,6 +148,10 @@ pub mod windows_fw {
     /// Runs a child process with a deadline, so a hung netsh/PowerShell can't
     /// stall grant expiry. Returns (success, combined output).
     fn run(exe: &str, args: &[&str]) -> Result<(bool, String), String> {
+        run_for(exe, args, CHILD_TIMEOUT)
+    }
+
+    fn run_for(exe: &str, args: &[&str], timeout: Duration) -> Result<(bool, String), String> {
         let mut child = Command::new(exe)
             .args(args)
             .stdin(Stdio::null())
@@ -121,7 +160,7 @@ pub mod windows_fw {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("{exe}: {e}"))?;
-        let deadline = Instant::now() + CHILD_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
@@ -144,9 +183,14 @@ pub mod windows_fw {
     }
 
     fn powershell(script: &str) -> Result<String, String> {
-        let (ok, out) = run(
+        powershell_for(script, CHILD_TIMEOUT)
+    }
+
+    fn powershell_for(script: &str, timeout: Duration) -> Result<String, String> {
+        let (ok, out) = run_for(
             &system32(r"WindowsPowerShell\v1.0\powershell.exe"),
             &["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            timeout,
         )?;
         if ok { Ok(out) } else { Err(format!("powershell: {}", out.trim())) }
     }
@@ -163,37 +207,20 @@ pub mod windows_fw {
         netsh(&["advfirewall", "firewall", "show", "rule", &format!("name={}", rule_name(ip))]).map(|(ok, _)| ok)
     }
 
-    impl Firewall for WindowsFirewall {
-        fn audit(&self) -> Vec<String> {
+    impl WindowsFirewall {
+        fn audit_for(&self, timeout: Duration) -> Vec<String> {
             let port = self.port;
             // ActiveStore = effective policy, including Group Policy rules.
-            // A rule exposes RDP if it allows inbound TCP to the RDP port, to
-            // any port, or to a range containing it, and isn't limited to some
-            // unrelated program.
             let script = format!(
-                r#"$p = {port}
+                r#"{EXPOSES_RDP_PS}
+$p = {port}
 Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object {{ $_.Enabled -ne 'True' -or $_.DefaultInboundAction -eq 'Allow' }} | ForEach-Object {{ 'PROFILE ' + $_.Name }}
 Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.DisplayName -notlike '{RULE_PREFIX}*' -and $_.DisplayName -notlike 'RDPGate-Portal*' }} |
-  ForEach-Object {{
-    $r = $_
-    $pf = $r | Get-NetFirewallPortFilter
-    if ($pf.Protocol -notin @('TCP','Any')) {{ return }}
-    $hit = $false
-    foreach ($lp in @($pf.LocalPort)) {{
-      if ($lp -eq 'Any' -or $lp -eq "$p") {{ $hit = $true }}
-      elseif ($lp -match '^(\d+)-(\d+)$' -and [int]$Matches[1] -le $p -and [int]$Matches[2] -ge $p) {{ $hit = $true }}
-    }}
-    if (-not $hit) {{ return }}
-    $app = ($r | Get-NetFirewallApplicationFilter).Program
-    $svc = ($r | Get-NetFirewallServiceFilter).Service
-    if ($app -notin @('Any','System','%SystemRoot%\system32\svchost.exe','C:\Windows\system32\svchost.exe') -and $svc -ne 'TermService') {{ return }}
-    if ($svc -notin @('Any','TermService')) {{ return }}
-    'RULE ' + $r.PolicyStoreSourceType + ' ' + $r.DisplayName
-  }}"#
+  Where-Object {{ $_.DisplayName -notlike 'RDPGate-*' -and (Test-ExposesRdp $_ $p) }} |
+  ForEach-Object {{ 'RULE ' + $_.PolicyStoreSourceType + ' ' + $_.DisplayName }}"#
             );
             let mut warnings = Vec::new();
-            match powershell(&script) {
+            match powershell_for(&script, timeout) {
                 Ok(out) => {
                     for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
                         if let Some(p) = line.strip_prefix("PROFILE ") {
@@ -206,6 +233,12 @@ Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Allow -E
                 Err(e) => warnings.push(format!("firewall audit failed: {e}")),
             }
             warnings
+        }
+    }
+
+    impl Firewall for WindowsFirewall {
+        fn audit(&self) -> Vec<String> {
+            self.audit_for(CHILD_TIMEOUT)
         }
 
         fn allow(&self, ip: IpAddr) -> Result<(), String> {
@@ -266,6 +299,39 @@ Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Allow -E
                 ports.join(",")
             ))
             .map(|_| ())
+        }
+
+        fn lock_down(&self) -> Result<Vec<String>, String> {
+            // Same steps, in the same order, as install-server.ps1. Our own
+            // rules (RDPGate-*) stay, so signed-in addresses stay connected.
+            let out = powershell_for(
+                &format!(
+                    r#"{EXPOSES_RDP_PS}
+$p = {}
+Get-NetFirewallRule -Name 'RDPGate-Temp-KeepRdp' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow
+Get-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -ErrorAction SilentlyContinue | Where-Object {{ $_.Enabled -eq 'True' }} |
+  ForEach-Object {{ $_ | Disable-NetFirewallRule; 'DISABLED ' + $_.DisplayName }}
+Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.DisplayName -notlike 'RDPGate-*' -and (Test-ExposesRdp $_ $p) }} |
+  ForEach-Object {{ $_ | Disable-NetFirewallRule; 'DISABLED ' + $_.DisplayName }}"#,
+                    self.port
+                ),
+                SLOW_TIMEOUT,
+            )?;
+            let disabled: Vec<String> =
+                out.lines().filter_map(|l| l.trim().strip_prefix("DISABLED ")).map(str::to_string).collect();
+            // Only turn Remote Desktop on once nothing else exposes it.
+            let left = self.audit_for(SLOW_TIMEOUT);
+            if !left.is_empty() {
+                return Err(left.join("; "));
+            }
+            powershell(
+                r#"Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Type DWord
+Set-Service TermService -StartupType Automatic
+Start-Service TermService -ErrorAction SilentlyContinue"#,
+            )?;
+            Ok(disabled)
         }
     }
 
