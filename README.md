@@ -98,7 +98,7 @@ Setup does the following, in this order (with *after your first sign-in*, the tw
 - only then turns on Remote Desktop with NLA, TLS, high encryption and patched-CredSSP only.
 - sets account lockout to 15 minutes after 10 wrong passwords (unless you untick it).
 - stops a desktop PC sleeping or hibernating on mains power, so it can always be reached (unless you untick it). On a laptop it only warns, and battery settings are never changed.
-- creates the server identity, publishes the first beacon, and starts the `RDPGate` service.
+- creates the server identity, publishes the first beacon, and starts the `RDPGate` service. It runs as SYSTEM and starts at boot whether or not anyone signs in to Windows. Windows restarts it after any failure, it exits and restarts itself if part of it stops working, and a scheduled task (`\RDPGate\Watchdog` in Task Scheduler) starts it again within 5 minutes if it was stopped any other way.
 
 Uninstall it from **Settings → Apps → RDP Gate Server**. It asks whether to **put back the settings Setup changed**: Windows Firewall (on or off, as before), the Remote Desktop firewall rules and settings, the lockout policy, sleep on mains power, and the router forwards RDP Gate added. Setup records these before its first change. Answer *No* to keep Remote Desktop blocked from the network. Your RDP Gate data in `C:\ProgramData\RDPGate` is kept either way. From a script: `uninstall-server.ps1 -Restore [-RemoveData]`.
 

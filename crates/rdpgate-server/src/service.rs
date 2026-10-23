@@ -90,16 +90,34 @@ mod imp {
             .create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS)
             .map_err(|e| format!("create service: {e}"))?;
         let _ = svc.set_description("Opens Remote Desktop only for signed-in devices and passkeys.");
-        let restart = ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::from_secs(10) };
-        let _ = svc.update_failure_actions(ServiceFailureActions {
+        // Always restart after a failure. Windows repeats the last action for
+        // every later failure, so it never gives up; the scheduled watchdog
+        // task (see install-server.ps1) covers a service stopped any other way.
+        let restart = |secs| ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::from_secs(secs) };
+        svc.update_failure_actions(ServiceFailureActions {
             reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86400)),
             reboot_msg: None,
             command: None,
-            actions: Some(vec![restart.clone(), restart.clone(), restart]),
-        });
-        let _ = svc.set_failure_actions_on_non_crash_failures(true);
+            actions: Some(vec![restart(5), restart(10), restart(30)]),
+        })
+        .map_err(|e| format!("set restart-on-failure: {e}"))?;
+        svc.set_failure_actions_on_non_crash_failures(true).map_err(|e| format!("set restart-on-failure: {e}"))?;
         svc.start(&[] as &[&OsStr]).map_err(|e| format!("start service: {e}"))?;
         Ok(())
+    }
+
+    /// Starts the service if it is stopped. Returns whether it had to.
+    pub fn ensure_running() -> Result<bool, String> {
+        let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|e| format!("open service manager (run as Administrator): {e}"))?;
+        let svc = m
+            .open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::START)
+            .map_err(|e| format!("open service: {e}"))?;
+        if svc.query_status().map_err(|e| format!("query service: {e}"))?.current_state != ServiceState::Stopped {
+            return Ok(false);
+        }
+        svc.start(&[] as &[&OsStr]).map_err(|e| format!("start service: {e}"))?;
+        Ok(true)
     }
 
     /// Stops the service (if running) and starts it again.
@@ -143,7 +161,7 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::{install, restart, run_as_service, uninstall};
+pub use imp::{ensure_running, install, restart, run_as_service, uninstall};
 
 #[cfg(not(windows))]
 pub fn install(_: &std::path::Path) -> Result<(), String> {
@@ -151,6 +169,10 @@ pub fn install(_: &std::path::Path) -> Result<(), String> {
 }
 #[cfg(not(windows))]
 pub fn restart() -> Result<(), String> {
+    Err("the service only exists on Windows".into())
+}
+#[cfg(not(windows))]
+pub fn ensure_running() -> Result<bool, String> {
     Err("the service only exists on Windows".into())
 }
 #[cfg(not(windows))]

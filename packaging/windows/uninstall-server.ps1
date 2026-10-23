@@ -116,6 +116,8 @@ if ($Restore -and (Test-Path $Backup)) {
 }
 
 # ---------------------------------------------------------------------------
+Get-ScheduledTask -TaskPath '\RDPGate\' -TaskName 'Watchdog' -ErrorAction SilentlyContinue |
+    Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
 if (Get-Service RDPGate -ErrorAction SilentlyContinue) {
     Stop-Service RDPGate -Force -ErrorAction SilentlyContinue
     & sc.exe delete RDPGate | Out-Null
