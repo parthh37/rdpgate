@@ -259,6 +259,8 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   RC: Integer;
 begin
+  // The watchdog task would start the service again mid-upgrade; Setup re-enables it.
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Change /TN "\RDPGate\Watchdog" /DISABLE', '', SW_HIDE, ewWaitUntilTerminated, RC);
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop RDPGate', '', SW_HIDE, ewWaitUntilTerminated, RC);
   Sleep(3000);
   Result := '';

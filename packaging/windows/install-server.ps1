@@ -22,7 +22,8 @@
     7. Creates the configuration and server identity, sets up the encrypted
        IP beacon in a secret GitHub gist (asks for a token), sets up 6-digit
        codes (shows a QR code; unless -NoTotp), and starts the "RDPGate"
-       service.
+       service (starts at boot without anyone signing in, restarts after any
+       failure, and a scheduled watchdog task starts it if it was stopped).
     8. Forwards the sign-in and Remote Desktop ports on the router with UPnP
        when the router allows it (unless -NoUpnp), and warns about
        carrier-grade NAT.
@@ -180,6 +181,8 @@ if ($deferred) {
 
 # ---------------------------------------------------------------------------
 Step 'Installing files'
+# The watchdog would start the service again while its files are replaced.
+Get-ScheduledTask -TaskPath '\RDPGate\' -TaskName 'Watchdog' -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
 if (Get-Service RDPGate -ErrorAction SilentlyContinue) { Stop-Service RDPGate -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 if ((Resolve-Path $Here).Path.TrimEnd('\') -ne $InstallDir.TrimEnd('\')) {
@@ -427,6 +430,28 @@ if ($Lan -ne 'Keep') {
     # Restarts the service so the beacon includes (or drops) this PC's local address.
     & $Exe lan $Lan.ToLower() --data $DataDir | ForEach-Object { Ok $_ }
     if ($LASTEXITCODE -ne 0) { Warn "Could not change sign-in from this network. Run: rdpgate-server lan $($Lan.ToLower())" }
+}
+# The service starts at boot whether or not anyone signs in to Windows, and
+# Windows restarts it after any failure. This task also starts it within five
+# minutes if it was stopped any other way, and once more after each boot.
+$watchdog = @{
+    TaskPath  = '\RDPGate\'
+    TaskName  = 'Watchdog'
+    Action    = New-ScheduledTaskAction -Execute $Exe -Argument "service-watchdog --data `"$DataDir`""
+    Trigger   = @(
+        (New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5))
+    )
+    Principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    Settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+    Description = 'Starts the RDP Gate service if it is not running.'
+}
+try {
+    Register-ScheduledTask @watchdog -Force | Out-Null
+    Ok 'Starts at boot without anyone signing in; restarted after any failure, and checked every 5 minutes'
+} catch {
+    Warn "Could not add the watchdog task ($_). The service still starts at boot and restarts after failures."
 }
 Start-Sleep -Seconds 3
 $state = (Get-Service RDPGate).Status

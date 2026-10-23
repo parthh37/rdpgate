@@ -379,20 +379,27 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
         app.cfg.firewall
     );
 
-    let maint = tokio::spawn(maintain(app.clone(), shutdown.clone()));
+    // The sign-in listeners and the grant upkeep must never stop on their
+    // own. If one does (a panic), the whole process exits as failed and the
+    // service manager starts it again, rather than running half-alive.
+    let mut critical = tokio::task::JoinSet::new();
+    critical.spawn(maintain(app.clone(), shutdown.clone()));
     let beacon = tokio::spawn(crate::beacon::run(app.clone(), shutdown.clone()));
     let updater = tokio::spawn(crate::updater::run(app.clone(), shutdown.clone()));
     let router = tokio::spawn(crate::router::run(app.cfg.clone(), shutdown.clone()));
 
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    let mut accepts = Vec::new();
     for ln in listeners {
         let (app, tls, limit, mut stop) = (app.clone(), tls.clone(), limit.clone(), shutdown.clone());
-        accepts.push(tokio::spawn(async move {
+        critical.spawn(async move {
             loop {
                 tokio::select! {
                     r = ln.accept() => {
-                        let Ok((tcp, peer)) = r else { continue };
+                        let Ok((tcp, peer)) = r else {
+                            // e.g. out of sockets: don't spin, try again shortly.
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            continue;
+                        };
                         let Ok(permit) = limit.clone().try_acquire_owned() else { continue };
                         let (app, tls) = (app.clone(), tls.clone());
                         tokio::spawn(async move {
@@ -403,9 +410,10 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
                     _ = stop.changed() => break,
                 }
             }
-        }));
+        });
     }
 
+    let mut failed = None;
     loop {
         if *shutdown.borrow() || app.restart_requested.load(std::sync::atomic::Ordering::SeqCst) {
             break;
@@ -413,17 +421,23 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
         tokio::select! {
             r = shutdown.changed() => if r.is_err() { break },
             _ = app.restart.notified() => {}
+            Some(r) = critical.join_next() => {
+                if !*shutdown.borrow() {
+                    failed = Some(if r.as_ref().is_err_and(|e| e.is_panic()) { "a server task panicked" } else { "a server task stopped" });
+                    break;
+                }
+            }
         }
     }
     crate::logln!("STOP closing all firewall grants");
-    for a in accepts {
-        a.abort();
-    }
-    maint.abort();
+    critical.abort_all();
     beacon.abort();
     updater.abort();
     router.abort();
     app.grants.shutdown().await;
+    if let Some(why) = failed {
+        return Err(format!("{why} unexpectedly; exiting so the service restarts"));
+    }
     if app.restart_requested.load(std::sync::atomic::Ordering::SeqCst) { Ok(Exit::Restart) } else { Ok(Exit::Stopped) }
 }
 
