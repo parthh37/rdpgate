@@ -44,10 +44,11 @@ WizardStyle=modern
 CloseApplications=no
 
 [Messages]
-WelcomeLabel2=This installs the RDP Gate agent on this PC.%n%nRemote Desktop will stay closed to the internet. It opens only for a computer you enrolled, after it signs in with its key and a 6-digit code (or a passkey), and only for that computer's IP address.%n%nWindows Home is not supported (it cannot accept Remote Desktop connections).
+WelcomeLabel2=This installs the RDP Gate agent on this PC and configures Windows Firewall (and, if it allows it, your router) for you.%n%nRemote Desktop will stay closed to the internet. It opens only for a computer you enrolled, after it signs in with its key and a 6-digit code (or a passkey), and only for that computer's IP address.%n%nWindows Home is not supported (it cannot accept Remote Desktop connections).
 
 [Tasks]
 Name: "beacon"; Description: "Set up the encrypted IP beacon now (asks for a Gists-only GitHub token, ideally from an account used only for this)"
+Name: "router"; Description: "Forward ports on my router automatically (UPnP), if the router allows it"
 Name: "lockout"; Description: "Set an account lockout policy (10 wrong passwords lock an account for 15 minutes)"
 Name: "udp"; Description: "Also open UDP for Remote Desktop (faster, but UDP senders can be forged)"; Flags: unchecked
 
@@ -125,6 +126,8 @@ begin
     Result := Result + ' -PublicHost ' + H;
   if not WizardIsTaskSelected('beacon') then
     Result := Result + ' -NoBeacon';
+  if not WizardIsTaskSelected('router') then
+    Result := Result + ' -NoUpnp';
   if not WizardIsTaskSelected('lockout') then
     Result := Result + ' -SkipLockout';
   if WizardIsTaskSelected('udp') then

@@ -55,6 +55,9 @@ pub struct Config {
     /// "windows" changes Windows Firewall; "dry-run" only logs (for testing).
     #[serde(default = "d_firewall")]
     pub firewall: String,
+    /// Forward the needed ports on the home router automatically (UPnP).
+    #[serde(default = "d_true")]
+    pub upnp: bool,
     /// Install signed updates automatically (once a day, only while nobody
     /// has access open).
     #[serde(default = "d_true")]
@@ -161,6 +164,7 @@ impl Config {
             max_hours: d_max(),
             desktop_login: true,
             firewall: d_firewall(),
+            upnp: true,
             auto_update: true,
             update_prereleases: true,
             beacon: None,

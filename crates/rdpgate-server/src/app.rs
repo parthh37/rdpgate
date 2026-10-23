@@ -316,10 +316,15 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     // Nothing from a previous run may stay open, then check for anything
     // else that would expose RDP. Warnings are also kept for `status`.
     let fw = app.grants.firewall();
+    let portal_ports: Vec<u16> = listeners.iter().filter_map(|l| l.local_addr().ok()).map(|a| a.port()).collect();
     let warnings = tokio::task::spawn_blocking(move || {
         let mut w = Vec::new();
         if let Err(e) = fw.revoke_all() {
             w.push(format!("could not remove old RDPGate rules: {e}"));
+        }
+        // The sign-in port must be reachable: (re)create our own allow rule.
+        if let Err(e) = fw.ensure_portal(&portal_ports) {
+            w.push(format!("could not open the sign-in port in Windows Firewall: {e}"));
         }
         w.extend(fw.audit());
         w
@@ -350,6 +355,7 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     let maint = tokio::spawn(maintain(app.clone(), shutdown.clone()));
     let beacon = tokio::spawn(crate::beacon::run(app.clone(), shutdown.clone()));
     let updater = tokio::spawn(crate::updater::run(app.clone(), shutdown.clone()));
+    let router = tokio::spawn(crate::router::run(app.cfg.clone(), shutdown.clone()));
 
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut accepts = Vec::new();
@@ -389,6 +395,7 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     maint.abort();
     beacon.abort();
     updater.abort();
+    router.abort();
     app.grants.shutdown().await;
     if app.restart_requested.load(std::sync::atomic::Ordering::SeqCst) { Ok(Exit::Restart) } else { Ok(Exit::Stopped) }
 }

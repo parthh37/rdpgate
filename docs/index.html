@@ -147,11 +147,11 @@
     </li>
     <li>
       <h3>Run the server Setup</h3>
-      <p>On the Windows PC, run <code>RDP-Gate-Server-Setup.exe</code> and click through. A domain name is optional (only for browser sign-in). Setup hardens Remote Desktop and the firewall, then asks for the token. At the end, leave <em>Set up 6-digit codes now</em> ticked and scan the QR code with your authenticator app.</p>
+      <p>On the Windows PC, run <code>RDP-Gate-Server-Setup.exe</code> and click through. A domain name is optional (only for browser sign-in). Setup hardens Remote Desktop, configures Windows Firewall and your router, then asks for the token. At the end, leave <em>Set up 6-digit codes now</em> ticked and scan the QR code with your authenticator app.</p>
     </li>
     <li>
-      <h3>Forward two ports on your router</h3>
-      <p>TCP 443 for sign-in and TCP 3389 for Remote Desktop, both to that PC, and give the PC a reserved address. Port 3389 stays shut until someone signs in.</p>
+      <h3>Your firewall and router: usually nothing to do</h3>
+      <p>Setup configures Windows Firewall itself and forwards TCP 443 and 3389 on your router automatically (UPnP). It tells you if the router refuses, or if your ISP uses carrier-grade NAT. If you have to forward by hand, send both ports to this PC. Either way, give the PC a reserved address in the router. Port 3389 stays shut until someone signs in. The apps on your Mac or PC need no open ports.</p>
     </li>
     <li>
       <h3>Install the app on each computer</h3>

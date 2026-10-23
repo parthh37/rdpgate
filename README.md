@@ -99,14 +99,20 @@ Setup does the following, in this order:
 
 Uninstall it from **Settings → Apps → RDP Gate Server**. Your settings in `C:\ProgramData\RDPGate` are kept, and Remote Desktop stays blocked from the network.
 
-### 2. Forward ports on your router
+### 2. Your router (usually automatic)
+
+You don't need to touch Windows Firewall: Setup opens the sign-in port for RDP Gate only and keeps Remote Desktop closed, and the service re-checks this at every start.
+
+Setup also **forwards the ports on your router automatically** (UPnP), and the service keeps those forwards renewed. `rdpgate-server status` shows whether it worked. If your router has UPnP turned off, or refuses, forward these by hand:
 
 | External | → Windows PC | Purpose |
 |---|---|---|
 | TCP 443 | 443 | Sign-in |
 | TCP 3389 | 3389 | Remote Desktop: closed until someone signs in |
 
-Give the PC a fixed (reserved) LAN address in your router's DHCP settings.
+Either way, give the PC a fixed (reserved) LAN address in your router's DHCP settings. If Setup reports **carrier-grade NAT**, your ISP shares one public IP among many customers and nothing can reach your PC from outside: ask the ISP for a public IPv4 address (often free).
+
+The Mac and PC apps only make outgoing connections and need no open ports.
 
 ### 3. Set up 6-digit codes (on the server)
 
@@ -179,6 +185,7 @@ rdpgate-server device-list | device-remove NAME | device-unlock NAME
 rdpgate-server passkey-list | passkey-remove NAME
 rdpgate-server beacon-setup            # new token or gist
 rdpgate-server update [--check]        # signed self-update
+rdpgate-server router                  # forward router ports now (UPnP) and report
 rdpgate-server totp-setup --force      # new authenticator secret
 ```
 
@@ -192,6 +199,7 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | `listen` | `["0.0.0.0:443"]` | Add `"[::]:443"` for IPv6 |
 | `rdp_port` / `rdp_public_port` | 3389 | Local RDP port / external port clients use |
 | `allow_udp` | false | Also open UDP for signed-in addresses |
+| `upnp` | true | Forward the ports on the router automatically |
 | `allow_private_sources` | false | Grant LAN / carrier-NAT source addresses |
 | `grant_minutes` | 10 | Time to start a session after signing in |
 | `max_hours` | 12 | Hard cap on one grant |
@@ -208,6 +216,8 @@ Uninstall: `& "C:\Program Files\RDPGate\uninstall-server.ps1"` (add `-RemoveData
 - **"The server refused this computer"**: the device isn't enrolled, or your IP is temporarily blocked after repeated failures.
 - **"this computer is locked after too many wrong codes"**: run `rdpgate-server device-unlock NAME` on the server.
 - **"is not a public address"**: you signed in from your own network. Either test from outside, or set `allow_private_sources`.
+- **Can't reach the server from outside**: run `rdpgate-server router`. It re-applies the router forwards and tells you if UPnP is off or the ISP uses carrier-grade NAT.
+- **"Port 443 is already used by …" during Setup**: another program (IIS, a VPN server) holds the port. Stop it, or run the script with `-ListenPort 8443` and forward the router's 443 to 8443.
 - **Beacon errors in `status`**: check the GitHub token still has Gists access (`rdpgate-server beacon-setup` to replace it).
 - **Microsoft account with "passwordless" sign-in**: RDP needs a password. Turn off "Require Windows Hello sign-in for Microsoft accounts", or use a local account.
 

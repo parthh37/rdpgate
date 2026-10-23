@@ -8,6 +8,7 @@ pub mod gate;
 pub mod grants;
 pub mod identity;
 pub mod limiter;
+pub mod router;
 pub mod log;
 pub mod secure_dir;
 pub mod service;

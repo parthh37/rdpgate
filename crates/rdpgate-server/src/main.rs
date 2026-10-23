@@ -57,6 +57,9 @@ enum Cmd {
         /// Also open UDP for signed-in addresses (faster, but UDP sources can be forged)
         #[arg(long)]
         allow_udp: bool,
+        /// Don't forward ports on the router automatically (UPnP)
+        #[arg(long)]
+        no_upnp: bool,
         /// Name shown in your passkey manager
         #[arg(long, default_value = "owner")]
         user: String,
@@ -75,6 +78,8 @@ enum Cmd {
     },
     /// Print the server card to paste into RDP Gate on your computers
     Card,
+    /// Forward the needed ports on the router now (UPnP) and report
+    Router,
     /// Run in the foreground (the Windows service does this for you)
     Run {
         #[arg(long, hide = true)]
@@ -140,7 +145,7 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
     match cmd {
         Cmd::Init {
             host, public_port, listen, tls, cert, key, email, staging, rdp_port, rdp_public_port,
-            allow_udp, user, firewall, force,
+            allow_udp, no_upnp, user, firewall, force,
         } => {
             // SYSTEM + Administrators only, even if someone created the folder first.
             rdpgate_server::secure_dir::harden(data)?;
@@ -160,6 +165,7 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             c.rdp_port = rdp_port;
             c.rdp_public_port = rdp_public_port.unwrap_or(rdp_port);
             c.allow_udp = allow_udp;
+            c.upnp = !no_upnp;
             if let Some(f) = firewall {
                 c.firewall = f;
             }
@@ -199,6 +205,18 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             println!("Encrypted beacon published to secret gist {gist_id}.");
             println!("Restart the service to keep it updated: Restart-Service RDPGate\n");
             print_card(&cfg, &id);
+            Ok(())
+        }
+        Cmd::Router => {
+            let cfg = Config::load(data)?;
+            let st = rdpgate_server::router::apply(&cfg);
+            for line in st.summary(&cfg) {
+                println!("{line}");
+            }
+            if !st.all_mapped() {
+                // Distinct exit code so the installer knows to show manual steps.
+                std::process::exit(2);
+            }
             Ok(())
         }
         Cmd::Card => {
@@ -375,6 +393,23 @@ fn status(data: &Path) -> Result<(), String> {
             }
         }
         None => println!("Beacon:         off (rdpgate-server beacon-setup)"),
+    }
+    let router: serde_json::Value = std::fs::read(data.join("router.json"))
+        .ok()
+        .and_then(|r| serde_json::from_slice(&r).ok())
+        .unwrap_or_default();
+    match (cfg.upnp, router["found"].as_bool()) {
+        (false, _) => println!("Router:         automatic forwarding off (forward ports by hand)"),
+        (true, None) => println!("Router:         not checked yet"),
+        (true, Some(false)) => println!("Router:         no UPnP router found; forward ports by hand"),
+        (true, Some(true)) => {
+            let n = router["mapped"].as_array().map_or(0, |a| a.len());
+            println!("Router:         {n} port forward(s) in place via UPnP{}",
+                if router["failed"].as_array().is_some_and(|a| !a.is_empty()) { ", some refused" } else { "" });
+            if router["behind_nat"].as_bool() == Some(true) {
+                println!("WARNING:        the router's internet address isn't public (carrier-grade NAT?): run rdpgate-server router");
+            }
+        }
     }
     match cfg.portal_url("") {
         Some(url) if cfg.web_login => println!("Browser login:  {url}"),

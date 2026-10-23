@@ -13,6 +13,7 @@
 - [x] Installer that hardens RDP (NLA, TLS, CredSSP), the firewall (incl. Group Policy check) and the data folder
 - [x] Mac and Windows desktop app plus `rdpgate` CLI
 - [x] Setup wizards (Inno Setup) for the Windows server and client, a disk image for Mac
+- [x] Automatic Windows Firewall configuration (self-healing) and router port forwarding via UPnP, with carrier-grade NAT detection
 - [x] Signed auto-updates for server, apps and CLIs; one-click automated version bump and release
 
 ## v0.2: Tunnel mode
@@ -45,6 +46,7 @@ address, and many people can share one (hotel Wi-Fi, carrier NAT).
 - [ ] Sign-in notifications (email / push) and a revoke link
 - [ ] LAN allow-list (skip sign-in at home)
 - [ ] IPv6 listening by default, with dual-stack grants
+- [ ] NAT-PMP / PCP for routers without UPnP, and an outside-in reachability test
 - [ ] Multiple users with their own devices and passkeys
 - [ ] Small admin web page on the server (localhost only)
 

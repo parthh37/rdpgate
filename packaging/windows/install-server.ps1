@@ -13,6 +13,9 @@
     4. Only then turns on Remote Desktop with Network Level Authentication and
        TLS (rolled back if anything fails).
     5. Sets an account lockout policy (unless -SkipLockout).
+       Forwards the sign-in and Remote Desktop ports on the router with UPnP
+       when the router allows it (unless -NoUpnp), and warns about
+       carrier-grade NAT.
     6. Creates the configuration and server identity, sets up the encrypted
        IP beacon in a secret GitHub gist (asks for a token), and starts the
        "RDPGate" service.
@@ -46,6 +49,8 @@ param(
     [switch] $Staging,
     # Don't change the account lockout policy
     [switch] $SkipLockout,
+    # Don't forward ports on the router automatically (UPnP)
+    [switch] $NoUpnp,
     # Run by the Setup wizard: files are already in place; pause at the end
     [switch] $FromInstaller
 )
@@ -127,6 +132,15 @@ if (($machinePath -split ';') -notcontains $InstallDir) {
 if (($env:Path -split ';') -notcontains $InstallDir) { $env:Path += ";$InstallDir" }
 Ok "Installed $Exe"
 
+# The sign-in port must be free for the agent.
+$busy = Get-NetTCPConnection -LocalPort $ListenPort -State Listen -ErrorAction SilentlyContinue |
+    Where-Object { $_.OwningProcess -and ((Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).Path -ne $Exe) } |
+    Select-Object -First 1
+if ($busy) {
+    $who = (Get-Process -Id $busy.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+    throw "Port $ListenPort is already used by '$who'. Stop that program, or install with -ListenPort <another port> and forward your router's port $PublicPort to it."
+}
+
 # Any user can create folders in ProgramData, so one made in advance would
 # stay theirs. Refuse links, take ownership, and replace every ACL entry.
 if (Test-Path $DataDir) {
@@ -205,6 +219,7 @@ if (-not (Test-Path (Join-Path $DataDir 'config.json'))) {
     if ($PublicHost)        { $initArgs += @('--host', $PublicHost) }
     if ($RdpPublicPort -gt 0) { $initArgs += @('--rdp-public-port', $RdpPublicPort) }
     if ($AllowUdp)          { $initArgs += '--allow-udp' }
+    if ($NoUpnp)            { $initArgs += '--no-upnp' }
     if ($Email)             { $initArgs += @('--email', $Email) }
     if ($Staging)           { $initArgs += '--staging' }
     & $Exe @initArgs
@@ -232,6 +247,14 @@ $state = (Get-Service RDPGate).Status
 if ($state -ne 'Running') { Warn "Service state is $state. Check $DataDir\logs\rdpgate.log" } else { Ok 'Service RDPGate is running' }
 
 # ---------------------------------------------------------------------------
+$routerDone = $false
+if (-not $NoUpnp) {
+    Step 'Setting up your router (UPnP)'
+    & $Exe router --data $DataDir | ForEach-Object { Write-Host "    $_" }
+    $routerDone = ($LASTEXITCODE -eq 0)
+}
+
+# ---------------------------------------------------------------------------
 $lan = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.PrefixOrigin -in 'Dhcp', 'Manual' -and $_.IPAddress -notlike '169.254.*' } |
     Select-Object -First 1 -ExpandProperty IPAddress
@@ -241,11 +264,17 @@ $udpLine = if ($AllowUdp) { "`n     UDP $rdpExt  ->  $($lan):$rdpPort   (faster 
 
 Write-Host ""
 Write-Host "RDP Gate is installed." -ForegroundColor Green
+$routerStep = if ($routerDone) {
+    "1. Your router was set up automatically (the service keeps it that way). In the router's`n   settings, give this PC ($lan) a reserved address so the forwards keep pointing at it."
+} else {
+    "1. On your router, forward these ports to this PC ($lan) and give it a reserved address:`n     TCP $PublicPort   ->  $($lan):$ListenPort    (sign-in)`n     TCP $rdpExt  ->  $($lan):$rdpPort   (Remote Desktop: closed until someone signs in)$udpLine"
+}
 Write-Host @"
 
-1. On your router, forward these ports to this PC ($lan) and give it a reserved address:
-     TCP $PublicPort   ->  $($lan):$ListenPort    (sign-in)
-     TCP $rdpExt  ->  $($lan):$rdpPort   (Remote Desktop: closed until someone signs in)$udpLine
+Windows Firewall is configured: TCP $ListenPort is open for RDP Gate only, and Remote
+Desktop stays closed until someone signs in. The service re-checks this at every start.
+
+$routerStep
 
 2. Set up 6-digit codes (scan the QR code with your phone):
      rdpgate-server totp-setup
