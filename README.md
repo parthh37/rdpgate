@@ -166,8 +166,8 @@ Every program keeps itself up to date, and only ever installs a release signed w
 
 | Program | Automatic | By hand |
 |---|---|---|
-| Server | Checks daily. Installs only while nobody has access open, then restarts the service. `"auto_update": false` in config.json turns it off. | `rdpgate-server update` (`--check` to only look) |
-| Desktop app | Checks once a day at launch. Installs and offers **Restart now**. There's a toggle under *This computer and server*. | **Check for updates** in the same place |
+| Server | Checks daily. Installs only while nobody has access open, then restarts the service. `"auto_update": false` in config.json turns it off. | Start menu → **Check for RDP Gate updates** (asks before installing), or `rdpgate-server update` (`--check` to only look) |
+| Desktop app | Checks once a day at launch. Installs and offers **Restart now**. There's a toggle under *This computer and server*. | **Check for updates** at the bottom of every screen, even before setup |
 | `rdpgate` CLI | Once a day, after a successful `connect`. | `rdpgate update`, `rdpgate auto-update on\|off` |
 
 Each release has a manifest (`rdpgate-update.json`) listing every file's SHA-256 and size, signed with Ed25519. The programs embed the public key. They refuse a manifest with a bad signature, anything older than what they run, and any download that doesn't match its signed hash. GitHub, a network attacker or anyone who can edit release files can't push code to your machines without the release key.

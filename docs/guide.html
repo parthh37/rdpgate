@@ -281,7 +281,7 @@ rdpgate lock                    # close access for this network now</code></pre>
     <tr><th>Too many wrong codes</th><td>After 10 wrong codes that computer is locked: <code>rdpgate-server device-unlock macbook</code>.</td></tr>
     <tr><th>New phone</th><td><code>rdpgate-server totp-setup --force</code> and scan the new QR code.</td></tr>
     <tr><th>Replace the GitHub token</th><td><code>rdpgate-server beacon-setup</code>.</td></tr>
-    <tr><th>Updates</th><td>Automatic and signed. The server installs them only while nobody has access open. Update now with <code>rdpgate-server update</code>; in the app, open <em>This computer and server → Check for updates</em>.</td></tr>
+    <tr><th>Updates</th><td>Automatic and signed. The server installs them only while nobody has access open. On the server, use <em>Start → Check for RDP Gate updates</em> (or <code>rdpgate-server update</code>); in the app, click <em>Check for updates</em> at the bottom of the window.</td></tr>
     <tr><th>Logs</th><td><code>C:\ProgramData\RDPGate\logs\rdpgate.log</code>: every refusal (<code>DENY</code>), sign-in (<code>GRANT open</code>), RDP connection and closure.</td></tr>
     <tr><th>Settings</th><td><code>C:\ProgramData\RDPGate\config.json</code>, then <code>Restart-Service RDPGate</code>. See the <a href="https://github.com/parthh37/rdpgate#administration">settings table</a>.</td></tr>
     <tr><th>Uninstall</th><td><em>Settings → Apps → RDP Gate Server</em>. Answer <em>Yes</em> to put back everything Setup changed (firewall, Remote Desktop rules and settings, lockout policy, sleep, router forwards) as it was before installing. Answer <em>No</em> to keep Remote Desktop blocked from the network. Your RDP Gate data is kept either way.</td></tr>
