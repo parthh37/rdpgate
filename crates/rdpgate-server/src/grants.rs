@@ -367,7 +367,12 @@ mod tests {
             assert!(err.contains("not a public address"), "{ip}: {err}");
         }
         assert!(fw.allowed.lock().unwrap().is_empty());
-        grants(fw.clone(), true).allow("10.0.0.1".parse().unwrap(), "x".into()).await.unwrap();
+        grants(fw.clone(), true).allow("10.123.45.67".parse().unwrap(), "x".into()).await.unwrap();
+        // Even then, never this PC's own router (where there is one).
+        if let Some(gw) = crate::router::default_gateway().filter(|g| !is_public(*g)) {
+            let err = grants(fw.clone(), true).allow(gw, "x".into()).await.unwrap_err();
+            assert!(err.contains("router's own address"), "{gw}: {err}");
+        }
     }
 
     #[tokio::test]

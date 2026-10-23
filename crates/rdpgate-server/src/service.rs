@@ -106,6 +106,19 @@ mod imp {
         Ok(())
     }
 
+    pub fn status() -> super::Status {
+        use super::Status;
+        let Ok(m) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) else { return Status::Unknown };
+        let Ok(svc) = m.open_service(NAME, ServiceAccess::QUERY_STATUS) else { return Status::NotInstalled };
+        match svc.query_status().map(|s| s.current_state) {
+            Ok(ServiceState::Running) => Status::Running,
+            Ok(ServiceState::Stopped) => Status::Stopped,
+            Ok(ServiceState::StartPending | ServiceState::ContinuePending) => Status::Starting,
+            Ok(ServiceState::StopPending | ServiceState::PausePending | ServiceState::Paused) => Status::Stopping,
+            Err(_) => Status::Unknown,
+        }
+    }
+
     /// Starts the service if it is stopped. Returns whether it had to.
     pub fn ensure_running() -> Result<bool, String> {
         let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
@@ -160,8 +173,24 @@ mod imp {
     }
 }
 
+/// What the RDPGate service is doing right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    NotInstalled,
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+    Unknown,
+}
+
 #[cfg(windows)]
-pub use imp::{ensure_running, install, restart, run_as_service, uninstall};
+pub use imp::{ensure_running, install, restart, run_as_service, status, uninstall};
+
+#[cfg(not(windows))]
+pub fn status() -> Status {
+    Status::NotInstalled
+}
 
 #[cfg(not(windows))]
 pub fn install(_: &std::path::Path) -> Result<(), String> {

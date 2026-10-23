@@ -34,6 +34,8 @@ pub enum Component {
     Server,
     Cli,
     App,
+    /// The RDP Gate Server window, next to the server (updated by the service).
+    ServerApp,
 }
 
 /// Release file that updates `c` on this OS, if one is published.
@@ -42,6 +44,7 @@ pub fn asset_for(c: Component) -> Option<&'static str> {
         (Component::Server, "windows") => Some("rdpgate-server-windows-x64.exe"),
         (Component::Cli, "windows") => Some("rdpgate-windows-x64.exe"),
         (Component::App, "windows") => Some("rdpgate-app-windows-x64.exe"),
+        (Component::ServerApp, "windows") => Some("rdpgate-server-app-windows-x64.exe"),
         (Component::Cli, "macos") => Some("rdpgate-macos-universal"),
         (Component::App, "macos") => Some("rdpgate-app-macos-universal.zip"),
         _ => None,
@@ -204,7 +207,11 @@ pub fn download(av: &Available, asset: &str) -> Result<Vec<u8>, String> {
 /// working; the new version starts next time. On Windows the running file
 /// is renamed out of the way (allowed while it runs) and removed later.
 pub fn replace_current_exe(bytes: &[u8]) -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    replace_exe(std::env::current_exe().map_err(|e| e.to_string())?, bytes)
+}
+
+/// Puts `bytes` in place of the program at `exe`, which may be running.
+pub fn replace_exe(exe: PathBuf, bytes: &[u8]) -> Result<PathBuf, String> {
     let new = exe.with_extension(if cfg!(windows) { "new.exe" } else { "new" });
     let denied = |e: std::io::Error| format!("can't write next to {}: {e}", exe.display());
     std::fs::write(&new, bytes).map_err(denied)?;
@@ -332,7 +339,7 @@ mod tests {
     #[test]
     fn every_platform_component_has_a_distinct_asset() {
         // On this OS, whichever components are supported map to distinct files.
-        let names: Vec<_> = [Component::Server, Component::Cli, Component::App].into_iter().filter_map(asset_for).collect();
+        let names: Vec<_> = [Component::Server, Component::Cli, Component::App, Component::ServerApp].into_iter().filter_map(asset_for).collect();
         let mut dedup = names.clone();
         dedup.dedup();
         assert_eq!(names, dedup);

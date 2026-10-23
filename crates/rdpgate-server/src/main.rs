@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
 use qrcode::QrCode;
 use qrcode::render::unicode::Dense1x2;
-use rdpgate_core::{totp, wire};
-use rdpgate_server::config::{BeaconConfig, Config, default_data_dir, valid_name};
+use rdpgate_server::admin;
+use rdpgate_server::config::{Config, default_data_dir};
 use rdpgate_server::identity::Identity;
 use rdpgate_server::log::local;
-use rdpgate_server::state::{Device, EnrollToken, Store, TotpState, now, token_hash};
+use rdpgate_server::state::Store;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
@@ -225,38 +225,22 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             Ok(())
         }
         Cmd::BeaconSetup { gist } => {
-            let mut cfg = Config::load(data)?;
+            Config::load(data)?;
             println!("Create a GitHub token at https://github.com/settings/personal-access-tokens/new");
             println!("with Account permissions > Gists: Read and write (nothing else).\n");
             let token = Zeroizing::new(rpassword::prompt_password("GitHub token: ").map_err(|e| e.to_string())?);
-            let token = token.trim().to_string();
-            if token.is_empty() {
-                return Err("no token entered".into());
-            }
-            let gist_id = match gist {
-                Some(g) if rdpgate_core::beacon::valid_gist_id(&g) => g,
-                Some(_) => return Err("that doesn't look like a gist id".into()),
-                None => rdpgate_core::beacon::create_gist(&token)?,
-            };
-            cfg.beacon = Some(BeaconConfig { gist_id: gist_id.clone(), token });
-            let id = Identity::load_or_create(data)?;
-            print!("Finding this network's public IP… ");
-            std::io::stdout().flush().ok();
-            let ip = rdpgate_server::beacon::discover_public_ip()?;
-            println!("{ip}");
-            rdpgate_server::beacon::publish(&cfg, &id, ip, rdpgate_server::beacon::lan_location(&cfg))?;
-            cfg.save(data)?;
+            println!("Publishing the first beacon…");
+            let gist_id = admin::beacon_setup(data, &token, gist.as_deref())?;
             println!("Encrypted beacon published to secret gist {gist_id}.");
             println!("Restart the service to keep it updated: Restart-Service RDPGate\n");
-            print_card(&cfg, &id);
+            print_card(&Config::load(data)?, &Identity::load_or_create(data)?);
             Ok(())
         }
         Cmd::Lan { state } => {
-            let mut cfg = Config::load(data)?;
-            cfg.allow_private_sources = state == "on";
-            cfg.save(data)?;
-            if cfg.allow_private_sources {
-                match rdpgate_server::router::lan_ip() {
+            let on = state == "on";
+            let lan_ip = admin::set_lan(data, on)?;
+            if on {
+                match lan_ip {
                     Some(ip) => println!("Computers on this network can sign in. They reach this PC at {ip} (published in the encrypted beacon)."),
                     None => println!("Sign-in from this network allowed, but this PC has no private network address right now."),
                 }
@@ -346,19 +330,12 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::PasskeyRemove { name } => Store::new(data).update(|st| {
-            let before = st.passkeys.len();
-            st.passkeys.retain(|p| p.name != name);
-            if st.passkeys.len() == before {
-                return Err(format!("no passkey named {name:?}"));
-            }
+        Cmd::PasskeyRemove { name } => {
+            admin::remove_passkey(data, &name)?;
             println!("Removed passkey {name:?}.");
             Ok(())
-        }),
+        }
         Cmd::DeviceAdd { name, public_key } => {
-            if !valid_name(&name) {
-                return Err("device name: 1-32 letters, digits, dots, dashes or underscores".into());
-            }
             let public_key = match public_key {
                 Some(k) => k,
                 // The command often arrives split over two lines; then
@@ -367,57 +344,33 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
                 None => ask("Paste this computer's key (rdpgate-ed25519:…), shown in its RDP Gate app: ")?
                     .ok_or("no key entered")?,
             };
-            // Accept the whole command line too: use the token that is the key.
-            let public_key = public_key
-                .split_whitespace()
-                .find(|t| t.starts_with("rdpgate-ed25519:"))
-                .unwrap_or(public_key.trim())
-                .to_string();
-            let key = wire::parse_public_key(&public_key)?;
-            let encoded = wire::encode_public_key(&key);
-            let cfg = Config::load(data)?;
-            Store::new(data).update(|st| {
-                if st.devices.iter().any(|d| d.name == name) {
-                    return Err(format!("a device named {name:?} already exists"));
-                }
-                if let Some(d) = st.devices.iter().find(|d| d.public_key == encoded) {
-                    return Err(format!("that key is already enrolled as {:?}", d.name));
-                }
-                st.devices.push(Device { name: name.clone(), public_key: encoded.clone(), added: now(), last_auth: None, failed_codes: 0 });
-                Ok(())
-            })?;
-            println!("Enrolled {name:?}. Device fingerprint: {}", wire::fingerprint(&key));
+            let fingerprint = admin::add_device(data, &name, &public_key)?;
+            println!("Enrolled {name:?}. Device fingerprint: {fingerprint}");
             println!("Check it matches the fingerprint shown on that computer.\n");
-            print_card(&cfg, &Identity::load_or_create(data)?);
+            print_card(&Config::load(data)?, &Identity::load_or_create(data)?);
             Ok(())
         }
         Cmd::DeviceList => {
-            let st = Store::new(data).load()?;
-            if st.devices.is_empty() {
+            let devices = admin::devices(data)?;
+            if devices.is_empty() {
                 println!("No devices. Set up the RDP Gate app on a computer, then run device-add here.");
             }
-            for d in &st.devices {
-                let fp = wire::parse_public_key(&d.public_key).map(|k| wire::fingerprint(&k)).unwrap_or_default();
-                let locked = if d.failed_codes >= rdpgate_server::state::MAX_FAILED_CODES { "  LOCKED (device-unlock)" } else { "" };
-                println!("{:<20} {fp}  added {}  last sign-in {}{locked}", d.name, local(d.added), d.last_auth.map(local).unwrap_or("never".into()));
+            for d in &devices {
+                let locked = if d.locked { "  LOCKED (device-unlock)" } else { "" };
+                println!("{:<20} {}  added {}  last sign-in {}{locked}", d.name, d.fingerprint, local(d.added), admin::when(d.last_auth));
             }
             Ok(())
         }
-        Cmd::DeviceRemove { name } => Store::new(data).update(|st| {
-            let before = st.devices.len();
-            st.devices.retain(|d| d.name != name);
-            if st.devices.len() == before {
-                return Err(format!("no device named {name:?}"));
-            }
+        Cmd::DeviceRemove { name } => {
+            admin::remove_device(data, &name)?;
             println!("Removed {name:?}. It can no longer sign in. (Open grants close on their normal schedule.)");
             Ok(())
-        }),
-        Cmd::DeviceUnlock { name } => Store::new(data).update(|st| {
-            let d = st.devices.iter_mut().find(|d| d.name == name).ok_or(format!("no device named {name:?}"))?;
-            d.failed_codes = 0;
+        }
+        Cmd::DeviceUnlock { name } => {
+            admin::unlock_device(data, &name)?;
             println!("Unlocked {name:?}.");
             Ok(())
-        }),
+        }
         Cmd::ServiceInstall => {
             Config::load(data)?;
             rdpgate_server::service::install(data)?;
@@ -440,23 +393,10 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
 }
 
 fn passkey_enroll(data: &Path, minutes: u32) -> Result<(), String> {
-    if !(1..=60).contains(&minutes) {
-        return Err("--minutes must be 1-60".into());
-    }
-    let cfg = Config::load(data)?;
-    let Some(url) = cfg.portal_url("enroll").filter(|_| cfg.web_login) else {
-        return Err("browser sign-in needs a domain name: run rdpgate-server domain-setup".into());
-    };
-    let token = rdpgate_core::random_token::<24>();
-    let expires = now() + minutes as i64 * 60;
-    Store::new(data).update(|st| {
-        st.enroll_tokens.retain(|t| t.expires > now());
-        st.enroll_tokens.push(EnrollToken { hash: token_hash(&token), expires });
-        Ok(())
-    })?;
+    let (link, expires) = admin::passkey_link(data, minutes)?;
     println!("Open this link on the device whose passkey you want to add.");
     println!("It works once, until {}:\n", local(expires));
-    println!("    {url}#{token}\n");
+    println!("    {link}\n");
     println!("Treat it like a password. The service must be running and reachable for the page to load.");
     Ok(())
 }
@@ -784,22 +724,15 @@ fn status(data: &Path) -> Result<(), String> {
 }
 
 fn totp_setup(data: &Path, force: bool, invert: bool) -> Result<(), String> {
-    let store = Store::new(data);
-    let st = store.load()?;
-    if st.totp.is_some() && !force {
-        return Err("6-digit codes are already set up (use --force to replace; old codes stop working)".into());
-    }
-    let secret = totp::new_secret();
-    let account = format!("{}@{}", st.user_name, Identity::load_or_create(data)?.fingerprint().get(..9).unwrap_or("server"));
-    let uri = totp::uri("RDP Gate", &account, &secret);
-    let qr = QrCode::new(uri.as_bytes()).map_err(|e| e.to_string())?;
+    let enrollment = admin::totp_begin(data, force).map_err(|e| {
+        if e.contains("already set up") { "6-digit codes are already set up (use --force to replace; old codes stop working)".into() } else { e }
+    })?;
+    let qr = QrCode::new(enrollment.uri.as_bytes()).map_err(|e| e.to_string())?;
     // Terminals usually draw light text on a dark background, so by default the
     // "dark" modules are drawn as background and vice versa.
     let (dark, light) = if invert { (Dense1x2::Dark, Dense1x2::Light) } else { (Dense1x2::Light, Dense1x2::Dark) };
     println!("\n{}", qr.render::<Dense1x2>().dark_color(dark).light_color(light).quiet_zone(true).build());
-    let b32 = totp::base32(&secret);
-    let grouped: Vec<String> = b32.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).into()).collect();
-    println!("Scan it with your authenticator app, or type this key:\n\n    {}\n", grouped.join(" "));
+    println!("Scan it with your authenticator app, or type this key:\n\n    {}\n", enrollment.key);
     println!("Don't photograph or screenshot it: anyone with this key can generate your codes.");
     let stdin = std::io::stdin();
     for _ in 0..3 {
@@ -809,15 +742,10 @@ fn totp_setup(data: &Path, force: bool, invert: bool) -> Result<(), String> {
         if stdin.lock().read_line(&mut line).map_err(|e| e.to_string())? == 0 {
             return Err("no input".into());
         }
-        let Some(step) = totp::validate(&secret, line.trim(), now() as u64, 0) else {
+        if !admin::totp_confirm(data, &enrollment, &line)? {
             println!("That code doesn't match. Make sure the phone sets its clock automatically.");
             continue;
-        };
-        let secret = secret.clone();
-        store.update(|st| {
-            st.totp = Some(TotpState { secret, last_step: step });
-            Ok(())
-        })?;
+        }
         println!("6-digit codes enabled.");
         return Ok(());
     }

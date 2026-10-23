@@ -12,16 +12,31 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use zeroize::Zeroizing;
 
+/// Passed to the relaunched app when Direct3D couldn't start (Windows).
+const OPENGL_ARG: &str = "--opengl";
+
 fn main() -> eframe::Result {
     rdpgate_core::update::cleanup_previous();
+    let opengl = !cfg!(windows) || std::env::args().any(|a| a == OPENGL_ARG);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("RDP Gate")
             .with_inner_size([460.0, 500.0])
             .with_min_inner_size([400.0, 440.0]),
+        #[cfg(windows)]
+        renderer: if opengl { eframe::Renderer::Glow } else { eframe::Renderer::Wgpu },
         ..Default::default()
     };
-    eframe::run_native("RDP Gate", options, Box::new(|_cc| Ok(Box::new(GateApp::new()))))
+    let result = eframe::run_native("RDP Gate", options, Box::new(|_cc| Ok(Box::new(GateApp::new()))));
+    // A window can only be opened once per process, so try OpenGL in a new one.
+    if result.is_err()
+        && !opengl
+        && let Ok(exe) = std::env::current_exe()
+        && std::process::Command::new(exe).arg(OPENGL_ARG).spawn().is_ok()
+    {
+        return Ok(());
+    }
+    result
 }
 
 /// The one prominent action on each screen.
@@ -365,7 +380,7 @@ impl GateApp {
 
     fn enroll_ui(&mut self, ui: &mut egui::Ui, id: &Identity) {
         ui.heading("Enroll this computer");
-        ui.label("1. On the Windows server, in PowerShell as Administrator, run:");
+        ui.label("1. On the server, open RDP Gate Server > Computers and paste this into Add a computer (or run it in PowerShell as Administrator):");
         let mut cmd = id.enroll_command();
         // One line that never wraps: a wrapped copy pastes into PowerShell
         // as two commands, and the key alone is "not recognized".
@@ -373,7 +388,7 @@ impl GateApp {
         ui.horizontal(|ui| {
             if ui.button("Copy command").clicked() {
                 ui.ctx().copy_text(id.enroll_command());
-                self.status = Some((true, "Command copied. Paste it into PowerShell on the server.".into()));
+                self.status = Some((true, "Copied. Paste it into RDP Gate Server > Computers on the server.".into()));
             }
             ui.label(RichText::new(&id.fingerprint).monospace().small());
         });
@@ -400,7 +415,7 @@ impl GateApp {
                 ui.label(format!("{} → server {}", cfg.device, &fp[..9]));
             }
             Err(_) => {
-                ui.label("Paste the server card (run rdpgate-server card on the server):");
+                ui.label("Paste the server card (RDP Gate Server > Computers on the server shows it):");
                 self.card_ui(ui);
                 return;
             }
@@ -473,7 +488,7 @@ impl GateApp {
                 ui.label(format!("Device key {}", id.fingerprint));
                 if ui.button("Copy enrollment command").clicked() {
                     ui.ctx().copy_text(id.enroll_command());
-                    self.status = Some((true, "Command copied. Paste it into PowerShell on the server.".into()));
+                    self.status = Some((true, "Copied. Paste it into RDP Gate Server > Computers on the server.".into()));
                 }
             }
             if let Some(a) = cfg.last_known {

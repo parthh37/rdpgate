@@ -121,24 +121,16 @@ The Mac and PC apps only make outgoing connections and need no open ports.
 
 ### 3. Set up 6-digit codes (on the server)
 
-Setup does this in its window, right after the beacon. To do it later (or again):
-
-```powershell
-rdpgate-server totp-setup    # scan the QR code with Google/Microsoft Authenticator, 1Password, …
-```
+Setup does this in its window, right after the beacon. To do it later (or with a new phone), open **RDP Gate Server** from the Start menu → **6-digit codes**: it shows the QR code and asks for the code your app shows. (Command line: `rdpgate-server totp-setup`.)
 
 ### 4. Enroll each computer you'll connect from
 
 - **Mac:** open **`RDP-Gate-<version>-macOS.dmg`** and drag **RDP Gate** to Applications. The first time, right-click it and choose **Open** (the build isn't notarized yet).
 - **Windows:** run **`RDP-Gate-Setup-<version>.exe`**. It installs just for you, with no administrator rights needed, and adds a Start menu entry.
 
-Enter a name for this computer and a passphrase. The app then shows a command; run it on the server:
+Enter a name for this computer and a passphrase. The app then shows this computer's key (`rdpgate-ed25519:…`) with a **Copy** button. On the server, open **RDP Gate Server** from the Start menu → **Computers**, paste it under **Add a computer** and choose **Add computer**.
 
-```powershell
-rdpgate-server device-add macbook rdpgate-ed25519:3q2+7w...
-```
-
-The server prints the device fingerprint (check it matches the app) and a **server card** (`rdpgate-card:…`). Paste the card into the app. The card pins the server's identity key and holds the beacon key. Keep it private: it reveals where to find your PC, though it can't sign in by itself.
+The window shows the device fingerprint (check it matches the app) and a **server card** (`rdpgate-card:…`) with **Copy server card**. Paste the card into the app. The card pins the server's identity key and holds the beacon key. Keep it private: it reveals where to find your PC, though it can't sign in by itself. (Command line: `rdpgate-server device-add macbook rdpgate-ed25519:…`.)
 
 ### 5. Connect
 
@@ -185,6 +177,19 @@ A failed build publishes nothing. Locally, `scripts/bump-version.sh minor` bumps
 The release key's private half lives in the repository secret and in the maintainer's offline backup. Losing it means users must reinstall manually once to trust a new key.
 
 ## Administration
+
+Everything here is also in the **RDP Gate Server** window (Start menu, and a desktop icon if you kept it in Setup). It asks for Administrator rights when it opens and works over Remote Desktop:
+
+| Page | What you can do |
+|---|---|
+| Overview | Whether the service is running (Start / Restart), whether Remote Desktop is closed to others (and close it now if it's still pending), the beacon, the router, open access, updates |
+| Computers | Add a computer (paste its key), copy the server card, see last sign-ins, unlock or remove a computer |
+| 6-digit codes | Set them up or move them to a new phone: a QR code to scan, then confirm a code |
+| Network | The GitHub token for the beacon, sign-in from your home network, forwarding the router ports |
+| Browser sign-in | The guided domain setup, passkeys, one-time links to add a passkey |
+| Activity log | Sign-ins, refusals, firewall openings and closings, beacon and update activity |
+
+The same from PowerShell as Administrator:
 
 ```text
 rdpgate-server status                  # identity, beacon, warnings, open firewall grants
