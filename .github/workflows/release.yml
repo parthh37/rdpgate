@@ -85,7 +85,7 @@ jobs:
         shell: bash
         run: scripts/bump-version.sh "$VERSION"
       - run: cargo test --workspace
-      - run: cargo build --release -p rdpgate-server -p rdpgate-client -p rdpgate-app
+      - run: cargo build --release -p rdpgate-server -p rdpgate-server-app -p rdpgate-client -p rdpgate-app
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
       - name: Package
@@ -96,6 +96,7 @@ jobs:
           Copy-Item target/release/rdpgate-server.exe stage/
           Copy-Item target/release/rdpgate.exe stage/
           Copy-Item target/release/rdpgate-app.exe "stage/RDP Gate.exe"
+          Copy-Item target/release/rdpgate-server-app.exe "stage/RDP Gate Server.exe"
 
           # Installers
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
@@ -108,7 +109,7 @@ jobs:
           $wc = "RDP-Gate-$v-Windows-Client"; $ws = "RDP-Gate-$v-Windows-Server"
           New-Item -ItemType Directory $wc, $ws | Out-Null
           Copy-Item "stage/RDP Gate.exe", stage/rdpgate.exe $wc
-          Copy-Item stage/rdpgate-server.exe, packaging/windows/install-server.ps1, packaging/windows/uninstall-server.ps1, packaging/windows/update-server.ps1, packaging/windows/README.txt $ws
+          Copy-Item stage/rdpgate-server.exe, "stage/RDP Gate Server.exe", packaging/windows/install-server.ps1, packaging/windows/uninstall-server.ps1, packaging/windows/update-server.ps1, packaging/windows/README.txt $ws
           Compress-Archive $wc "out/$wc.zip"
           Compress-Archive $ws "out/$ws.zip"
 
@@ -116,6 +117,7 @@ jobs:
           Copy-Item stage/rdpgate-server.exe out/rdpgate-server-windows-x64.exe
           Copy-Item stage/rdpgate.exe out/rdpgate-windows-x64.exe
           Copy-Item "stage/RDP Gate.exe" out/rdpgate-app-windows-x64.exe
+          Copy-Item "stage/RDP Gate Server.exe" out/rdpgate-server-app-windows-x64.exe
       - uses: actions/upload-artifact@v7
         with:
           name: windows

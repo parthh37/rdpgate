@@ -42,6 +42,7 @@ jobs:
           'placeholder' | Set-Content stage/rdpgate-server.exe
           'placeholder' | Set-Content stage/rdpgate.exe
           'placeholder' | Set-Content "stage/RDP Gate.exe"
+          'placeholder' | Set-Content "stage/RDP Gate Server.exe"
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           foreach ($iss in 'server', 'client') {
             & $iscc /Q /DAppVersion=0.0.0 "/DSourceDir=$pwd\stage" "/DOutputDir=$pwd\iss-out" "packaging\windows\$iss.iss"

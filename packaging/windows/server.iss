@@ -57,20 +57,26 @@ Name: "router"; Description: "Forward ports on my router automatically (UPnP), i
 Name: "lockout"; Description: "Set an account lockout policy (10 wrong passwords lock an account for 15 minutes)"
 Name: "awake"; Description: "Stop this PC sleeping on mains power, so it can always be reached (on a laptop: only a warning)"
 Name: "udp"; Description: "Also open UDP for Remote Desktop (faster, but UDP senders can be forged)"; Flags: unchecked
+Name: "desktopicon"; Description: "Put an RDP Gate Server icon on the desktop"
 
 [Files]
 Source: "{#SourceDir}\rdpgate-server.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\RDP Gate Server.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "update-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "rdpgate.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
+; The window for managing the server: computers, codes, network, updates.
+Name: "{autoprograms}\RDP Gate Server"; Filename: "{app}\RDP Gate Server.exe"; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Manage RDP Gate on this PC"
+Name: "{autodesktop}\RDP Gate Server"; Filename: "{app}\RDP Gate Server.exe"; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Manage RDP Gate on this PC"; Tasks: desktopicon
 ; Asks for Administrator rights itself, then checks and offers to install.
 Name: "{autoprograms}\Check for RDP Gate updates"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\update-server.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Check for and install a signed RDP Gate Server update"
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "{code:HardenParams}"; StatusMsg: "Hardening Remote Desktop and starting the RDP Gate service..."; Flags: waituntilterminated
+Filename: "{app}\RDP Gate Server.exe"; Description: "Open RDP Gate Server (add your computers, check everything is working)"; Flags: postinstall shellexec nowait
 Filename: "https://parthh37.github.io/rdpgate/guide.html#client"; Description: "Open the guide for enrolling your computers"; Flags: postinstall shellexec nowait unchecked
 
 [UninstallDelete]

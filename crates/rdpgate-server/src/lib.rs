@@ -1,5 +1,6 @@
 //! RDP Gate server agent: the one thing installed on the Windows machine.
 
+pub mod admin;
 pub mod app;
 pub mod beacon;
 pub mod config;

@@ -11,3 +11,9 @@ rdpgate-client = { path = "../rdpgate-client" }
 rdpgate-core = { path = "../rdpgate-core" }
 tokio = { version = "1.54.1", features = ["rt", "net", "time"] }
 zeroize = "1.9.1"
+
+# On Windows, draw with Direct3D (wgpu): PCs without a graphics driver (virtual
+# machines, Remote Desktop sessions) have no usable OpenGL. OpenGL stays the
+# fallback, and the only renderer elsewhere.
+[target."cfg(windows)".dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu"] }

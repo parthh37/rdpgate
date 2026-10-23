@@ -77,7 +77,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
                 assets.insert(name, AssetInfo { sha256: hex::encode(Sha256::digest(&bytes)), size: bytes.len() as u64 });
             }
-            for c in ["rdpgate-server-windows-x64.exe", "rdpgate-windows-x64.exe", "rdpgate-app-windows-x64.exe", "rdpgate-macos-universal", "rdpgate-app-macos-universal.zip"] {
+            for c in ["rdpgate-server-windows-x64.exe", "rdpgate-windows-x64.exe", "rdpgate-app-windows-x64.exe", "rdpgate-server-app-windows-x64.exe", "rdpgate-macos-universal", "rdpgate-app-macos-universal.zip"] {
                 if !assets.contains_key(c) {
                     return Err(format!("{c} is missing from {}", dir.display()));
                 }

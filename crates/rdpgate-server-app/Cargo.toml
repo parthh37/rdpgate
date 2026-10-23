@@ -1,0 +1,20 @@
+[package]
+name = "rdpgate-server-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The window for managing the server is Windows-only, like the server; on
+# other systems this builds an empty program so the workspace still builds.
+[target."cfg(windows)".dependencies]
+# wgpu draws with Direct3D, which works inside Remote Desktop sessions where
+# OpenGL often doesn't; glow (OpenGL) is the fallback.
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "glow", "default_fonts", "accesskit", "clipboard"] }
+qrcode = { version = "0.14.1", default-features = false }
+rdpgate-core = { path = "../rdpgate-core" }
+rdpgate-server = { path = "../rdpgate-server" }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
+zeroize = "1.9.1"
+
+[target."cfg(windows)".build-dependencies]
+embed-manifest = "1.4.0"

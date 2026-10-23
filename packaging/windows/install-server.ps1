@@ -508,15 +508,15 @@ $routerStep
 
 $totpStep
 
-3. On each Mac or PC, install the RDP Gate app and set it up. Run the
-   "rdpgate-server device-add ..." command it shows you here, then paste the
-   server card this prints back into the app.
+3. On each Mac or PC, install the RDP Gate app and set it up. Then open
+   RDP Gate Server (Start menu) > Computers, paste the key the app shows, and
+   copy the server card it gives you back into the app.
 
 4. Test from outside your network (for example a phone hotspot).
 
 Remote Desktop certificate thumbprint (the app also checks this automatically):
      $thumb
-Status: rdpgate-server status      Logs: $DataDir\logs\rdpgate.log
+Manage everything in RDP Gate Server (Start menu).   Logs: $DataDir\logs\rdpgate.log
 "@
 if (-not ($PublicHost -or $DomainSetup)) { Write-Host "Browser sign-in (optional): rdpgate-server domain-setup" }
 if ($FromInstaller) { Read-Host "`nPress Enter to finish" | Out-Null }
