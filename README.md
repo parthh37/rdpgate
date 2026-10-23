@@ -16,7 +16,7 @@ One agent on the Windows PC. A small app on your Mac or PC. No static IP, no DNS
 Exposing Remote Desktop (TCP 3389) to the internet invites constant password guessing and every future RDP vulnerability. RDP Gate keeps the port **closed** in Windows Firewall. When you sign in, it opens it **for your current IP address only**, keeps it open while you're connected, and closes it again when you leave.
 
 - **Signing in** takes this computer's private key **plus** a 6-digit code from any authenticator app. You can optionally also sign in from a browser with a passkey (needs your own domain).
-- **No static IP, no DNS, no DuckDNS.** The server publishes its address as an **encrypted, signed beacon** in a secret GitHub gist. GitHub only ever sees ciphertext.
+- **No static IP, no DNS, no DuckDNS.** The server publishes its address as an **encrypted, signed beacon** in a secret GitHub gist. The gist only ever holds ciphertext, though GitHub (like any website) sees the IP address each update comes from.
 - **Spoof-resistant end to end.** Your computers pin the server's identity key, so a fake server, a hijacked address or a man-in-the-middle on the RDP port is detected *before* anything is sent or Remote Desktop opens. See [Spoofing](#spoofing).
 - **One thing on the server:** `rdpgate-server.exe`, installed as a Windows service by a script that also hardens RDP and the firewall.
 - **Written in Rust**, built on rustls, RustCrypto and webauthn-rs. No OpenSSL, no runtime dependencies.
@@ -72,7 +72,7 @@ What an attacker on the internet has to get past, from the outside in:
 
 ## Setup
 
-You need: a Windows 10/11 **Pro, Enterprise or Education** PC, or Windows Server; admin access to your router; a GitHub account (for the beacon); and on a Mac, Microsoft's free **[Windows App](https://apps.apple.com/app/windows-app/id1295203466)**.
+You need: a Windows 10/11 **Pro, Enterprise or Education** PC, or Windows Server; admin access to your router; a GitHub account for the beacon (ideally one used only for this, see step 1); and on a Mac, Microsoft's free **[Windows App](https://apps.apple.com/app/windows-app/id1295203466)**.
 
 ### 1. Install the server
 
@@ -84,6 +84,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 It asks for a **GitHub token**: create a fine-grained token at <https://github.com/settings/personal-access-tokens/new> with **only** *Account permissions → Gists: Read and write*. The token is typed at a hidden prompt and never appears in your shell history.
+
+**Use a GitHub account just for this.** A token with Gists access can read and change *every* gist on its account, including your other secret gists, and GitHub can't limit it to one gist. With a free account used only for the beacon, a leaked token exposes nothing else. (Secret gists are unlisted, not private: anyone with the link can read one. That's why the beacon is encrypted.)
 
 The installer, in this order:
 - installs `rdpgate-server.exe` to `C:\Program Files\RDPGate`. Its data goes in `C:\ProgramData\RDPGate`, which it takes ownership of and locks to SYSTEM and Administrators.
