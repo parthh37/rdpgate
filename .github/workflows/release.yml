@@ -204,9 +204,18 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The tag goes on exactly what was built and tested.
           git commit -am "release: $TAG"
           git tag -a "$TAG" -m "RDP Gate $TAG"
-          git push origin "HEAD:$BRANCH" "$TAG"
+          built=$(git rev-parse HEAD)
+          git fetch origin "$BRANCH"
+          if ! git merge-base --is-ancestor "origin/$BRANCH" "$built"; then
+            # The branch moved while we built: merge the version bump into it.
+            git checkout -B release-merge "origin/$BRANCH"
+            git merge --no-edit -m "Merge release $TAG" "$built"
+          fi
+          # Atomic: the branch and the tag land together, or neither does.
+          git push --atomic origin "HEAD:$BRANCH" "$TAG"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
