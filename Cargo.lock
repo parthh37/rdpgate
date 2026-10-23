@@ -4129,7 +4129,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "eframe",
@@ -4141,7 +4141,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "dirs",
@@ -4160,7 +4160,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2 0.6.0",
  "base64 0.23.1",
@@ -4188,7 +4188,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-release"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -4202,7 +4202,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "chrono",
