@@ -181,10 +181,11 @@ impl GateApp {
         self.upd_rx = Some(rx);
     }
 
-    /// Checks once a day at launch (if enabled) and installs automatically
+    /// Checks once a day at launch (if enabled, and only once set up, so
+    /// first-time setup is never interrupted) and installs automatically
     /// when the user allowed it.
-    fn poll_update(&mut self, ctx: &egui::Context) {
-        if !self.upd_started {
+    fn poll_update(&mut self, ctx: &egui::Context, auto_check: bool) {
+        if auto_check && !self.upd_started {
             self.upd_started = true;
             if client::load_config(&self.dir).map(|c| client::update_due(&c)).unwrap_or(false) {
                 self.start_update_check(ctx);
@@ -238,6 +239,30 @@ impl GateApp {
             _ => return,
         }
         ui.add_space(8.0);
+    }
+
+    /// Version and "Check for updates", at the bottom of every screen.
+    fn update_footer(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.small(format!("RDP Gate {}", client::VERSION));
+            let busy = matches!(self.upd, Upd::Checking | Upd::Installing);
+            if ui.add_enabled(!busy, egui::Button::new("Check for updates").small()).clicked() {
+                let ctx = ui.ctx().clone();
+                self.start_update_check(&ctx);
+            }
+            match &self.upd {
+                Upd::Checking => {
+                    ui.spinner();
+                }
+                Upd::UpToDate => {
+                    ui.small("You have the latest version.");
+                }
+                Upd::Failed(e) => {
+                    ui.colored_label(BAD, RichText::new(format!("Update: {e}")).small());
+                }
+                _ => {}
+            }
+        });
     }
 
     fn run(&mut self, ctx: &egui::Context, label: &'static str, job: impl FnOnce() -> Done + Send + 'static) {
@@ -368,7 +393,6 @@ impl GateApp {
                 return;
             }
         };
-        self.update_banner(ui);
         ui.heading("Remote Desktop");
         match client::card(&cfg) {
             Ok(c) => {
@@ -460,26 +484,6 @@ impl GateApp {
             if ui.checkbox(&mut auto, "Update automatically (signed updates only)").changed() {
                 let _ = client::set_auto_update(&self.dir, auto);
             }
-            ui.horizontal(|ui| {
-                ui.label(format!("Version {}", client::VERSION));
-                let checking = matches!(self.upd, Upd::Checking | Upd::Installing);
-                if ui.add_enabled(!checking, egui::Button::new("Check for updates")).clicked() {
-                    let ctx = ui.ctx().clone();
-                    self.start_update_check(&ctx);
-                }
-            });
-            match &self.upd {
-                Upd::Checking => {
-                    ui.small("Checking…");
-                }
-                Upd::UpToDate => {
-                    ui.small("You have the latest version.");
-                }
-                Upd::Failed(e) => {
-                    ui.colored_label(BAD, format!("Update: {e}"));
-                }
-                _ => {}
-            }
             ui.separator();
             ui.label("Replace the server card:");
             self.card_ui(ui);
@@ -490,13 +494,17 @@ impl GateApp {
 impl eframe::App for GateApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
-        if matches!(self.screen, Screen::Main) {
-            let ctx = ui.ctx().clone();
-            self.poll_update(&ctx);
-        }
+        let ctx = ui.ctx().clone();
+        self.poll_update(&ctx, matches!(self.screen, Screen::Main));
+        egui::Panel::bottom("updates").show(ui, |ui| {
+            ui.add_space(4.0);
+            self.update_footer(ui);
+            ui.add_space(2.0);
+        });
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(6.0);
+                self.update_banner(ui);
                 match &self.screen {
                     Screen::Setup => self.setup_ui(ui),
                     Screen::Enroll(id) => {

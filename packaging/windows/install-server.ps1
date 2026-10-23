@@ -178,7 +178,7 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 if ((Resolve-Path $Here).Path.TrimEnd('\') -ne $InstallDir.TrimEnd('\')) {
     Copy-Item (Join-Path $Here 'rdpgate-server.exe') $Exe -Force
 }
-foreach ($f in 'uninstall-server.ps1', 'install-server.ps1') {
+foreach ($f in 'uninstall-server.ps1', 'install-server.ps1', 'update-server.ps1') {
     $src = Join-Path $Here $f
     if ((Test-Path $src) -and ((Resolve-Path $src).Path -ne (Join-Path $InstallDir $f))) { Copy-Item $src $InstallDir -Force }
 }

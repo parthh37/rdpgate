@@ -60,7 +60,12 @@ Name: "udp"; Description: "Also open UDP for Remote Desktop (faster, but UDP sen
 Source: "{#SourceDir}\rdpgate-server.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "update-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "rdpgate.ico"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+; Asks for Administrator rights itself, then checks and offers to install.
+Name: "{autoprograms}\Check for RDP Gate updates"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\update-server.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Check for and install a signed RDP Gate Server update"
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "{code:HardenParams}"; StatusMsg: "Hardening Remote Desktop and starting the RDP Gate service..."; Flags: waituntilterminated

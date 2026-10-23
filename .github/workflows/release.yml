@@ -40,7 +40,7 @@ jobs:
       sha: ${{ steps.v.outputs.sha }}
       prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: v
         shell: bash
         env:
@@ -77,7 +77,7 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
@@ -108,7 +108,7 @@ jobs:
           $wc = "RDP-Gate-$v-Windows-Client"; $ws = "RDP-Gate-$v-Windows-Server"
           New-Item -ItemType Directory $wc, $ws | Out-Null
           Copy-Item "stage/RDP Gate.exe", stage/rdpgate.exe $wc
-          Copy-Item stage/rdpgate-server.exe, packaging/windows/install-server.ps1, packaging/windows/uninstall-server.ps1, packaging/windows/README.txt $ws
+          Copy-Item stage/rdpgate-server.exe, packaging/windows/install-server.ps1, packaging/windows/uninstall-server.ps1, packaging/windows/update-server.ps1, packaging/windows/README.txt $ws
           Compress-Archive $wc "out/$wc.zip"
           Compress-Archive $ws "out/$ws.zip"
 
@@ -116,7 +116,7 @@ jobs:
           Copy-Item stage/rdpgate-server.exe out/rdpgate-server-windows-x64.exe
           Copy-Item stage/rdpgate.exe out/rdpgate-windows-x64.exe
           Copy-Item "stage/RDP Gate.exe" out/rdpgate-app-windows-x64.exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: out/*
@@ -127,7 +127,7 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
@@ -167,7 +167,7 @@ jobs:
           # Files the auto-updater downloads (fixed names across versions)
           cp "$d/rdpgate" out/rdpgate-macos-universal
           (cd "$d" && ditto -c -k --keepParent "RDP Gate.app" ../out/rdpgate-app-macos-universal.zip)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: out/*
@@ -183,11 +183,11 @@ jobs:
       EVENT: ${{ github.event_name }}
       BRANCH: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: assets
           merge-multiple: true
@@ -216,7 +216,7 @@ jobs:
           fi
           # Atomic: the branch and the tag land together, or neither does.
           git push --atomic origin "HEAD:$BRANCH" "$TAG"
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: RDP Gate ${{ needs.prepare.outputs.tag }}

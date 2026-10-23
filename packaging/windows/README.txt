@@ -25,6 +25,10 @@ closes it to everyone else. "rdpgate-server protect" does it sooner.
 Optional browser sign-in with passkeys needs your own domain name. Guided:
     rdpgate-server domain-setup
 
+Updates: the service installs signed updates by itself once a day, when
+nobody is signed in. To check sooner: rdpgate-server update --check (or
+.\update-server.ps1, which asks before installing).
+
 Uninstall:  .\uninstall-server.ps1 -Restore   (puts back what Setup changed;
             add -RemoveData to delete RDP Gate's data too)
 
