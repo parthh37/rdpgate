@@ -50,6 +50,7 @@ WelcomeLabel2=This installs the RDP Gate agent on this PC and configures Windows
 Name: "beacon"; Description: "Set up the encrypted IP beacon now (asks for a Gists-only GitHub token, ideally from an account used only for this)"
 Name: "router"; Description: "Forward ports on my router automatically (UPnP), if the router allows it"
 Name: "lockout"; Description: "Set an account lockout policy (10 wrong passwords lock an account for 15 minutes)"
+Name: "awake"; Description: "Stop this PC sleeping on mains power, so it can always be reached (on a laptop: only a warning)"
 Name: "udp"; Description: "Also open UDP for Remote Desktop (faster, but UDP senders can be forged)"; Flags: unchecked
 
 [Files]
@@ -130,6 +131,8 @@ begin
     Result := Result + ' -NoUpnp';
   if not WizardIsTaskSelected('lockout') then
     Result := Result + ' -SkipLockout';
+  if not WizardIsTaskSelected('awake') then
+    Result := Result + ' -SkipSleep';
   if WizardIsTaskSelected('udp') then
     Result := Result + ' -AllowUdp';
 end;

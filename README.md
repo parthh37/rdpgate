@@ -70,6 +70,7 @@ What an attacker on the internet has to get past, from the outside in:
 - **Not code-signed by Apple/Microsoft yet.** On macOS, right-click the app and choose **Open** the first time. On Windows, at the SmartScreen prompt choose **More info**, then **Run anyway**. Verify downloads with `SHA256SUMS.txt`. (Updates are signed with RDP Gate's own release key regardless.)
 - **Nothing is unbreakable.** RDP Gate removes the internet-facing attack surface. It can't protect a Windows PC that's already compromised, or a stolen laptop together with your passphrase and phone.
 - **Windows Home** can't host Remote Desktop.
+- **Sleep.** A sleeping PC can't answer, and nothing on the internet can wake it. Setup turns off sleep on mains power for desktops (not laptops), and the service keeps the PC awake from sign-in until access closes. Choosing Sleep, closing a laptop lid or a flat battery still put it to sleep.
 
 ## Setup
 
@@ -81,13 +82,13 @@ You need: a Windows 10/11 **Pro, Enterprise or Education** PC, or Windows Server
 
 Then download **`RDP-Gate-Server-Setup-<version>.exe`** from [Releases](https://github.com/parthh37/rdpgate/releases) and run it on the Windows PC. The wizard asks for:
 - an optional domain name (only for browser sign-in),
-- whether to set up the IP beacon now, set an account lockout policy, or allow UDP.
+- whether to set up the IP beacon now, set an account lockout policy, stop the PC sleeping, or allow UDP.
 
 When the beacon setup opens, paste the token at its hidden prompt. At the end, leave **Set up 6-digit codes now** ticked: a QR code appears for your authenticator app.
 
 <details><summary>Prefer a script? (portable zip)</summary>
 
-Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-PublicHost`, `-AllowUdp`, `-SkipLockout`, `-NoBeacon`, `-RdpPublicPort`.
+Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-PublicHost`, `-AllowUdp`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-RdpPublicPort`.
 </details>
 
 Setup does the following, in this order:
@@ -95,6 +96,7 @@ Setup does the following, in this order:
 - sets Windows Firewall to **block inbound by default** and disables every rule that exposes the RDP port, including "any port" and port-range rules. It **stops** if Group Policy still exposes RDP.
 - only then turns on Remote Desktop with NLA, TLS, high encryption and patched-CredSSP only.
 - sets account lockout to 15 minutes after 10 wrong passwords (unless you untick it).
+- stops a desktop PC sleeping or hibernating on mains power, so it can always be reached (unless you untick it). On a laptop it only warns, and battery settings are never changed.
 - creates the server identity, publishes the first beacon, and starts the `RDPGate` service.
 
 Uninstall it from **Settings → Apps → RDP Gate Server**. Your settings in `C:\ProgramData\RDPGate` are kept, and Remote Desktop stays blocked from the network.
@@ -203,6 +205,7 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | `allow_private_sources` | false | Grant LAN / carrier-NAT source addresses |
 | `grant_minutes` | 10 | Time to start a session after signing in |
 | `max_hours` | 12 | Hard cap on one grant |
+| `keep_awake` | true | Keep the PC from sleeping while a grant is open (`powercfg /requests` shows it) |
 | `desktop_login` / `web_login` | true / with domain | Turn either sign-in method off |
 | `public_host`, `tls` | — | Domain and certificate for browser sign-in |
 | `beacon` | — | `{ "gist_id": …, "token": … }`, set by `beacon-setup` |

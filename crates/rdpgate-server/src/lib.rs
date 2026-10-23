@@ -10,6 +10,7 @@ pub mod identity;
 pub mod limiter;
 pub mod router;
 pub mod log;
+pub mod power;
 pub mod secure_dir;
 pub mod service;
 pub mod state;

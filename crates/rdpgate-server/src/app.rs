@@ -129,13 +129,16 @@ impl App {
             }
             _ => None,
         };
-        let grants = Arc::new(Grants::new(
-            fw,
-            cfg.grant_duration(),
-            cfg.max_duration(),
-            cfg.allow_private_sources,
-            Some(cfg.data_dir.join("grants.json")),
-        ));
+        let grants = Arc::new(
+            Grants::new(
+                fw,
+                cfg.grant_duration(),
+                cfg.max_duration(),
+                cfg.allow_private_sources,
+                Some(cfg.data_dir.join("grants.json")),
+            )
+            .with_power(crate::power::for_config(&cfg)),
+        );
         Ok(Arc::new(App {
             store: Store::new(&cfg.data_dir),
             identity,

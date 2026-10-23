@@ -5,9 +5,11 @@
 //! alive (plus a short grace period, so a quick reconnect works), but never
 //! beyond `max_hours`. Grants live in memory only: restarting the service
 //! closes everything (fail closed), and rules that exist without a grant are
-//! found and removed every few minutes.
+//! found and removed every few minutes. While any grant is open the PC is
+//! kept awake, so it can't fall asleep under a session.
 
 use crate::firewall::Firewall;
+use crate::power::Power;
 use crate::state::now;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -39,6 +41,9 @@ pub struct Grants {
     max: Duration,
     allow_private: bool,
     status_file: Option<PathBuf>,
+    power: Option<Arc<dyn Power>>,
+    /// Whether the power request is currently held.
+    awake: AtomicBool,
     shutting_down: AtomicBool,
     ticks: AtomicU32,
 }
@@ -101,9 +106,17 @@ impl Grants {
             max,
             allow_private,
             status_file,
+            power: None,
+            awake: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             ticks: AtomicU32::new(0),
         }
+    }
+
+    /// Keeps the PC awake through `power` while any grant is open.
+    pub fn with_power(mut self, power: Option<Arc<dyn Power>>) -> Self {
+        self.power = power;
+        self
     }
 
     pub fn firewall(&self) -> Arc<dyn Firewall> {
@@ -148,7 +161,7 @@ impl Grants {
             revoke_token: rdpgate_core::random_token::<24>(),
         };
         inner.grants.insert(ip, g.clone());
-        self.write_status(&inner.grants);
+        self.changed(&inner.grants);
         crate::logln!("GRANT open ip={ip} who={:?} until={}", g.who, crate::log::local(g.expires));
         Ok(g)
     }
@@ -167,7 +180,7 @@ impl Grants {
         }
         if existed {
             crate::logln!("GRANT closed ip={ip} reason={why}");
-            self.write_status(&inner.grants);
+            self.changed(&inner.grants);
         }
         existed
     }
@@ -202,7 +215,7 @@ impl Grants {
             crate::logln!("ERROR firewall sweep: {e}");
         }
         inner.grants.clear();
-        self.write_status(&inner.grants);
+        self.changed(&inner.grants);
     }
 
     /// Refreshes grants with live RDP connections, closes expired ones,
@@ -262,11 +275,34 @@ impl Grants {
         for (ip, why) in expired {
             self.close(&mut inner, ip, why).await;
         }
-        self.write_status(&inner.grants);
+        self.changed(&inner.grants);
     }
 
     pub async fn list(&self) -> Vec<Grant> {
         self.inner.lock().await.grants.values().cloned().collect()
+    }
+
+    /// Runs after every change to the grant table, with `inner` locked.
+    fn changed(&self, map: &HashMap<IpAddr, Grant>) {
+        self.write_status(map);
+        self.sync_power(!map.is_empty());
+    }
+
+    /// Holds the power request from sign-in until the last grant closes, so
+    /// the PC can't sleep between signing in and connecting, or mid-session.
+    /// A failure is retried on the next change (every tick while grants exist).
+    fn sync_power(&self, want: bool) {
+        let Some(power) = &self.power else { return };
+        if self.awake.load(Ordering::SeqCst) == want {
+            return;
+        }
+        match power.keep_awake(want) {
+            Ok(()) => {
+                self.awake.store(want, Ordering::SeqCst);
+                crate::logln!("{}", if want { "POWER keeping this PC awake while signed in" } else { "POWER sleep allowed again" });
+            }
+            Err(e) => crate::logln!("ERROR {e}"),
+        }
     }
 
     /// grants.json lets `rdpgate-server status` show live grants without IPC.
@@ -324,6 +360,36 @@ mod tests {
         }
         assert!(fw.allowed.lock().unwrap().is_empty());
         grants(fw.clone(), true).allow("10.0.0.1".parse().unwrap(), "x".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pc_stays_awake_while_any_grant_is_open() {
+        let fw = Arc::new(DryRun::default());
+        let power = Arc::new(crate::power::DryRun::default());
+        let g = Arc::new(
+            Grants::new(fw.clone(), Duration::ZERO, Duration::from_secs(3600), false, None).with_power(Some(power.clone())),
+        );
+        let awake = || power.awake.load(Ordering::SeqCst);
+        let (a, b): (IpAddr, IpAddr) = ("81.2.69.160".parse().unwrap(), "81.2.69.161".parse().unwrap());
+        assert!(!awake());
+
+        g.allow(a, "device mac".into()).await.unwrap();
+        g.allow(b, "passkey phone".into()).await.unwrap();
+        assert!(awake());
+        g.revoke(a, "test").await;
+        assert!(awake(), "another grant is still open");
+
+        // A live RDP connection keeps the grant, and the PC, past grant_minutes (0 here).
+        fw.peers.lock().unwrap().insert(b);
+        g.tick().await;
+        assert!(awake());
+        fw.peers.lock().unwrap().clear();
+        g.revoke(b, "test").await;
+        assert!(!awake(), "sleep is allowed once the last grant closes");
+
+        g.allow(a, "device mac".into()).await.unwrap();
+        g.shutdown().await;
+        assert!(!awake(), "stopping the service releases it");
     }
 
     #[tokio::test]

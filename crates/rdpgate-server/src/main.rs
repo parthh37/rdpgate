@@ -417,6 +417,7 @@ fn status(data: &Path) -> Result<(), String> {
     }
     println!("Desktop login:  {}", if cfg.desktop_login { "on" } else { "off" });
     println!("Grant window:   {} min, max {} h", cfg.grant_minutes, cfg.max_hours);
+    println!("Keep awake:     {}", if cfg.keep_awake { "while someone is signed in" } else { "off" });
     println!("6-digit codes:  {}", if st.totp.is_some() { "set up" } else { "not set up (totp-setup)" });
     println!("Passkeys:       {}", st.passkeys.len());
     println!("Devices:        {}", st.devices.len());
