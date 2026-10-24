@@ -160,6 +160,8 @@ enum Cmd {
     ServiceInstall,
     /// Stop and remove the Windows service (Administrator)
     ServiceUninstall,
+    /// Start the service if it is stopped (Administrator)
+    ServiceStart,
     /// Start the service if it is stopped (run by the scheduled watchdog task)
     #[command(hide = true)]
     ServiceWatchdog,
@@ -380,6 +382,14 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
         Cmd::ServiceUninstall => {
             rdpgate_server::service::uninstall()?;
             println!("Service \"RDPGate\" removed.");
+            Ok(())
+        }
+        Cmd::ServiceStart => {
+            if rdpgate_server::service::ensure_running()? {
+                println!("Service \"RDPGate\" is starting.");
+            } else {
+                println!("Service \"RDPGate\" was already running.");
+            }
             Ok(())
         }
         Cmd::ServiceWatchdog => {

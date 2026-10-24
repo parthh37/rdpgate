@@ -58,6 +58,9 @@ function Try-Step($What, [scriptblock] $Do) {
     catch { Write-Host "  could not restore $($What): $_" -ForegroundColor Yellow }
 }
 
+# Everyone's tray icon, so its file can be deleted (it would show "not installed").
+Get-Process rdpgate-tray -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
 # ---------------------------------------------------------------------------
 # Restore first, while the service still holds any open grant: this way a
 # session that came through RDP Gate is kept if the old rules allow it.

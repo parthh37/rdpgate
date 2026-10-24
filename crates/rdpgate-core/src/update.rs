@@ -36,6 +36,8 @@ pub enum Component {
     App,
     /// The RDP Gate Server window, next to the server (updated by the service).
     ServerApp,
+    /// The server's notification-area icon, next to the server (updated by the service).
+    Tray,
 }
 
 /// Release file that updates `c` on this OS, if one is published.
@@ -45,6 +47,7 @@ pub fn asset_for(c: Component) -> Option<&'static str> {
         (Component::Cli, "windows") => Some("rdpgate-windows-x64.exe"),
         (Component::App, "windows") => Some("rdpgate-app-windows-x64.exe"),
         (Component::ServerApp, "windows") => Some("rdpgate-server-app-windows-x64.exe"),
+        (Component::Tray, "windows") => Some("rdpgate-tray-windows-x64.exe"),
         (Component::Cli, "macos") => Some("rdpgate-macos-universal"),
         (Component::App, "macos") => Some("rdpgate-app-macos-universal.zip"),
         _ => None,
@@ -339,9 +342,11 @@ mod tests {
     #[test]
     fn every_platform_component_has_a_distinct_asset() {
         // On this OS, whichever components are supported map to distinct files.
-        let names: Vec<_> = [Component::Server, Component::Cli, Component::App, Component::ServerApp].into_iter().filter_map(asset_for).collect();
+        let names: Vec<_> =
+            [Component::Server, Component::Cli, Component::App, Component::ServerApp, Component::Tray].into_iter().filter_map(asset_for).collect();
         let mut dedup = names.clone();
+        dedup.sort();
         dedup.dedup();
-        assert_eq!(names, dedup);
+        assert_eq!(names.len(), dedup.len());
     }
 }

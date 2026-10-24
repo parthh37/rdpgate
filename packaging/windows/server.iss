@@ -58,10 +58,12 @@ Name: "lockout"; Description: "Set an account lockout policy (10 wrong passwords
 Name: "awake"; Description: "Stop this PC sleeping on mains power, so it can always be reached (on a laptop: only a warning)"
 Name: "udp"; Description: "Also open UDP for Remote Desktop (faster, but UDP senders can be forged)"; Flags: unchecked
 Name: "desktopicon"; Description: "Put an RDP Gate Server icon on the desktop"
+Name: "trayicon"; Description: "Show the service's status in the notification area (next to the clock) when anyone signs in"
 
 [Files]
 Source: "{#SourceDir}\rdpgate-server.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\RDP Gate Server.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\rdpgate-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "update-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -71,11 +73,16 @@ Source: "rdpgate.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; The window for managing the server: computers, codes, network, updates.
 Name: "{autoprograms}\RDP Gate Server"; Filename: "{app}\RDP Gate Server.exe"; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Manage RDP Gate on this PC"
 Name: "{autodesktop}\RDP Gate Server"; Filename: "{app}\RDP Gate Server.exe"; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Manage RDP Gate on this PC"; Tasks: desktopicon
+; The notification-area icon, for everyone who signs in. It runs without
+; Administrator rights; RDP Gate Server asks for them when opened from it.
+Name: "{commonstartup}\RDP Gate status"; Filename: "{app}\rdpgate-tray.exe"; WorkingDir: "{app}"; Comment: "Shows whether the RDP Gate service is running"; Tasks: trayicon
 ; Asks for Administrator rights itself, then checks and offers to install.
 Name: "{autoprograms}\Check for RDP Gate updates"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\update-server.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Check for and install a signed RDP Gate Server update"
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "{code:HardenParams}"; StatusMsg: "Hardening Remote Desktop and starting the RDP Gate service..."; Flags: waituntilterminated
+; Now, as the person running Setup, rather than at their next sign-in.
+Filename: "{app}\rdpgate-tray.exe"; Flags: nowait runasoriginaluser; Tasks: trayicon
 Filename: "{app}\RDP Gate Server.exe"; Description: "Open RDP Gate Server (add your computers, check everything is working)"; Flags: postinstall shellexec nowait
 Filename: "https://parthh37.github.io/rdpgate/guide.html#client"; Description: "Open the guide for enrolling your computers"; Flags: postinstall shellexec nowait unchecked
 
@@ -268,6 +275,8 @@ begin
   // The watchdog task would start the service again mid-upgrade; Setup re-enables it.
   Exec(ExpandConstant('{sys}\schtasks.exe'), '/Change /TN "\RDPGate\Watchdog" /DISABLE', '', SW_HIDE, ewWaitUntilTerminated, RC);
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop RDPGate', '', SW_HIDE, ewWaitUntilTerminated, RC);
+  // Everyone's tray icon, so its file can be replaced; Setup starts it again.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM rdpgate-tray.exe', '', SW_HIDE, ewWaitUntilTerminated, RC);
   Sleep(3000);
   Result := '';
 end;

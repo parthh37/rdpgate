@@ -19,19 +19,24 @@ pub fn install(av: &update::Available) -> Result<(), String> {
     let asset = update::asset_for(Component::Server).ok_or("updates are published for Windows servers only")?;
     let bytes = update::download(av, asset)?;
     let exe = update::replace_current_exe(&bytes)?;
-    // The RDP Gate Server window lives next to the server: keep it in step.
-    let window = exe.with_file_name(WINDOW_EXE);
-    if window.exists()
-        && let Some(asset) = update::asset_for(Component::ServerApp)
-        && let Err(e) = update::download(av, asset).and_then(|b| update::replace_exe(window, &b))
-    {
-        crate::logln!("UPDATE could not update {WINDOW_EXE}: {e}");
+    // The RDP Gate Server window and tray icon live next to the server: keep
+    // them in step. The tray icon notices and restarts itself on the new one.
+    for (name, component) in [(WINDOW_EXE, Component::ServerApp), (TRAY_EXE, Component::Tray)] {
+        let path = exe.with_file_name(name);
+        if path.exists()
+            && let Some(asset) = update::asset_for(component)
+            && let Err(e) = update::download(av, asset).and_then(|b| update::replace_exe(path, &b))
+        {
+            crate::logln!("UPDATE could not update {name}: {e}");
+        }
     }
     Ok(())
 }
 
 /// File name of the server's desktop window, installed next to rdpgate-server.exe.
 pub const WINDOW_EXE: &str = "RDP Gate Server.exe";
+/// File name of the server's notification-area icon, installed next to rdpgate-server.exe.
+pub const TRAY_EXE: &str = "rdpgate-tray.exe";
 
 async fn sleep_or_stop(d: Duration, shutdown: &mut watch::Receiver<bool>) -> bool {
     tokio::select! {

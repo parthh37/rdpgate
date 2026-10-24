@@ -4408,6 +4408,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdpgate-tray"
+version = "1.0.0"
+dependencies = [
+ "embed-manifest",
+ "rdpgate-core",
+ "rdpgate-server",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "rdpgate-ui"
 version = "1.0.0"
 dependencies = [

@@ -195,6 +195,8 @@ Everything here is also in the **RDP Gate Server** window (Start menu, and a des
 | Browser sign-in | The guided domain setup, passkeys, one-time links to add a passkey |
 | Activity log | Sign-ins, refusals, firewall openings and closings, beacon and update activity |
 
+Setup also puts an **RDP Gate icon next to the clock** for everyone who signs in (untick it in Setup if you don't want it). Its dot shows the service at a glance: green running, amber starting or stopping, red stopped. Hover it for the state, click it to open RDP Gate Server, right-click it to start a stopped service. If the service stays stopped, it tells you with a notification. On Windows 11, new icons first appear under the **^** arrow: drag it onto the taskbar to keep it in view.
+
 The same from PowerShell as Administrator:
 
 ```text
