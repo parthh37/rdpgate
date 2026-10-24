@@ -88,14 +88,14 @@ You need: a Windows 10/11 **Pro, Enterprise or Education** PC, or Windows Server
 
 Then download **`RDP-Gate-Server-Setup-<version>.exe`** from [Releases](https://github.com/parthh37/rdpgate/releases) and run it on the Windows PC. The wizard asks for:
 - **when to close Remote Desktop**: *now*, or *after your first sign-in* through RDP Gate. Pick the second if you're installing over Remote Desktop (Setup pre-selects it when it detects that), because closing it now would disconnect you and nothing is enrolled yet to get back in;
-- whether to set up browser sign-in with your own domain (a guided step; only for passkeys),
-- whether to set up the IP beacon now, allow sign-in from computers on your home network (for example a laptop on the same Wi-Fi), set an account lockout policy, stop the PC sleeping, or allow UDP.
+- whether to set up browser sign-in with your own domain (only for passkeys),
+- whether to allow sign-in from computers on your home network (for example a laptop on the same Wi-Fi), set an account lockout policy, stop the PC sleeping, show the status icon next to the clock, or allow UDP.
 
-When the beacon setup opens, paste the token at its hidden prompt. Right after it, in the same window, a QR code appears for your authenticator app: scan it and type the code it shows (untick **Set up 6-digit codes now** to skip this). If you reinstall over an earlier install, the codes you already have are kept.
+Setup then hardens the PC without opening any console window. At the end, **RDP Gate Server** opens with a **Finish setting up** list: paste the token (Network), scan the QR code for 6-digit codes, add your computers and, if you chose it, set up your domain. Each step has a **Set up…** button, and the list goes away once everything is done. If you reinstall over an earlier install, your token, codes and computers are kept. Setup's own record is in `C:\ProgramData\RDPGate\logs\setup.log`; if something stops it, it says what in a message.
 
 <details><summary>Prefer a script? (portable zip)</summary>
 
-Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-Protect Now|AfterSignIn`, `-DomainSetup` / `-PublicHost`, `-AllowUdp`, `-Lan On|Off`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-NoTotp`, `-RdpPublicPort`.
+Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. Run this way, it asks for the token and shows the QR code in the PowerShell window itself. The same options are available as switches: `-Protect Now|AfterSignIn`, `-DomainSetup` / `-PublicHost`, `-AllowUdp`, `-Lan On|Off`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-NoTotp`, `-RdpPublicPort`.
 </details>
 
 Setup does the following, in this order (with *after your first sign-in*, the two firewall steps wait: the service does them once a computer has signed in through RDP Gate **and** connected to Remote Desktop, and that address keeps its own opening so its session stays up; `rdpgate-server status` shows `Protection: PENDING` until then, and `rdpgate-server protect` does it immediately):
@@ -127,7 +127,7 @@ The Mac and PC apps only make outgoing connections and need no open ports.
 
 ### 3. Set up 6-digit codes (on the server)
 
-Setup does this in its window, right after the beacon. To do it later (or with a new phone), open **RDP Gate Server** from the Start menu → **6-digit codes**: it shows the QR code and asks for the code your app shows. (Command line: `rdpgate-server totp-setup`.)
+It's step 2 of **Finish setting up** in RDP Gate Server, right after Setup. To do it later (or with a new phone), open **RDP Gate Server** from the Start menu → **6-digit codes**: it shows the QR code and asks for the code your app shows. (Command line: `rdpgate-server totp-setup`.)
 
 ### 4. Enroll each computer you'll connect from
 

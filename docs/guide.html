@@ -75,7 +75,7 @@
         <li>Sign in to GitHub with the account you'll use only for RDP Gate.</li>
         <li>Open <a href="https://github.com/settings/personal-access-tokens/new">Settings → Developer settings → Fine-grained tokens → Generate new token</a>.</li>
         <li>Under <em>Account permissions</em>, set <strong>Gists</strong> to <strong>Read and write</strong>. Leave everything else at <em>No access</em>.</li>
-        <li>Generate the token and copy it. You paste it into Setup in the next step.</li>
+        <li>Generate the token and copy it. You paste it into RDP Gate Server right after Setup.</li>
       </ol>
       <p class="note">Why a separate account? A Gists token can read and change <em>every</em> gist on its account, and GitHub can't narrow it to one. On an account used only for this, a leaked token exposes nothing else.</p>
     </li>
@@ -84,15 +84,16 @@
       <h3>Run the server Setup</h3>
       <p>Run <code>RDP-Gate-Server-Setup-&lt;version&gt;.exe</code>. At the SmartScreen prompt choose <em>More info</em>, then <em>Run anyway</em> (the build isn't Microsoft-signed yet). The wizard asks for:</p>
       <table class="spec">
-        <tr><th>Browser sign-in with my domain</th><td>Leave it unticked unless you want <a href="#browser">browser sign-in</a>. If you tick it, the next page explains what you need and asks for the domain; at the end a window shows the exact DNS record and checks it. The desktop app never needs a domain.</td></tr>
-        <tr><th>Set up the IP beacon now</th><td>Keep this ticked. A window opens and asks for the token from step 1 at a hidden prompt.</td></tr>
+        <tr><th>Browser sign-in with my domain</th><td>Leave it unticked unless you want <a href="#browser">browser sign-in</a>. If you tick it, the next page explains what you need and asks for the domain; afterwards RDP Gate Server shows the exact DNS records and checks them. The desktop app never needs a domain.</td></tr>
         <tr><th>Forward ports on my router</th><td>Keep ticked. Setup asks the router (UPnP) to forward TCP 443 and 3389 to this PC.</td></tr>
         <tr><th>Account lockout policy</th><td>Keep ticked. 10 wrong Windows passwords lock that account for 15 minutes.</td></tr>
         <tr><th>Stop this PC sleeping</th><td>Keep ticked on a desktop. A sleeping PC can't answer, and nothing on the internet can wake it. On a laptop this only warns.</td></tr>
+        <tr><th>Show the service's status</th><td>Keep ticked. An RDP Gate icon next to the clock shows whether the service is running; click it to open RDP Gate Server.</td></tr>
         <tr><th>Also open UDP</th><td>Off by default. UDP makes Remote Desktop smoother, but UDP senders can be forged. Leave it off unless you need it.</td></tr>
         <tr><th>When to close Remote Desktop</th><td><strong>Now</strong> if you're sitting at the PC. <strong>After my first sign-in</strong> if you're installing over Remote Desktop: closing it now would disconnect you, with no enrolled computer to get back in. Setup picks this one for you when it sees a Remote Desktop session.</td></tr>
       </table>
-      <p>Setup then turns on Remote Desktop with Network Level Authentication, creates the server identity, publishes the first beacon and starts the <code>RDPGate</code> Windows service. With <em>Now</em> it first blocks inbound traffic in Windows Firewall, and stops if Group Policy still exposes Remote Desktop.</p>
+      <p>Setup then turns on Remote Desktop with Network Level Authentication, creates the server identity and starts the <code>RDPGate</code> Windows service, without opening any console window. With <em>Now</em> it first blocks inbound traffic in Windows Firewall, and stops if Group Policy still exposes Remote Desktop (it tells you in a message; the details are in <code>C:\ProgramData\RDPGate\logs\setup.log</code>).</p>
+      <p>At the end <strong>RDP Gate Server</strong> opens with a <strong>Finish setting up</strong> list. Its first step is the beacon: choose <em>Set up…</em>, paste the token from step 1 and choose <em>Save and publish</em>. The next ones are the 6-digit codes (below) and your computers.</p>
       <p class="note"><strong>Installing over Remote Desktop?</strong> With <em>After my first sign-in</em>, Remote Desktop stays reachable as before. Once one of your computers has signed in through RDP Gate <em>and</em> connected to Remote Desktop, the service closes it to everyone else by itself. Your address keeps its own opening, so that session stays up. <code>rdpgate-server status</code> shows <em>Protection: PENDING</em> until then. To close it earlier, run <code>rdpgate-server protect</code>.</p>
       <details class="more">
         <summary>Prefer a script? (portable zip)</summary>
@@ -105,7 +106,7 @@
 
     <li id="totp">
       <h3>Set up 6-digit codes</h3>
-      <p>Setup shows a QR code in its window, right after the beacon step: scan it with your authenticator app and type the code it shows. (Leave <em>Set up 6-digit codes now</em> ticked on the task page; a reinstall keeps the codes you already have.) To do it later, or again, run in PowerShell as Administrator:</p>
+      <p>In RDP Gate Server's <em>Finish setting up</em> list, choose <em>Set up…</em> next to the 6-digit codes: a QR code appears. Scan it with your authenticator app and type the code it shows. (A reinstall keeps the codes you already have.) To do it later or again, open <em>RDP Gate Server &gt; 6-digit codes</em>, or run in PowerShell as Administrator:</p>
       <pre><code>rdpgate-server totp-setup            # add --invert if the QR code won't scan
 rdpgate-server totp-setup --force    # replace the secret (old codes stop working)</code></pre>
       <p>Or open <strong>RDP Gate Server &gt; 6-digit codes</strong> from the Start menu:</p>

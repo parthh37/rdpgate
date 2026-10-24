@@ -491,8 +491,13 @@ fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove
     println!("  Cloudflare: set Proxy status to \"DNS only\" (grey cloud). The proxy would hide this PC.");
     loop {
         let (ok, lines) = admin::dns_verdict(&host, &public, &admin::resolve_host(&host));
-        for (good, line) in &lines {
-            println!("  {} {line}", if *good { "✓" } else { "✗" });
+        for (finding, line) in &lines {
+            let mark = match finding {
+                admin::Finding::Good => "✓",
+                admin::Finding::Hint => "·",
+                admin::Finding::Wrong => "✗",
+            };
+            println!("  {mark} {line}");
         }
         if ok {
             break;

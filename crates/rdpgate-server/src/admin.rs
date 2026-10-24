@@ -209,35 +209,46 @@ pub fn resolve_host(host: &str) -> Vec<std::net::IpAddr> {
     addrs
 }
 
+/// One thing a DNS check found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Finding {
+    /// The record points at this PC.
+    Good,
+    /// Works without it, but worth doing.
+    Hint,
+    /// Browsers would fail.
+    Wrong,
+}
+
 /// Compares what `host` resolves to with this network's addresses. Returns
 /// whether browsers will reach this PC, and a line per finding (good first).
-pub fn dns_verdict(host: &str, public: &crate::beacon::PublicIps, resolved: &[std::net::IpAddr]) -> (bool, Vec<(bool, String)>) {
+pub fn dns_verdict(host: &str, public: &crate::beacon::PublicIps, resolved: &[std::net::IpAddr]) -> (bool, Vec<(Finding, String)>) {
     use std::net::IpAddr;
     let (v4, v6): (Vec<IpAddr>, Vec<IpAddr>) = resolved.iter().partition(|a| a.is_ipv4());
     let list = |a: &[IpAddr]| a.iter().map(IpAddr::to_string).collect::<Vec<_>>().join(", ");
     let mut lines = Vec::new();
     if resolved.is_empty() {
-        lines.push((false, format!("{host} doesn't resolve yet. New records can take a few minutes to appear.")));
+        lines.push((Finding::Wrong, format!("{host} doesn't resolve yet. New records can take a few minutes to appear.")));
         return (false, lines);
     }
     // A browser may use any address the name has, so each one must be this PC.
     let mut every_ok = true;
     let mut check = |kind: &str, family: &str, ours: Option<IpAddr>, seen: &[IpAddr]| match (ours, seen.is_empty()) {
-        (Some(ip), false) if seen == [ip] => lines.push((true, format!("{kind} record: {host} points at {ip}."))),
+        (Some(ip), false) if seen == [ip] => lines.push((Finding::Good, format!("{kind} record: {host} points at {ip}."))),
         (Some(ip), false) => {
             every_ok = false;
-            lines.push((false, format!("{kind} record: {host} points at {}, not {ip}. If that's a Cloudflare address, switch the record to \"DNS only\".", list(seen))));
+            lines.push((Finding::Wrong, format!("{kind} record: {host} points at {}, not {ip}. If that's a Cloudflare address, switch the record to \"DNS only\".", list(seen))));
         }
-        (Some(ip), true) => lines.push((true, format!("No {kind} record yet: add one for {ip} so {family} visitors reach this PC too."))),
+        (Some(ip), true) => lines.push((Finding::Hint, format!("No {kind} record yet: add one for {ip} so {family} visitors reach this PC too."))),
         (None, false) => {
             every_ok = false;
-            lines.push((false, format!("{host} has a {kind} record ({}), but this PC has no public {family} address: delete it, or browsers may try it and fail.", list(seen))));
+            lines.push((Finding::Wrong, format!("{host} has a {kind} record ({}), but this PC has no public {family} address: delete it, or browsers may try it and fail.", list(seen))));
         }
         (None, true) => {}
     };
     check("A", "IPv4", public.v4.map(IpAddr::V4), &v4);
     check("AAAA", "IPv6", public.v6.map(IpAddr::V6), &v6);
-    lines.sort_by_key(|(ok, _)| !ok);
+    lines.sort_by_key(|(f, _)| *f);
     (every_ok, lines)
 }
 
@@ -459,10 +470,10 @@ mod tests {
         let both = ips(Some("198.72.98.36"), Some("2607:f748:203:b9::11"));
         let (ok, lines) = dns_verdict("rdp.example.com", &both, &resolved(&["198.72.98.36", "2607:f748:203:b9::11"]));
         assert!(ok);
-        assert!(lines.iter().all(|(good, _)| *good) && lines.len() == 2);
+        assert!(lines.iter().all(|(f, _)| *f == Finding::Good) && lines.len() == 2);
         // An AAAA record can come later: IPv4 alone already works.
         let (ok, lines) = dns_verdict("rdp.example.com", &both, &resolved(&["198.72.98.36"]));
-        assert!(ok && lines.iter().any(|(_, l)| l.contains("No AAAA record yet")));
+        assert!(ok && lines.iter().any(|(f, l)| *f == Finding::Hint && l.contains("No AAAA record yet")));
         // IPv6 only (carrier-grade NAT for IPv4, say).
         let (ok, _) = dns_verdict("rdp.example.com", &ips(None, Some("2607:f748::11")), &resolved(&["2607:f748::11"]));
         assert!(ok);
@@ -474,8 +485,8 @@ mod tests {
         // The case from the field: the name points at someone else's IPv6.
         let (ok, lines) = dns_verdict("rdp.example.com", &both, &resolved(&["198.72.98.36", "2607:f748:203:b9:b::11"]));
         assert!(!ok);
-        assert!(lines[0].0, "good findings come first");
-        assert!(lines.iter().any(|(good, l)| !good && l.contains("AAAA") && l.contains("2607:f748:203:b9:b::11")));
+        assert_eq!(lines[0].0, Finding::Good, "good findings come first");
+        assert!(lines.iter().any(|(f, l)| *f == Finding::Wrong && l.contains("AAAA") && l.contains("2607:f748:203:b9:b::11")));
         // A stray AAAA record when this PC has no IPv6.
         let (ok, _) = dns_verdict("rdp.example.com", &ips(Some("198.72.98.36"), None), &resolved(&["198.72.98.36", "2001:4860::1"]));
         assert!(!ok);

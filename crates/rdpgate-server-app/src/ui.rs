@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, RichText, TextEdit};
 use rdpgate_core::update::Available;
 use rdpgate_ui::{self as theme, MUTED, TEXT, Tone, card, muted, primary, titled_card};
-use rdpgate_server::admin::{self, DeviceInfo, DnsRecord, Overview, TotpEnrollment, when};
+use rdpgate_server::admin::{self, DeviceInfo, DnsRecord, Finding, Overview, TotpEnrollment, when};
 use rdpgate_server::beacon::PublicIps;
 use rdpgate_server::service::{self, Status};
 use std::path::PathBuf;
@@ -186,7 +186,7 @@ enum Done {
     /// The DNS records to create for the host typed in.
     Records(String, Result<(Vec<DnsRecord>, PublicIps), String>),
     /// What a DNS check of that host found: whether it's right, line by line.
-    DnsChecked(String, (bool, Vec<(bool, String)>)),
+    DnsChecked(String, (bool, Vec<(Finding, String)>)),
 }
 
 /// The guided domain setup for browser sign-in, as it's filled in.
@@ -197,7 +197,7 @@ struct DomainForm {
     /// network's addresses they came from.
     records: Option<(String, Vec<DnsRecord>, PublicIps)>,
     /// The last check of those records.
-    check: Option<(bool, Vec<(bool, String)>)>,
+    check: Option<(bool, Vec<(Finding, String)>)>,
 }
 
 /// The QR code for the authenticator app, as rows of dark/light modules.
@@ -240,7 +240,16 @@ impl ServerApp {
     fn new() -> Self {
         // --data DIR, like rdpgate-server's, to manage a data folder elsewhere.
         let args: Vec<String> = std::env::args().collect();
-        let data = args.iter().position(|a| a == "--data").and_then(|i| args.get(i + 1)).map(PathBuf::from);
+        let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+        let data = value("--data").map(PathBuf::from);
+        // Setup passes --setup-domain [--host H] [--email E] when browser
+        // sign-in was chosen there: its guided setup is one of the steps to finish.
+        let domain = args.iter().any(|a| a == "--setup-domain").then(|| DomainForm {
+            host: value("--host").unwrap_or_default(),
+            email: value("--email").unwrap_or_default(),
+            records: None,
+            check: None,
+        });
         let mut app = ServerApp {
             data: data.unwrap_or_else(rdpgate_server::config::default_data_dir),
             page: Page::Overview,
@@ -257,7 +266,7 @@ impl ServerApp {
             gist: String::new(),
             router_lines: vec![],
             passkey_link: None,
-            domain: None,
+            domain,
             log: String::new(),
             update: None,
             confirm: None,
@@ -351,9 +360,92 @@ impl ServerApp {
 
     // ---- pages ---------------------------------------------------------
 
+    /// What's left once Setup has secured the PC (Setup itself asks nothing),
+    /// in order, each with the button that does it. Gone once all are done.
+    fn finish_setup_ui(&mut self, ui: &mut egui::Ui, o: &Overview) {
+        struct Step {
+            title: &'static str,
+            detail: &'static str,
+            done: bool,
+            go: Page,
+        }
+        let mut steps = vec![
+            Step {
+                title: "Let your computers find this PC",
+                detail: "Paste a GitHub token that can only use Gists: this PC publishes its address there, encrypted and signed.",
+                done: o.beacon.is_some(),
+                go: Page::Network,
+            },
+            Step {
+                title: "Set up 6-digit codes",
+                detail: "Scan a QR code with an authenticator app on your phone. Every sign-in needs a fresh code.",
+                done: o.totp,
+                go: Page::Codes,
+            },
+            Step {
+                title: "Add the computers you connect from",
+                detail: "Install the RDP Gate app on your Mac or PC, then paste the key it shows.",
+                done: o.devices > 0,
+                go: Page::Computers,
+            },
+        ];
+        // Chosen in Setup: the domain it was given is filled in.
+        if self.domain.is_some() || o.browser_url.is_some() {
+            steps.push(Step {
+                title: "Browser sign-in with your domain",
+                detail: "Create the DNS records it shows, check them, and turn it on.",
+                done: o.browser_url.is_some(),
+                go: Page::Browser,
+            });
+        }
+        if steps.iter().all(|s| s.done) {
+            return;
+        }
+        let mut go = None;
+        titled_card(ui, "Finish setting up", Some("Setup has secured this PC. These steps let your computers sign in."), |ui| {
+            for (i, s) in steps.iter().enumerate() {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    theme::dot(ui, if s.done { Tone::Good } else { Tone::Neutral });
+                    ui.vertical(|ui| {
+                        let title = RichText::new(format!("{}. {}", i + 1, s.title)).strong();
+                        ui.label(if s.done { title.color(MUTED) } else { title.color(TEXT) });
+                        if !s.done {
+                            ui.add(egui::Label::new(muted(s.detail).small()).wrap());
+                        }
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if s.done {
+                            theme::pill(ui, Tone::Good, "Done");
+                        } else if ui.button("Set up…").clicked() {
+                            go = Some(s.go);
+                        }
+                    });
+                });
+            }
+            if o.devices == 0 {
+                ui.add_space(6.0);
+                ui.hyperlink_to("Download the RDP Gate app for your Mac or PC", "https://github.com/parthh37/rdpgate/releases/latest");
+            }
+        });
+        gap(ui);
+        if let Some(p) = go {
+            self.page = p;
+            self.status = None;
+            // Straight to the QR code rather than one more button.
+            if p == Page::Codes && !o.totp && self.enrolling.is_none() {
+                self.begin_codes(false);
+            }
+            if p == Page::Browser && self.domain.is_none() && o.browser_url.is_none() {
+                self.domain = Some(DomainForm { host: String::new(), email: String::new(), records: None, check: None });
+            }
+        }
+    }
+
     fn overview_ui(&mut self, ui: &mut egui::Ui, o: &Overview) {
         let ctx = ui.ctx().clone();
         let idle = self.busy.is_none();
+        self.finish_setup_ui(ui, o);
 
         // Everything that stops a computer from getting in, or leaves RDP exposed.
         let mut problems = vec![];
@@ -1076,10 +1168,15 @@ impl ServerApp {
                     }
                     ui.add_space(6.0);
                     if let Some((_, lines)) = &f.check {
-                        for (good, line) in lines {
+                        for (finding, line) in lines {
+                            let (tone, color) = match finding {
+                                Finding::Good => (Tone::Good, TEXT),
+                                Finding::Hint => (Tone::Info, MUTED),
+                                Finding::Wrong => (Tone::Bad, theme::BAD),
+                            };
                             ui.horizontal(|ui| {
-                                theme::dot(ui, if *good { Tone::Good } else { Tone::Bad });
-                                ui.add(egui::Label::new(RichText::new(line).color(if *good { TEXT } else { theme::BAD })).wrap());
+                                theme::dot(ui, tone);
+                                ui.add(egui::Label::new(RichText::new(line).color(color)).wrap());
                             });
                         }
                         ui.add_space(4.0);
