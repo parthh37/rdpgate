@@ -46,7 +46,7 @@ address, and many people can share one (hotel Wi-Fi, carrier NAT).
 - [x] Keep the PC awake while someone is signed in
 - [ ] Sign-in notifications (email / push) and a revoke link
 - [ ] LAN allow-list (skip sign-in at home)
-- [ ] IPv6 listening by default, with dual-stack grants
+- [x] IPv6 listening by default, with dual-stack grants and the IPv6 address in the beacon
 - [ ] NAT-PMP / PCP for routers without UPnP, and an outside-in reachability test
 - [ ] Multiple users with their own devices and passkeys
 - [ ] Small admin web page on the server (localhost only)

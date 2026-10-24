@@ -76,8 +76,8 @@ Name: "{autodesktop}\RDP Gate Server"; Filename: "{app}\RDP Gate Server.exe"; Wo
 ; The notification-area icon, for everyone who signs in. It runs without
 ; Administrator rights; RDP Gate Server asks for them when opened from it.
 Name: "{commonstartup}\RDP Gate status"; Filename: "{app}\rdpgate-tray.exe"; WorkingDir: "{app}"; Comment: "Shows whether the RDP Gate service is running"; Tasks: trayicon
-; Asks for Administrator rights itself, then checks and offers to install.
-Name: "{autoprograms}\Check for RDP Gate updates"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\update-server.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Check for and install a signed RDP Gate Server update"
+; Updates are checked and installed from RDP Gate Server's Overview (and by
+; the service itself); update-server.ps1 stays in {app} for the command line.
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "{code:HardenParams}"; StatusMsg: "Hardening Remote Desktop and starting the RDP Gate service..."; Flags: waituntilterminated

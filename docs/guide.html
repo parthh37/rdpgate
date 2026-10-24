@@ -260,12 +260,12 @@ rdpgate lock                    # close access for this network now</code></pre>
   <ol class="setup">
     <li>
       <h3>Run the guided domain setup</h3>
-      <p>Tick <em>browser sign-in</em> in Setup, or run this later in PowerShell as Administrator:</p>
+      <p>Tick <em>browser sign-in</em> in Setup, or later open <strong>RDP Gate Server &gt; Browser sign-in &gt; Set up with my domain</strong>. From PowerShell as Administrator it's:</p>
       <pre><code>rdpgate-server domain-setup</code></pre>
       <p>It walks you through four steps:</p>
       <ol class="plain">
         <li><strong>Domain name.</strong> Enter e.g. <code>rdp.example.com</code>.</li>
-        <li><strong>DNS record.</strong> It finds your public IP and shows the exact record to create (type <code>A</code>, name, value, TTL). Then it checks the record, and keeps checking every time you press Enter until it's right. It warns about a Cloudflare proxy (set it to <em>DNS only</em>) and a stray IPv6 (AAAA) record.</li>
+        <li><strong>DNS records.</strong> It finds your public addresses and shows the exact records to create: type <code>A</code> for IPv4 and, if you have IPv6, <code>AAAA</code> (name, value, TTL). Then it checks them until they're right. It warns about a Cloudflare proxy (set it to <em>DNS only</em>) and any record that points somewhere else.</li>
         <li><strong>Certificate.</strong> It's free and automatic from Let's Encrypt. An email for expiry notices is optional.</li>
         <li><strong>Turn it on.</strong> It saves the settings and restarts the service. If access is open, it asks first, because a restart closes it. Then it prints your sign-in page and offers a link for your first passkey.</li>
       </ol>
@@ -303,13 +303,13 @@ rdpgate lock                    # close access for this network now</code></pre>
     <tr><th>See what's going on</th><td><code>rdpgate-server status</code>: identity, beacon, router, warnings and every open firewall grant.</td></tr>
     <tr><th>Add another computer</th><td>Repeat <a href="#client">Part 2</a> on it. Each computer gets its own <code>device-add</code> and key, and they all use the same 6-digit codes. Two computers can't use the <em>same</em> code: if one just signed in, wait for the next code.</td></tr>
     <tr><th>Protection still pending</th><td><code>rdpgate-server protect</code> closes Remote Desktop to everyone who hasn't signed in, now. It asks first if you're connected over Remote Desktop.</td></tr>
-    <tr><th>Add or change a domain</th><td><code>rdpgate-server domain-setup</code> (see <a href="#browser">browser sign-in</a>).</td></tr>
+    <tr><th>Add or change a domain</th><td><em>RDP Gate Server &gt; Browser sign-in</em>, or <code>rdpgate-server domain-setup</code> (see <a href="#browser">browser sign-in</a>).</td></tr>
     <tr><th>List or remove computers</th><td><code>rdpgate-server device-list</code>, <code>rdpgate-server device-remove macbook</code>. Removing takes effect immediately.</td></tr>
     <tr><th>Lost or stolen laptop</th><td><code>device-remove</code> it. Its key is useless without your passphrase and code anyway, but remove it.</td></tr>
     <tr><th>Too many wrong codes</th><td>After 10 wrong codes that computer is locked: <code>rdpgate-server device-unlock macbook</code>.</td></tr>
     <tr><th>New phone</th><td><code>rdpgate-server totp-setup --force</code> and scan the new QR code.</td></tr>
     <tr><th>Replace the GitHub token</th><td><code>rdpgate-server beacon-setup</code>.</td></tr>
-    <tr><th>Updates</th><td>Automatic and signed. The server installs them only while nobody has access open. On the server, use <em>Start → Check for RDP Gate updates</em> (or <code>rdpgate-server update</code>); in the app, click <em>Check for updates</em> at the bottom of the window.</td></tr>
+    <tr><th>Updates</th><td>Automatic and signed. The server installs them only while nobody has access open. On the server, use <em>RDP Gate Server → Overview → Check for updates</em> (or <code>rdpgate-server update</code>); in the app, click <em>Check for updates</em> at the bottom of the window.</td></tr>
     <tr><th>Logs</th><td><code>C:\ProgramData\RDPGate\logs\rdpgate.log</code>: every refusal (<code>DENY</code>), sign-in (<code>GRANT open</code>), RDP connection and closure.</td></tr>
     <tr><th>Settings</th><td><code>C:\ProgramData\RDPGate\config.json</code>, then <code>Restart-Service RDPGate</code>. See the <a href="https://github.com/parthh37/rdpgate#administration">settings table</a>.</td></tr>
     <tr><th>Uninstall</th><td><em>Settings → Apps → RDP Gate Server</em>. Answer <em>Yes</em> to put back everything Setup changed (firewall, Remote Desktop rules and settings, lockout policy, sleep, router forwards) as it was before installing. Answer <em>No</em> to keep Remote Desktop blocked from the network. Your RDP Gate data is kept either way.</td></tr>

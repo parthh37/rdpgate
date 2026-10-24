@@ -160,7 +160,7 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String)
                 ok: true,
                 ip: Some(ip.to_string()),
                 expires: Some(g.expires),
-                rdp_port: Some(app.cfg.rdp_public_port),
+                rdp_port: Some(app.cfg.rdp_port_for(ip)),
                 rdp_cert_sha256: app.rdp_cert().await.map(|c| c.sha256),
                 ..Default::default()
             }

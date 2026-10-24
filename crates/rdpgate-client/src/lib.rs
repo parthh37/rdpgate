@@ -14,7 +14,7 @@ use rdpgate_core::keystore::{KeyFile, write_private};
 use rdpgate_core::rdp;
 use rdpgate_core::wire::{self, Payload, Response, ServerHello};
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +27,9 @@ pub const MIN_PASSPHRASE: usize = 10;
 const NET_TIMEOUT: Duration = Duration::from_secs(12);
 /// Connecting on the home network is near-instant when it works at all.
 const LAN_TIMEOUT: Duration = Duration::from_secs(3);
+/// IPv6 is tried before IPv4 when the server has both. Where it works the
+/// handshake is quick; where a router silently drops it, don't wait long.
+const IPV6_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
@@ -281,6 +284,20 @@ fn is_local_network(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// The order to try a server's public addresses in: the one that worked
+/// last time, then IPv6 (it reaches networks whose IPv4 is shared, behind
+/// carrier-grade NAT), then IPv4. No address twice.
+fn public_order(ips: Vec<IpAddr>, last_known: Option<SocketAddr>) -> Vec<IpAddr> {
+    let mut out: Vec<IpAddr> = Vec::new();
+    for ip in ips {
+        if !out.contains(&ip) {
+            out.push(ip);
+        }
+    }
+    out.sort_by_key(|ip| (Some(*ip) != last_known.map(|a| a.ip()), ip.is_ipv4()));
+    out
+}
+
 /// Where to look next. None of these is trusted: an address is only a place
 /// to ask the server to prove its identity.
 async fn resolve(src: Source, cfg: &ClientConfig, card: &Card, notes: &mut Vec<String>, newest: &mut Option<i64>) -> Vec<Target> {
@@ -306,7 +323,17 @@ async fn resolve(src: Source, cfg: &ClientConfig, card: &Card, notes: &mut Vec<S
                     *newest = Some(loc.ts);
                     // At home, straight to the server; elsewhere that fails fast.
                     let lan = loc.lan.map(|l| Target { addr: SocketAddr::new(l.ip, l.port), rdp_port: Some(l.rdp_port) });
-                    lan.into_iter().chain([Target::at(SocketAddr::new(loc.ip, loc.port))]).collect()
+                    let ip6 = loc.ip6.map(IpAddr::V6);
+                    let public = public_order(ip6.into_iter().chain([loc.ip]).collect(), cfg.last_known);
+                    let target = |ip| {
+                        if Some(ip) == ip6 {
+                            // No router port mapping over IPv6: the server's own ports.
+                            Target { addr: SocketAddr::new(ip, loc.ip6_port.unwrap_or(loc.port)), rdp_port: loc.ip6_rdp_port }
+                        } else {
+                            Target::at(SocketAddr::new(ip, loc.port))
+                        }
+                    };
+                    lan.into_iter().chain(public.into_iter().map(target)).collect()
                 }
                 Err(e) => {
                     notes.push(e);
@@ -318,9 +345,10 @@ async fn resolve(src: Source, cfg: &ClientConfig, card: &Card, notes: &mut Vec<S
             let Some(host) = card.host.as_deref() else { return vec![] };
             match tokio::time::timeout(NET_TIMEOUT, tokio::net::lookup_host((host, card.port))).await {
                 Ok(Ok(addrs)) => {
-                    let addrs: Vec<SocketAddr> = addrs.collect();
-                    // IPv4 first: the firewall grant is for whichever family we sign in over.
-                    addrs.iter().find(|a| a.is_ipv4()).or(addrs.first()).copied().map(Target::at).into_iter().collect()
+                    // The firewall grant is for whichever address signs in, and
+                    // Remote Desktop then connects to the same server address.
+                    let ips = addrs.map(|a| a.ip()).collect();
+                    public_order(ips, cfg.last_known).into_iter().map(|ip| Target::at(SocketAddr::new(ip, card.port))).collect()
                 }
                 _ => {
                     notes.push(format!("could not look up {host}"));
@@ -333,7 +361,13 @@ async fn resolve(src: Source, cfg: &ClientConfig, card: &Card, notes: &mut Vec<S
 
 /// TCP + TLS 1.3 to `addr`, then the server must prove the pinned key.
 async fn open_verified(addr: SocketAddr, card: &Card) -> std::result::Result<(TlsStream<TcpStream>, [u8; 32]), (bool, String)> {
-    let connect_timeout = if is_local_network(addr.ip()) { LAN_TIMEOUT } else { NET_TIMEOUT };
+    let connect_timeout = if is_local_network(addr.ip()) {
+        LAN_TIMEOUT
+    } else if addr.is_ipv6() {
+        IPV6_TIMEOUT
+    } else {
+        NET_TIMEOUT
+    };
     let tcp = tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
         .await
         .map_err(|_| (false, format!("{addr}: timed out")))?
@@ -549,6 +583,14 @@ pub fn minutes_left(unix: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tries_what_worked_then_ipv6_then_ipv4() {
+        let (v4, v6): (IpAddr, IpAddr) = ("198.72.98.36".parse().unwrap(), "2607:f748:203:b9::11".parse().unwrap());
+        assert_eq!(public_order(vec![v4, v6, v4], None), [v6, v4]);
+        assert_eq!(public_order(vec![v6, v4], Some(SocketAddr::new(v4, 443))), [v4, v6]);
+        assert_eq!(public_order(vec![v4], Some(SocketAddr::new(v6, 443))), [v4]);
+    }
 
     #[test]
     fn device_setup_and_card_roundtrip() {

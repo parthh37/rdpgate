@@ -431,16 +431,6 @@ fn yes_no(prompt: &str, default: bool) -> Result<bool, String> {
     })
 }
 
-/// What the domain currently resolves to, as (IPv4, IPv6) addresses.
-fn resolve(host: &str) -> (Vec<std::net::IpAddr>, Vec<std::net::IpAddr>) {
-    use std::net::ToSocketAddrs;
-    let mut addrs: Vec<std::net::IpAddr> =
-        (host, 443).to_socket_addrs().map(|i| i.map(|a| a.ip()).collect()).unwrap_or_default();
-    addrs.sort();
-    addrs.dedup();
-    addrs.into_iter().partition(|a| a.is_ipv4())
-}
-
 fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove: bool) -> Result<(), String> {
     let mut cfg = Config::load(data)?;
     if remove {
@@ -456,8 +446,8 @@ fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove
     println!("============================================\n");
     println!("Browsers only use passkeys with a domain name, never an IP address. You need:");
     println!("  - a domain you control, e.g. example.com (from any registrar, or Cloudflare);");
-    println!("  - a name under it for this PC, e.g. rdp.example.com, with a DNS \"A\" record pointing at");
-    println!("    your home's public IP address;");
+    println!("  - a name under it for this PC, e.g. rdp.example.com, with DNS records (A, and AAAA for IPv6)");
+    println!("    pointing at your home's public addresses;");
     println!("  - if your home IP changes, dynamic DNS to keep that record current (most registrars and");
     println!("    routers have it built in: look for \"DDNS\" or \"Dynamic DNS\");");
     println!("  - port {} on your router reaching this PC (already done for the app).", cfg.public_port);
@@ -487,37 +477,29 @@ fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove
     }
 
     // ---- 2. DNS
-    println!("\nStep 2 of 4: DNS record");
-    print!("  Finding this network's public IP… ");
+    println!("\nStep 2 of 4: DNS records");
+    print!("  Finding this network's public addresses… ");
     std::io::stdout().flush().ok();
-    let public = rdpgate_server::beacon::discover_public_ip()?;
-    println!("{public}\n");
-    let label = host.split('.').next().unwrap_or(&host);
-    println!("  At your DNS provider, create (or update) this record:\n");
-    println!("      Type   Name                         Value              TTL");
-    println!("      A      {:<28} {:<18} 300 (or Auto)\n", format!("{label}  (= {host})"), public.to_string());
-    println!("  Most providers want only the part before your domain in Name (\"{label}\").");
+    let (records, public) = admin::dns_records(data, &host)?;
+    println!("{}\n", public.describe());
+    println!("  At your DNS provider, create (or update) {}:\n", if records.len() > 1 { "these records" } else { "this record" });
+    println!("      Type   Name                         Value                                    TTL");
+    for r in &records {
+        println!("      {:<6} {:<28} {:<40} 300 (or Auto)", r.kind, format!("{}  (= {host})", r.name), r.value);
+    }
+    println!("\n  Most providers want only the part before your domain in Name (\"{}\").", records[0].name);
     println!("  Cloudflare: set Proxy status to \"DNS only\" (grey cloud). The proxy would hide this PC.");
     loop {
-        let (v4, v6) = resolve(&host);
-        let ipv6_listen = cfg.listen.iter().any(|l| l.starts_with('['));
-        if v4.contains(&public) && (v6.is_empty() || ipv6_listen) {
-            println!("  ✓ {host} points at {public}.");
-            break;
+        let (ok, lines) = admin::dns_verdict(&host, &public, &admin::resolve_host(&host));
+        for (good, line) in &lines {
+            println!("  {} {line}", if *good { "✓" } else { "✗" });
         }
-        if v4.is_empty() && v6.is_empty() {
-            println!("  ✗ {host} doesn't resolve yet. New records can take a few minutes to appear.");
-        } else if !v4.contains(&public) {
-            let seen: Vec<String> = v4.iter().chain(&v6).map(|a| a.to_string()).collect();
-            println!("  ✗ {host} points at {}, not {public}.", seen.join(", "));
-            println!("    If that's a Cloudflare address, switch the record to \"DNS only\".");
-        } else {
-            println!("  ! {host} also has an IPv6 (AAAA) record, but RDP Gate listens on IPv4 only.");
-            println!("    Browsers may try IPv6 first and fail: delete the AAAA record for this name.");
+        if ok {
+            break;
         }
         match ask("  Press Enter to check again, or type \"skip\" to continue anyway: ")? {
             Some(a) if a.eq_ignore_ascii_case("skip") => {
-                println!("  Continuing. Sign-in and the certificate only work once the record is right.");
+                println!("  Continuing. Sign-in and the certificate only work once the records are right.");
                 break;
             }
             None => return Err("cancelled; nothing was changed".into()),
@@ -675,7 +657,9 @@ fn status(data: &Path) -> Result<(), String> {
                 .ok()
                 .and_then(|r| serde_json::from_slice(&r).ok())
                 .unwrap_or_default();
-            println!("Beacon:         gist {} (last IP {}, published {})", b.gist_id, s["ip"].as_str().unwrap_or("?"),
+            let ips: Vec<&str> = [s["ip"].as_str(), s["ip6"].as_str()].into_iter().flatten().collect();
+            let ips = if ips.is_empty() { "?".to_string() } else { ips.join(" and ") };
+            println!("Beacon:         gist {} (last IP {ips}, published {})", b.gist_id,
                 s["published"].as_i64().map(local).unwrap_or_else(|| "not yet".into()));
             if let Some(e) = s["error"].as_str() {
                 println!("                last error: {e}");
@@ -705,6 +689,7 @@ fn status(data: &Path) -> Result<(), String> {
         _ => println!("Browser login:  off (needs a DNS name)"),
     }
     println!("Desktop login:  {}", if cfg.desktop_login { "on" } else { "off" });
+    println!("IPv6:           {}", if cfg.ipv6 { "on (sign-in over IPv6, address in the beacon)" } else { "off" });
     println!("Grant window:   {} min, max {} h", cfg.grant_minutes, cfg.max_hours);
     println!("Keep awake:     {}", if cfg.keep_awake { "while someone is signed in" } else { "off" });
     println!("6-digit codes:  {}", if st.totp.is_some() { "set up" } else { "not set up (totp-setup)" });

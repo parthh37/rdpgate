@@ -13,7 +13,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
 /// File name inside the gist.
@@ -26,7 +26,18 @@ const CARD_PREFIX: &str = "rdpgate-card:";
 /// Where the server can be reached, as of `ts`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Location {
+    /// The public IPv4 address, or the IPv6 one on a network without IPv4.
     pub ip: IpAddr,
+    /// The public IPv6 address, when there is also an IPv4 one in `ip`.
+    /// Older clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip6: Option<Ipv6Addr>,
+    /// The sign-in and Remote Desktop ports at `ip6`, when they aren't
+    /// `port` and `rdp_port`: IPv6 has no router port mapping in between.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip6_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip6_rdp_port: Option<u16>,
     /// Port forwarded to the agent (sign-in).
     pub port: u16,
     /// Port forwarded to Remote Desktop.
@@ -239,12 +250,15 @@ mod tests {
     fn beacon_roundtrip_and_tamper() {
         let server = key();
         let bk = crate::random_bytes::<32>();
-        let loc = Location { ip: "203.0.113.7".parse().unwrap(), port: 443, rdp_port: 3389, ts: 1_700_000_000, lan: None };
+        let loc = Location { ip: "203.0.113.7".parse().unwrap(), ip6: None, ip6_port: None, ip6_rdp_port: None, port: 443, rdp_port: 3389, ts: 1_700_000_000, lan: None };
         let text = seal(&loc, &server, &bk).unwrap();
         assert_eq!(open(&text, &server.verifying_key(), &bk).unwrap(), loc);
         let lan = LanLocation { ip: "192.168.1.20".parse().unwrap(), port: 443, rdp_port: 3389 };
-        let with_lan = Location { lan: Some(lan), ..loc.clone() };
+        let with_lan = Location { lan: Some(lan), ip6: Some("2001:db8::7".parse().unwrap()), ip6_port: Some(8443), ..loc.clone() };
         assert_eq!(open(&seal(&with_lan, &server, &bk).unwrap(), &server.verifying_key(), &bk).unwrap(), with_lan);
+        // A beacon from before IPv6 support still opens.
+        let old: Location = serde_json::from_str(r#"{"ip":"203.0.113.7","port":443,"rdp_port":3389,"ts":1}"#).unwrap();
+        assert_eq!(old.ip6, None);
 
         // Wrong beacon key: can't read it.
         assert!(open(&text, &server.verifying_key(), &crate::random_bytes::<32>()).is_err());

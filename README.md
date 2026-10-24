@@ -147,14 +147,14 @@ Test from outside your home network, for example over a phone hotspot. To sign i
 
 ### Optional: browser sign-in with a passkey
 
-Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control with a DNS "A" record pointing at your home IP (plus dynamic DNS if that IP changes). Tick it in Setup, or run the guided setup at any time:
+Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control with DNS records pointing at your home (an "A" record for IPv4, and "AAAA" for IPv6 if you have it), plus dynamic DNS if those addresses change. Tick it in Setup, or open **RDP Gate Server → Browser sign-in → Set up with my domain**: it shows the records to create with Copy buttons, checks them for you, then turns sign-in on. The same from PowerShell:
 
 ```powershell
 rdpgate-server domain-setup      # domain, DNS record + live check, certificate, first passkey
 rdpgate-server passkey-enroll    # more passkeys: one-time link, open it on your Mac/iPhone/PC
 ```
 
-It shows the exact DNS record to create, checks it until it resolves to your IP (and warns about a Cloudflare proxy or a stray AAAA record), and keeps your beacon, devices and other settings. `domain-setup --remove` turns browser sign-in off.
+Both show the exact records to create, check them until they resolve to this PC (and warn about a Cloudflare proxy, or a record that points elsewhere), and keep your beacon, devices and other settings. `domain-setup --remove` turns browser sign-in off.
 
 The sign-in page shows which IP it opened, lets you close access early, and shows the Remote Desktop certificate fingerprint to compare.
 
@@ -164,7 +164,7 @@ Every program keeps itself up to date, and only ever installs a release signed w
 
 | Program | Automatic | By hand |
 |---|---|---|
-| Server | Checks daily. Installs only while nobody has access open, then restarts the service. `"auto_update": false` in config.json turns it off. | Start menu → **Check for RDP Gate updates** (asks before installing), or `rdpgate-server update` (`--check` to only look) |
+| Server | Checks daily. Installs only while nobody has access open, then restarts the service. `"auto_update": false` in config.json turns it off. | RDP Gate Server → Overview → **Check for updates**, or `rdpgate-server update` (`--check` to only look) |
 | Desktop app | Checks once a day at launch. Installs and offers **Restart now**. There's a toggle under *This computer and server*. | **Check for updates** at the bottom of every screen, even before setup |
 | `rdpgate` CLI | Once a day, after a successful `connect`. | `rdpgate update`, `rdpgate auto-update on\|off` |
 
@@ -220,7 +220,8 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | Key | Default | Meaning |
 |---|---|---|
 | `public_port` | 443 | External port forwarded to the agent |
-| `listen` | `["0.0.0.0:443"]` | Add `"[::]:443"` for IPv6 |
+| `listen` | `["0.0.0.0:443"]` | Local sign-in address(es) |
+| `ipv6` | true | Also listen on IPv6 (`[::]` next to each `0.0.0.0`) and publish this PC's public IPv6 address in the beacon |
 | `rdp_port` / `rdp_public_port` | 3389 | Local RDP port / external port clients use |
 | `allow_udp` | false | Also open UDP for signed-in addresses |
 | `upnp` | true | Forward the ports on the router automatically |

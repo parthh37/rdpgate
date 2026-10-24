@@ -1,7 +1,8 @@
 use eframe::egui::{self, Color32, RichText, TextEdit};
 use rdpgate_core::update::Available;
 use rdpgate_ui::{self as theme, MUTED, TEXT, Tone, card, muted, primary, titled_card};
-use rdpgate_server::admin::{self, DeviceInfo, Overview, TotpEnrollment, when};
+use rdpgate_server::admin::{self, DeviceInfo, DnsRecord, Overview, TotpEnrollment, when};
+use rdpgate_server::beacon::PublicIps;
 use rdpgate_server::service::{self, Status};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -173,6 +174,7 @@ enum Confirm {
     Restart(&'static str),
     Protect,
     InstallUpdate(Box<Available>),
+    DomainOff,
 }
 
 /// Results of work done off the UI thread (the network and the service
@@ -181,6 +183,21 @@ enum Done {
     Message(Result<String, String>),
     Router(Vec<String>),
     UpdateChecked(Result<Option<Available>, String>),
+    /// The DNS records to create for the host typed in.
+    Records(String, Result<(Vec<DnsRecord>, PublicIps), String>),
+    /// What a DNS check of that host found: whether it's right, line by line.
+    DnsChecked(String, (bool, Vec<(bool, String)>)),
+}
+
+/// The guided domain setup for browser sign-in, as it's filled in.
+struct DomainForm {
+    host: String,
+    email: String,
+    /// The records to create, for the host they were made for, and this
+    /// network's addresses they came from.
+    records: Option<(String, Vec<DnsRecord>, PublicIps)>,
+    /// The last check of those records.
+    check: Option<(bool, Vec<(bool, String)>)>,
 }
 
 /// The QR code for the authenticator app, as rows of dark/light modules.
@@ -209,6 +226,7 @@ struct ServerApp {
     router_lines: Vec<String>,
     // Browser sign-in
     passkey_link: Option<(String, i64)>,
+    domain: Option<DomainForm>,
     // Activity log
     log: String,
     update: Option<Available>,
@@ -239,6 +257,7 @@ impl ServerApp {
             gist: String::new(),
             router_lines: vec![],
             passkey_link: None,
+            domain: None,
             log: String::new(),
             update: None,
             confirm: None,
@@ -291,6 +310,21 @@ impl ServerApp {
             Done::UpdateChecked(Ok(None)) => self.say(Ok("You have the latest version.".into())),
             Done::UpdateChecked(Ok(Some(av))) => self.update = Some(av),
             Done::UpdateChecked(Err(e)) => self.say(Err(format!("Update check: {e}"))),
+            Done::Records(host, Ok((records, ips))) => {
+                if let Some(f) = &mut self.domain {
+                    f.records = Some((host, records, ips));
+                    f.check = None;
+                }
+            }
+            Done::Records(_, Err(e)) => self.say(Err(format!("Could not find this network's public address: {e}"))),
+            Done::DnsChecked(host, verdict) => {
+                // Only if it's still the name being set up.
+                if let Some(f) = &mut self.domain
+                    && f.records.as_ref().is_some_and(|(h, _, _)| *h == host)
+                {
+                    f.check = Some(verdict);
+                }
+            }
         }
         self.refresh();
     }
@@ -335,7 +369,9 @@ impl ServerApp {
         if !o.totp {
             problems.push("6-digit codes aren't set up");
         }
-        if o.behind_nat {
+        // Behind carrier-grade NAT, IPv6 is the way in.
+        let ipv6 = o.beacon.as_ref().and_then(|b| b.ip6.clone()).filter(|_| o.ipv6);
+        if o.behind_nat && ipv6.is_none() {
             problems.push("this PC can't be reached from the internet");
         }
         card(ui, |ui| {
@@ -402,11 +438,11 @@ impl ServerApp {
             }
             let (tone, status, detail) = match &o.beacon {
                 Some(b) if b.error.is_some() => (Tone::Bad, "Beacon problem".to_string(), b.error.clone().unwrap_or_default()),
-                Some(b) => (
-                    Tone::Good,
-                    format!("Published {}", b.ip.as_deref().unwrap_or("?")),
-                    format!("Updated {}", when(b.published)),
-                ),
+                Some(b) => match (b.ip.as_deref(), ipv6.as_deref()) {
+                    (Some(v4), Some(v6)) => (Tone::Good, format!("Published {v4}"), format!("and IPv6 {v6}. Updated {}", when(b.published))),
+                    (None, Some(v6)) => (Tone::Good, "Published (IPv6)".to_string(), format!("{v6}. Updated {}", when(b.published))),
+                    (ip, _) => (Tone::Good, format!("Published {}", ip.unwrap_or("?")), format!("Updated {}", when(b.published))),
+                },
                 None => (Tone::Bad, "No beacon".to_string(), "Your computers can't find this PC.".to_string()),
             };
             if tile(&mut cols[2], "FINDING THIS PC", tone, &status, &detail, Some(("Network…", true))) {
@@ -429,7 +465,11 @@ impl ServerApp {
             if tile(&mut cols[1], "COMPUTERS", tone, &status, "Only enrolled computers can sign in.", Some(("Computers…", true))) {
                 go = Some(Page::Computers);
             }
-            let router_tone = if o.behind_nat { Tone::Bad } else { Tone::Neutral };
+            let router_tone = match (o.behind_nat, &ipv6) {
+                (true, None) => Tone::Bad,
+                (true, Some(_)) => Tone::Warn,
+                _ => Tone::Neutral,
+            };
             let lan = if o.lan {
                 format!("Home network sign-in on (this PC is {}).", o.lan_ip.as_deref().unwrap_or("not on a home network right now"))
             } else {
@@ -443,13 +483,25 @@ impl ServerApp {
 
         if o.behind_nat {
             gap(ui);
-            theme::notice(
-                ui,
-                Tone::Bad,
-                "Your router's own internet address isn't public (carrier-grade NAT, or a second router in front). \
-                 Nothing on the internet can reach this PC: ask your internet provider for a public IPv4 address.",
-                false,
-            );
+            if ipv6.is_some() {
+                theme::notice(
+                    ui,
+                    Tone::Warn,
+                    "Your router's own IPv4 address isn't public (carrier-grade NAT, or a second router in front), so \
+                     computers reach this PC over IPv6 instead. That works from networks that have IPv6 too (most mobile \
+                     networks do), if your router's IPv6 firewall lets them in: see Network.",
+                    false,
+                );
+            } else {
+                theme::notice(
+                    ui,
+                    Tone::Bad,
+                    "Your router's own internet address isn't public (carrier-grade NAT, or a second router in front). \
+                     Nothing on the internet can reach this PC: ask your internet provider for a public IPv4 address, \
+                     or turn on IPv6 on your router (Network > IPv6).",
+                    false,
+                );
+            }
         }
         for w in &o.warnings {
             ui.add_space(6.0);
@@ -741,7 +793,9 @@ impl ServerApp {
                     Some(b) => {
                         ui.horizontal_wrapped(|ui| {
                             theme::pill(ui, if b.error.is_some() { Tone::Bad } else { Tone::Good }, "Publishing");
-                            ui.label(muted(format!("Gist {}  ·  last address {}  ·  published {}", b.gist, b.ip.as_deref().unwrap_or("?"), when(b.published))).small());
+                            let ips: Vec<&str> = [b.ip.as_deref(), b.ip6.as_deref()].into_iter().flatten().collect();
+                            let ips = if ips.is_empty() { "?".to_string() } else { ips.join(" and ") };
+                            ui.label(muted(format!("Gist {}  ·  last address {ips}  ·  published {}", b.gist, when(b.published))).small());
                         });
                         if let Some(e) = &b.error {
                             theme::notice(ui, Tone::Bad, &format!("Last error: {e}"), false);
@@ -798,6 +852,38 @@ impl ServerApp {
         });
 
         gap(ui);
+        titled_card(ui, "IPv6", None, |ui| {
+            let mut on = o.ipv6;
+            if ui.checkbox(&mut on, "Accept sign-in over IPv6, and publish this PC's IPv6 address in the beacon").changed() {
+                match admin::set_ipv6(&self.data, on) {
+                    Ok(()) => self.restart(&ctx, if on { "Sign-in over IPv6 is on." } else { "Sign-in over IPv6 is off." }),
+                    Err(e) => self.say(Err(e)),
+                }
+            }
+            if o.ipv6 {
+                match o.beacon.as_ref().and_then(|b| b.ip6.as_deref()) {
+                    Some(ip) => {
+                        ui.horizontal_wrapped(|ui| {
+                            theme::pill(ui, Tone::Good, "Published");
+                            ui.label(muted("This PC's public IPv6 address is"));
+                            ui.monospace(ip);
+                        });
+                    }
+                    None if o.beacon.is_some() => {
+                        ui.label(muted("No public IPv6 address found for this PC yet (the beacon checks every 5 minutes). Your internet provider or router may not offer IPv6."));
+                    }
+                    None => {}
+                }
+                ui.label(muted(format!(
+                    "IPv6 needs no port forwarding, but your router's IPv6 firewall must let TCP {} (sign-in) and TCP {} (Remote Desktop) in to this PC. \
+                     Look for \"IPv6 firewall\", \"pinhole\" or \"allow inbound\" in its settings. Your computers try IPv6 first, then IPv4.",
+                    o.listen_port, o.rdp_port
+                ))
+                .small());
+            }
+        });
+
+        gap(ui);
         titled_card(ui, "Router", None, |ui| {
             ui.label(muted(format!(
                 "Your router must send TCP {} (sign-in) and TCP {} (Remote Desktop) to this PC. Remote Desktop stays closed in Windows Firewall until someone signs in.",
@@ -828,11 +914,15 @@ impl ServerApp {
             "Browser sign-in",
             "Optional: sign in from a web browser with a passkey. It needs a domain name you control pointing at this PC. The RDP Gate app doesn't need any of this.",
         );
+        if self.domain.is_some() {
+            self.domain_ui(ui, o);
+            return;
+        }
         card(ui, |ui| {
             match &o.browser_url {
                 Some(url) => {
                     theme::pill(ui, Tone::Good, "On");
-                    ui.label(muted("Your sign-in page (bookmark the full address):"));
+                    ui.label(muted("Your sign-in page (bookmark the full address on each device; the domain alone shows nothing):"));
                     theme::code_line(ui, url);
                 }
                 None => {
@@ -841,14 +931,20 @@ impl ServerApp {
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button(if o.browser_url.is_some() { "Change the domain…" } else { "Set up with my domain…" }).clicked() {
-                    self.console(&["domain-setup"]);
+                let label = if o.browser_url.is_some() { "Change the domain…" } else { "Set up with my domain…" };
+                if ui.add_enabled(self.busy.is_none(), egui::Button::new(label)).clicked() {
+                    self.domain = Some(DomainForm {
+                        host: o.public_host.clone().unwrap_or_default(),
+                        email: o.cert_email.clone().unwrap_or_default(),
+                        records: None,
+                        check: None,
+                    });
+                    self.status = None;
                 }
-                if o.browser_url.is_some() && ui.button("Turn off…").clicked() {
-                    self.console(&["domain-setup", "--remove"]);
+                if o.browser_url.is_some() && ui.add_enabled(self.busy.is_none(), egui::Button::new("Turn off…")).clicked() {
+                    self.confirm = Some(Confirm::DomainOff);
                 }
             });
-            ui.label(muted("The guided setup opens in its own window: it shows the DNS record to create and checks it for you.").small());
         });
 
         if o.browser_url.is_none() {
@@ -914,16 +1010,155 @@ impl ServerApp {
             });
     }
 
-    /// Runs `rdpgate-server <args>` in its own console window, for the
-    /// guided steps that ask questions as they go.
-    fn console(&mut self, args: &[&str]) {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        let exe = std::env::current_exe().map(|p| p.with_file_name("rdpgate-server.exe")).unwrap_or_default();
-        let line = format!("\"\"{}\" {} & pause\"", exe.display(), args.join(" "));
-        let r = std::process::Command::new("cmd.exe").arg("/c").raw_arg(line).creation_flags(CREATE_NEW_CONSOLE).spawn();
-        if let Err(e) = r {
-            self.say(Err(format!("Could not open the guided setup: {e}")));
+    /// The guided domain setup: the name, the DNS records to create (checked
+    /// for you), then the certificate email and turning it on.
+    fn domain_ui(&mut self, ui: &mut egui::Ui, o: &Overview) {
+        let ctx = ui.ctx().clone();
+        let idle = self.busy.is_none();
+        let Some(f) = self.domain.as_mut() else { return };
+        let (mut find, mut check, mut turn_on) = (false, false, false);
+        let step = match (&f.records, &f.check) {
+            (None, _) => 0,
+            (Some(_), Some((true, _))) => 2,
+            (Some(_), _) => 1,
+        };
+        theme::steps(ui, &["Domain name", "DNS records", "Turn on"], step);
+        ui.add_space(10.0);
+
+        titled_card(
+            ui,
+            "1. Domain name",
+            Some("Browsers only use passkeys with a domain name, never an IP address. Use a name under a domain you control (from any registrar, or Cloudflare)."),
+            |ui| {
+                let label = theme::field_label(ui, "Domain name for this PC");
+                let r = ui
+                    .add(TextEdit::singleline(&mut f.host).hint_text("e.g. rdp.example.com").desired_width(360.0))
+                    .labelled_by(label.id);
+                if r.changed() {
+                    f.records = None;
+                    f.check = None;
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(4.0);
+                let label = if f.records.is_some() { "Find the records again" } else { "Show the DNS records to create" };
+                find = (ui.add_enabled(idle && !f.host.trim().is_empty(), primary(label)).clicked() || enter) && idle;
+            },
+        );
+
+        if let Some((host, records, _)) = &f.records {
+            gap(ui);
+            titled_card(
+                ui,
+                "2. DNS records",
+                Some("At your DNS provider, create (or update) these, then check them here. Most providers want only the part before your domain in Name."),
+                |ui| {
+                    egui::Grid::new("dns").striped(true).num_columns(5).spacing([20.0, 8.0]).show(ui, |ui| {
+                        for h in ["TYPE", "NAME", "VALUE", "TTL", ""] {
+                            ui.label(muted(h).small().strong());
+                        }
+                        ui.end_row();
+                        for r in records {
+                            ui.monospace(r.kind);
+                            ui.monospace(&r.name).on_hover_text(format!("= {host}"));
+                            ui.monospace(&r.value);
+                            ui.label(muted("300 (or Auto)"));
+                            if ui.small_button("Copy").clicked() {
+                                ui.ctx().copy_text(r.value.clone());
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.label(muted("Cloudflare: set Proxy status to \"DNS only\" (grey cloud). The proxy would hide this PC.").small());
+                    ui.label(muted("If your home addresses change, keep the records current with dynamic DNS (\"DDNS\" at your registrar or router).").small());
+                    if records.iter().any(|r| r.kind == "AAAA") {
+                        ui.label(muted(format!("For IPv6 visitors your router's IPv6 firewall must also let TCP {} in to this PC.", o.listen_port)).small());
+                    }
+                    ui.add_space(6.0);
+                    if let Some((_, lines)) = &f.check {
+                        for (good, line) in lines {
+                            ui.horizontal(|ui| {
+                                theme::dot(ui, if *good { Tone::Good } else { Tone::Bad });
+                                ui.add(egui::Label::new(RichText::new(line).color(if *good { TEXT } else { theme::BAD })).wrap());
+                            });
+                        }
+                        ui.add_space(4.0);
+                    }
+                    check = ui.add_enabled(idle, egui::Button::new(if f.check.is_some() { "Check again" } else { "Check the records" })).clicked();
+                },
+            );
+
+            gap(ui);
+            let ok = f.check.as_ref().is_some_and(|(ok, _)| *ok);
+            titled_card(ui, "3. Certificate and turning it on", None, |ui| {
+                ui.label(muted("The certificate comes free from Let's Encrypt, automatically, through port 443."));
+                if o.public_port != 443 {
+                    theme::notice(
+                        ui,
+                        Tone::Warn,
+                        &format!("Your router forwards port {} instead of 443. Let's Encrypt only checks port 443, so also forward the router's TCP 443 to this PC's port {}.", o.public_port, o.listen_port),
+                        false,
+                    );
+                }
+                let label = theme::field_label(ui, "Email for certificate expiry notices (optional)");
+                ui.add(TextEdit::singleline(&mut f.email).hint_text("you@example.com").desired_width(360.0)).labelled_by(label.id);
+                if o.public_host.as_deref().is_some_and(|h| *h != *host) && !o.passkeys.is_empty() {
+                    ui.add_space(4.0);
+                    theme::notice(ui, Tone::Warn, "The domain changes, so passkeys made for the old one stop working. Add new ones afterwards.", false);
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    turn_on = ui.add_enabled(idle && ok, primary("Turn on browser sign-in")).clicked();
+                    if f.check.as_ref().is_some_and(|(ok, _)| !ok) {
+                        turn_on |= ui
+                            .add_enabled(idle, egui::Button::new("Turn on anyway"))
+                            .on_hover_text("Sign-in and the certificate only work once the records are right.")
+                            .clicked();
+                    }
+                });
+                if !ok {
+                    ui.label(muted("Check the records first.").small());
+                }
+            });
+        }
+        ui.add_space(10.0);
+        let cancel = ui.button("Cancel").clicked();
+
+        // Act once the form is no longer borrowed.
+        let (host, email) = (f.host.clone(), f.email.clone());
+        let made_for = f.records.as_ref().map(|(h, _, ips)| (h.clone(), *ips));
+        if cancel {
+            self.domain = None;
+            return;
+        }
+        if find {
+            match admin::clean_host(&host) {
+                Ok(host) => {
+                    let data = self.data.clone();
+                    self.run(&ctx, "Finding this network's public addresses…", move || {
+                        let r = admin::dns_records(&data, &host);
+                        Done::Records(host, r)
+                    });
+                }
+                Err(e) => self.say(Err(e)),
+            }
+        } else if check && let Some((host, ips)) = made_for.clone() {
+            self.run(&ctx, "Checking the DNS records…", move || {
+                let verdict = admin::dns_verdict(&host, &ips, &admin::resolve_host(&host));
+                Done::DnsChecked(host, verdict)
+            });
+        } else if turn_on && let Some((host, _)) = made_for {
+            match admin::domain_on(&self.data, &host, &email) {
+                Ok(_) => {
+                    self.domain = None;
+                    self.restart(
+                        &ctx,
+                        "Browser sign-in is on. The first visit can take up to a minute while the certificate is issued; \
+                         test it from outside your network (a phone on mobile data, say).",
+                    );
+                }
+                Err(e) => self.say(Err(e)),
+            }
         }
     }
 
@@ -952,6 +1187,13 @@ impl ServerApp {
                 }
                 .to_string(),
                 "Close it now",
+            ),
+            Confirm::DomainOff => (
+                "Turn browser sign-in off?".to_string(),
+                "Nobody can sign in from a browser until it's set up again. Passkeys are kept and work again with the same domain. \
+                 The RDP Gate app isn't affected."
+                    .to_string(),
+                "Turn off",
             ),
             Confirm::InstallUpdate(av) => (
                 format!("Install version {}?", av.version),
@@ -1005,6 +1247,10 @@ impl ServerApp {
                     }))
                 });
             }
+            Confirm::DomainOff => match admin::domain_off(&self.data) {
+                Ok(()) => self.restart(ctx, "Browser sign-in is off."),
+                Err(e) => self.say(Err(e)),
+            },
             Confirm::InstallUpdate(av) => {
                 self.update = None;
                 self.run(ctx, "Installing the update…", move || {

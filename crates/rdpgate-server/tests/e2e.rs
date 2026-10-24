@@ -45,7 +45,8 @@ fn write_web_certs(dir: &std::path::Path) -> (PathBuf, PathBuf, PathBuf) {
 
 /// A minimal stand-in for Windows' RDP listener: answers the X.224 request
 /// selecting TLS, then completes a TLS handshake with its own certificate.
-async fn fake_rdp() -> (SocketAddr, String) {
+/// Like Windows', it also answers on 127.0.0.1, where the server reads it.
+async fn fake_rdp(ip: &str) -> (SocketAddr, String) {
     let key = KeyPair::generate().unwrap();
     let cert = CertificateParams::new(vec!["rdp.test".to_string()]).unwrap().self_signed(&key).unwrap();
     let sha = hex::encode(Sha256::digest(cert.der()));
@@ -54,34 +55,47 @@ async fn fake_rdp() -> (SocketAddr, String) {
         .with_single_cert(vec![cert.der().clone()], rustls_pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()))
         .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
-    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ln = tokio::net::TcpListener::bind(format!("{ip}:0")).await.unwrap();
     let addr = ln.local_addr().unwrap();
-    tokio::spawn(async move {
-        while let Ok((mut tcp, _)) = ln.accept().await {
-            let acceptor = acceptor.clone();
-            tokio::spawn(async move {
-                let mut req = [0u8; 19];
-                if tcp.read_exact(&mut req).await.is_err() {
-                    return;
-                }
-                let confirm = [
-                    0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0, 0x00, 0x00, 0x12, 0x34, 0x00, //
-                    0x02, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
-                ];
-                let _ = tcp.write_all(&confirm).await;
-                let _ = acceptor.accept(tcp).await;
-            });
-        }
-    });
+    let mut listeners = vec![ln];
+    if addr.is_ipv6() {
+        listeners.push(tokio::net::TcpListener::bind(("127.0.0.1", addr.port())).await.unwrap());
+    }
+    for ln in listeners {
+        let acceptor = acceptor.clone();
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = ln.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let mut req = [0u8; 19];
+                    if tcp.read_exact(&mut req).await.is_err() {
+                        return;
+                    }
+                    let confirm = [
+                        0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0, 0x00, 0x00, 0x12, 0x34, 0x00, //
+                        0x02, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+                    ];
+                    let _ = tcp.write_all(&confirm).await;
+                    let _ = acceptor.accept(tcp).await;
+                });
+            }
+        });
+    }
     (addr, sha)
 }
 
 async fn start() -> Harness {
+    start_at("127.0.0.1").await.expect("127.0.0.1 is always there")
+}
+
+/// A server listening on `ip` only, or None when this machine can't (no IPv6).
+async fn start_at(ip: &str) -> Option<Harness> {
+    let ln = tokio::net::TcpListener::bind(format!("{ip}:0")).await.ok()?;
     rdpgate_server::install_crypto();
     let dir = std::env::temp_dir().join(format!("rdpgate-e2e-{}", rdpgate_core::random_token::<6>()));
     std::fs::create_dir_all(&dir).unwrap();
     let (ca, cert, key) = write_web_certs(&dir);
-    let (rdp_addr, rdp_sha256) = fake_rdp().await;
+    let (rdp_addr, rdp_sha256) = fake_rdp(ip).await;
 
     let mut cfg = Config::new(Some(HOST));
     cfg.tls.mode = "files".into();
@@ -108,13 +122,12 @@ async fn start() -> Harness {
     let fw = Arc::new(DryRun::default());
     let card = Identity::load_or_create(&dir).unwrap().card(&cfg).encode();
     let app = App::new(cfg, fw.clone()).unwrap();
-    let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = ln.local_addr().unwrap();
     let (tx, mut rx) = tokio::sync::watch::channel(false);
     let served = app.clone();
     tokio::spawn(async move { app::serve(served, vec![ln], &mut rx).await });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    Harness { dir, addr, fw, secret, ca, card, rdp_sha256, app, _stop: tx }
+    Some(Harness { dir, addr, fw, secret, ca, card, rdp_sha256, app, _stop: tx })
 }
 
 struct TestDevice {
@@ -233,7 +246,7 @@ async fn intercepted_rdp_endpoint_is_refused() {
     let d = h.device("mac", true);
     let mut grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.unwrap();
     // Someone else's RDP listener answers on the RDP port.
-    let (mitm, _) = fake_rdp().await;
+    let (mitm, _) = fake_rdp("127.0.0.1").await;
     grant.rdp_port = mitm.port();
     let err = client::verify_rdp(&grant).await.unwrap_err();
     assert!(err.contains("STOP"), "{err}");
@@ -398,5 +411,25 @@ async fn passkey_enroll_then_browser_sign_in_and_close() {
     hdr.push(("X-Revoke-Token", revoke));
     let (s, body) = h.http("POST", &format!("{portal}api/revoke"), HOST, &hdr, "{}").await;
     assert_eq!(s, 200, "{body}");
+    assert!(h.allowed().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn desktop_sign_in_over_ipv6() {
+    let Some(h) = start_at("[::1]").await else {
+        eprintln!("skipped: no IPv6 on this machine");
+        return;
+    };
+    let d = h.device("mac6", true);
+
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in over IPv6 succeeds");
+    assert_eq!(grant.ip, "::1");
+    assert_eq!(h.allowed(), vec!["::1".parse::<IpAddr>().unwrap()], "the grant is for the IPv6 address");
+    assert_eq!(client::verify_rdp(&grant).await.unwrap(), RdpCheck::Verified, "Remote Desktop checked over IPv6 too");
+    let rdp = client::write_rdp_file(&d.dir, &d.cfg, &grant).unwrap();
+    let text = std::fs::read_to_string(rdp).unwrap();
+    assert!(text.contains(&format!("full address:s:[::1]:{}", grant.rdp_port)), "{text}");
+
+    client::lock(&d.dir, &d.cfg, &d.key).await.expect("lock succeeds");
     assert!(h.allowed().is_empty());
 }

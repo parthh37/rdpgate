@@ -15,9 +15,15 @@ pub struct Config {
     /// Port the router forwards to `listen` (normally 443).
     #[serde(default = "d_443")]
     pub public_port: u16,
-    /// Local addresses to bind, e.g. ["0.0.0.0:443"] or add "[::]:443" for IPv6.
+    /// Local addresses to bind, e.g. ["0.0.0.0:443"]. With `ipv6`, each
+    /// "0.0.0.0:port" is also bound as "[::]:port".
     #[serde(default = "d_listen")]
     pub listen: Vec<String>,
+    /// Also accept sign-in over IPv6 and publish this network's public IPv6
+    /// address in the beacon. Many networks without a reachable IPv4 address
+    /// (carrier-grade NAT) can still be reached this way.
+    #[serde(default = "d_true")]
+    pub ipv6: bool,
     /// Certificate for the browser portal (only used with `public_host`).
     #[serde(default)]
     pub tls: TlsConfig,
@@ -157,6 +163,7 @@ impl Config {
             public_host: host,
             public_port: 443,
             listen: d_listen(),
+            ipv6: true,
             tls: TlsConfig::default(),
             rdp_port: 3389,
             rdp_public_port: 3389,
@@ -240,6 +247,30 @@ impl Config {
         Ok(())
     }
 
+    /// The addresses to listen on, each with whether failing to bind it is
+    /// fatal. The IPv6 twins added for `ipv6` aren't: a PC with IPv6 turned
+    /// off still serves IPv4.
+    pub fn listen_addrs(&self) -> Vec<(SocketAddr, bool)> {
+        let configured: Vec<SocketAddr> = self.listen.iter().filter_map(|l| l.parse().ok()).collect();
+        let mut out: Vec<(SocketAddr, bool)> = configured.iter().map(|a| (*a, true)).collect();
+        if self.ipv6 {
+            for a in &configured {
+                let twin = SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), a.port());
+                if a.ip() == IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED) && !out.iter().any(|(o, _)| *o == twin) {
+                    out.push((twin, false));
+                }
+            }
+        }
+        out
+    }
+
+    /// The Remote Desktop port a computer signed in from `src` connects to:
+    /// the router's forwarded one over IPv4, this PC's own over IPv6 (no
+    /// port mapping in between).
+    pub fn rdp_port_for(&self, src: IpAddr) -> u16 {
+        if src.to_canonical().is_ipv6() { self.rdp_port } else { self.rdp_public_port }
+    }
+
     /// Browser origin, e.g. https://rdp.example.com (only with a host name).
     pub fn public_url(&self) -> Option<String> {
         let h = self.public_host.as_ref()?;
@@ -284,5 +315,23 @@ mod tests {
         c.web_login = true;
         assert!(c.validate().is_err(), "web login without a host name");
         assert!(valid_name("mac-book_1.2") && !valid_name("bad name") && !valid_name(""));
+    }
+
+    #[test]
+    fn listens_on_ipv6_too_unless_turned_off() {
+        let mut c = Config::new(None);
+        let addrs = |c: &Config| c.listen_addrs().into_iter().map(|(a, required)| (a.to_string(), required)).collect::<Vec<_>>();
+        assert_eq!(addrs(&c), [("0.0.0.0:443".into(), true), ("[::]:443".into(), false)]);
+        // A config from before IPv6 support turns it on.
+        let old: serde_json::Value = serde_json::json!({ "portal_path": c.portal_path });
+        assert!(serde_json::from_value::<Config>(old).unwrap().ipv6);
+        // Listed by hand: not added twice, and its failure counts.
+        c.listen.push("[::]:443".into());
+        assert_eq!(addrs(&c), [("0.0.0.0:443".into(), true), ("[::]:443".into(), true)]);
+        c.listen = vec!["192.168.1.5:8443".into()];
+        assert_eq!(addrs(&c), [("192.168.1.5:8443".into(), true)]);
+        c.listen = vec!["0.0.0.0:443".into()];
+        c.ipv6 = false;
+        assert_eq!(addrs(&c), [("0.0.0.0:443".into(), true)]);
     }
 }
