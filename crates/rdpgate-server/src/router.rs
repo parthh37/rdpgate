@@ -70,15 +70,19 @@ impl RouterStatus {
     }
 }
 
-/// The port forwards this configuration needs: (protocol, external, internal).
-pub fn needed(cfg: &Config) -> Vec<(PortMappingProtocol, u16, u16)> {
-    let listen_port = cfg
-        .listen
+/// The local port the agent listens on for IPv4.
+pub fn listen_port(cfg: &Config) -> u16 {
+    cfg.listen
         .iter()
         .filter_map(|l| l.parse::<SocketAddr>().ok())
         .find(|a| a.is_ipv4())
         .map(|a| a.port())
-        .unwrap_or(443);
+        .unwrap_or(443)
+}
+
+/// The port forwards this configuration needs: (protocol, external, internal).
+pub fn needed(cfg: &Config) -> Vec<(PortMappingProtocol, u16, u16)> {
+    let listen_port = listen_port(cfg);
     let mut v = vec![(PortMappingProtocol::TCP, cfg.public_port, listen_port), (PortMappingProtocol::TCP, cfg.rdp_public_port, cfg.rdp_port)];
     if cfg.allow_udp {
         v.push((PortMappingProtocol::UDP, cfg.rdp_public_port, cfg.rdp_port));
@@ -106,6 +110,29 @@ fn lan_ip_towards(gateway: IpAddr) -> Option<IpAddr> {
     let sock = UdpSocket::bind(if gateway.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }).ok()?;
     sock.connect(SocketAddr::new(gateway, 9)).ok()?;
     Some(sock.local_addr().ok()?.ip())
+}
+
+/// This PC's private IPv4 address on its home network, if it has one.
+pub fn lan_ip() -> Option<IpAddr> {
+    lan_ip_towards("192.0.2.1".parse().unwrap()).filter(|ip| matches!(ip, IpAddr::V4(v) if v.is_private()))
+}
+
+/// The router this PC sends internet traffic through (IPv4).
+#[cfg(windows)]
+pub fn default_gateway() -> Option<IpAddr> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{GetBestRoute, MIB_IPFORWARDROW};
+    let mut row: MIB_IPFORWARDROW = unsafe { std::mem::zeroed() };
+    let dest = u32::from_ne_bytes([192, 0, 2, 1]);
+    if unsafe { GetBestRoute(dest, 0, &mut row) } != 0 {
+        return None;
+    }
+    let hop = std::net::Ipv4Addr::from(row.dwForwardNextHop.to_ne_bytes());
+    (!hop.is_unspecified()).then_some(IpAddr::V4(hop))
+}
+
+#[cfg(not(windows))]
+pub fn default_gateway() -> Option<IpAddr> {
+    None
 }
 
 /// Finds the router and adds or renews every needed mapping (blocking).

@@ -25,6 +25,8 @@ pub type Result<T> = std::result::Result<T, String>;
 
 pub const MIN_PASSPHRASE: usize = 10;
 const NET_TIMEOUT: Duration = Duration::from_secs(12);
+/// Connecting on the home network is near-instant when it works at all.
+const LAN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
@@ -39,6 +41,10 @@ pub struct ClientConfig {
     /// Last sign-in address where the server proved its identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_known: Option<SocketAddr>,
+    /// Remote Desktop port to use with `last_known` when it was the server's
+    /// address on its own network (the router may forward a different one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_known_rdp_port: Option<u16>,
     /// Newest beacon time seen. Older beacons are refused, so a replayed
     /// beacon can't send the client back to an old address.
     #[serde(default)]
@@ -169,6 +175,7 @@ pub fn create_device(dir: &Path, device: &str, rdp_username: Option<String>, pas
         rdp_username: rdp_username.filter(|u| !u.trim().is_empty()),
         card: None,
         last_known: None,
+        last_known_rdp_port: None,
         beacon_ts: 0,
         auto_update: true,
         last_update_check: 0,
@@ -193,6 +200,7 @@ pub fn set_card(dir: &Path, text: &str) -> Result<String> {
     let changed = cfg.card.as_deref().and_then(|c| Card::decode(c).ok()).is_none_or(|old| old.key != card.key);
     if changed {
         cfg.last_known = None;
+        cfg.last_known_rdp_port = None;
         cfg.beacon_ts = 0;
     }
     cfg.card = Some(card.encode());
@@ -250,48 +258,73 @@ impl Source {
     }
 }
 
+/// A place to ask for the server, and the Remote Desktop port that goes with
+/// it when that isn't the one the server reports (its own-network address).
+#[derive(Clone, Copy)]
+struct Target {
+    addr: SocketAddr,
+    rdp_port: Option<u16>,
+}
+
+impl Target {
+    fn at(addr: SocketAddr) -> Self {
+        Target { addr, rdp_port: None }
+    }
+}
+
+/// A home-network address: it only answers when this computer is on that
+/// network, and elsewhere the same address can belong to anything.
+fn is_local_network(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v) => v.is_private() || v.is_link_local(),
+        std::net::IpAddr::V6(v) => (v.segments()[0] & 0xfe00) == 0xfc00 || (v.segments()[0] & 0xffc0) == 0xfe80,
+    }
+}
+
 /// Where to look next. None of these is trusted: an address is only a place
 /// to ask the server to prove its identity.
-async fn resolve(src: Source, cfg: &ClientConfig, card: &Card, notes: &mut Vec<String>, newest: &mut Option<i64>) -> Option<SocketAddr> {
+async fn resolve(src: Source, cfg: &ClientConfig, card: &Card, notes: &mut Vec<String>, newest: &mut Option<i64>) -> Vec<Target> {
     match src {
-        Source::Given => cfg.connect_override,
-        Source::LastKnown => cfg.last_known,
+        Source::Given => cfg.connect_override.map(Target::at).into_iter().collect(),
+        Source::LastKnown => cfg.last_known.map(|addr| Target { addr, rdp_port: cfg.last_known_rdp_port }).into_iter().collect(),
         Source::Beacon => {
-            let gist = card.gist.clone()?;
+            let Some(gist) = card.gist.clone() else { return vec![] };
             let text = match tokio::task::spawn_blocking(move || beacon::fetch_gist(&gist)).await {
                 Ok(Ok(t)) => t,
                 Ok(Err(e)) => {
                     notes.push(e);
-                    return None;
+                    return vec![];
                 }
-                Err(_) => return None,
+                Err(_) => return vec![],
             };
             match beacon::open(&text, &card.server_key(), &card.beacon_key) {
                 Ok(loc) if loc.ts < cfg.beacon_ts => {
                     notes.push("ignored a beacon older than one already seen (possible replay)".into());
-                    None
+                    vec![]
                 }
                 Ok(loc) => {
                     *newest = Some(loc.ts);
-                    Some(SocketAddr::new(loc.ip, loc.port))
+                    // At home, straight to the server; elsewhere that fails fast.
+                    let lan = loc.lan.map(|l| Target { addr: SocketAddr::new(l.ip, l.port), rdp_port: Some(l.rdp_port) });
+                    lan.into_iter().chain([Target::at(SocketAddr::new(loc.ip, loc.port))]).collect()
                 }
                 Err(e) => {
                     notes.push(e);
-                    None
+                    vec![]
                 }
             }
         }
         Source::Host => {
-            let host = card.host.as_deref()?;
+            let Some(host) = card.host.as_deref() else { return vec![] };
             match tokio::time::timeout(NET_TIMEOUT, tokio::net::lookup_host((host, card.port))).await {
                 Ok(Ok(addrs)) => {
                     let addrs: Vec<SocketAddr> = addrs.collect();
                     // IPv4 first: the firewall grant is for whichever family we sign in over.
-                    addrs.iter().find(|a| a.is_ipv4()).or(addrs.first()).copied()
+                    addrs.iter().find(|a| a.is_ipv4()).or(addrs.first()).copied().map(Target::at).into_iter().collect()
                 }
                 _ => {
                     notes.push(format!("could not look up {host}"));
-                    None
+                    vec![]
                 }
             }
         }
@@ -300,7 +333,8 @@ async fn resolve(src: Source, cfg: &ClientConfig, card: &Card, notes: &mut Vec<S
 
 /// TCP + TLS 1.3 to `addr`, then the server must prove the pinned key.
 async fn open_verified(addr: SocketAddr, card: &Card) -> std::result::Result<(TlsStream<TcpStream>, [u8; 32]), (bool, String)> {
-    let tcp = tokio::time::timeout(NET_TIMEOUT, TcpStream::connect(addr))
+    let connect_timeout = if is_local_network(addr.ip()) { LAN_TIMEOUT } else { NET_TIMEOUT };
+    let tcp = tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
         .await
         .map_err(|_| (false, format!("{addr}: timed out")))?
         .map_err(|e| (false, format!("{addr}: {e}")))?;
@@ -327,45 +361,50 @@ async fn open_verified(addr: SocketAddr, card: &Card) -> std::result::Result<(Tl
 }
 
 /// Finds the server, verifies it, sends one signed request.
-async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, code: &str) -> Result<(Response, SocketAddr)> {
+async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, code: &str) -> Result<(Response, Target)> {
     let card = card(cfg)?;
     let mut notes = Vec::new();
     let mut newest_beacon = None;
     let mut tried: Vec<SocketAddr> = Vec::new();
     let mut impostor = None;
     for src in [Source::Given, Source::Beacon, Source::Host, Source::LastKnown] {
-        let Some(addr) = resolve(src, cfg, &card, &mut notes, &mut newest_beacon).await else { continue };
-        if tried.contains(&addr) {
-            continue;
-        }
-        tried.push(addr);
-        let (mut tls, binding) = match open_verified(addr, &card).await {
-            Ok(v) => v,
-            Err((spoof, msg)) => {
-                if spoof {
-                    impostor = Some(msg.clone());
-                }
-                notes.push(format!("{msg} (from {})", src.label()));
+        for target in resolve(src, cfg, &card, &mut notes, &mut newest_beacon).await {
+            let addr = target.addr;
+            if tried.contains(&addr) {
                 continue;
             }
-        };
-        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-        let req = wire::sign(key, &binding, &Payload { op: op.into(), device: cfg.device.clone(), ts, totp: code.into() });
-        let resp: Response = tokio::time::timeout(NET_TIMEOUT, async {
-            wire::write_frame(&mut tls, &req).await?;
-            wire::read_frame(&mut tls).await
-        })
-        .await
-        .map_err(|_| "the server did not answer in time".to_string())?
-        .map_err(|e| format!("server connection: {e}"))?;
+            tried.push(addr);
+            let (mut tls, binding) = match open_verified(addr, &card).await {
+                Ok(v) => v,
+                Err((spoof, msg)) => {
+                    // Away from home, the server's home address can be some
+                    // other machine: expected, not a sign of spoofing.
+                    if spoof && !is_local_network(addr.ip()) {
+                        impostor = Some(msg.clone());
+                    }
+                    notes.push(format!("{msg} (from {})", src.label()));
+                    continue;
+                }
+            };
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            let req = wire::sign(key, &binding, &Payload { op: op.into(), device: cfg.device.clone(), ts, totp: code.into() });
+            let resp: Response = tokio::time::timeout(NET_TIMEOUT, async {
+                wire::write_frame(&mut tls, &req).await?;
+                wire::read_frame(&mut tls).await
+            })
+            .await
+            .map_err(|_| "the server did not answer in time".to_string())?
+            .map_err(|e| format!("server connection: {e}"))?;
 
-        // Remember where the server proved itself, and the newest beacon.
-        let mut updated = cfg.clone();
-        updated.last_known = Some(addr);
-        updated.beacon_ts = updated.beacon_ts.max(newest_beacon.unwrap_or(0));
-        updated.connect_override = None;
-        let _ = save_config(dir, &updated);
-        return Ok((resp, addr));
+            // Remember where the server proved itself, and the newest beacon.
+            let mut updated = cfg.clone();
+            updated.last_known = Some(addr);
+            updated.last_known_rdp_port = target.rdp_port;
+            updated.beacon_ts = updated.beacon_ts.max(newest_beacon.unwrap_or(0));
+            updated.connect_override = None;
+            let _ = save_config(dir, &updated);
+            return Ok((resp, target));
+        }
     }
     if tried.is_empty() {
         notes.insert(0, "No address to try for the server.".into());
@@ -407,15 +446,15 @@ pub async fn sign_in(dir: &Path, cfg: &ClientConfig, key: &SigningKey, code: &st
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Enter the 6-digit code from your authenticator app.".into());
     }
-    let (resp, addr) = exchange(dir, cfg, key, wire::OP_TOTP, code).await?;
+    let (resp, target) = exchange(dir, cfg, key, wire::OP_TOTP, code).await?;
     if !resp.ok {
         return Err(explain(&resp));
     }
     Ok(Grant {
         ip: resp.ip.as_deref().and_then(|i| i.parse::<std::net::IpAddr>().ok()).map(|i| i.to_string()).unwrap_or_default(),
         expires: resp.expires.unwrap_or_default(),
-        server_addr: addr,
-        rdp_port: resp.rdp_port.unwrap_or(3389),
+        server_addr: target.addr,
+        rdp_port: target.rdp_port.or(resp.rdp_port).unwrap_or(3389),
         rdp_cert_sha256: resp.rdp_cert_sha256.filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())),
     })
 }

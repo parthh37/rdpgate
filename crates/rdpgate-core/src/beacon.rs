@@ -33,6 +33,20 @@ pub struct Location {
     pub rdp_port: u16,
     /// Unix seconds when the server published this.
     pub ts: i64,
+    /// Where computers on the server's own network can reach it directly,
+    /// when the server allows sign-in from there. Older clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan: Option<LanLocation>,
+}
+
+/// The server's address on its own network (no router in between).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LanLocation {
+    pub ip: IpAddr,
+    /// Port the agent listens on.
+    pub port: u16,
+    /// Local Remote Desktop port.
+    pub rdp_port: u16,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -225,9 +239,12 @@ mod tests {
     fn beacon_roundtrip_and_tamper() {
         let server = key();
         let bk = crate::random_bytes::<32>();
-        let loc = Location { ip: "203.0.113.7".parse().unwrap(), port: 443, rdp_port: 3389, ts: 1_700_000_000 };
+        let loc = Location { ip: "203.0.113.7".parse().unwrap(), port: 443, rdp_port: 3389, ts: 1_700_000_000, lan: None };
         let text = seal(&loc, &server, &bk).unwrap();
         assert_eq!(open(&text, &server.verifying_key(), &bk).unwrap(), loc);
+        let lan = LanLocation { ip: "192.168.1.20".parse().unwrap(), port: 443, rdp_port: 3389 };
+        let with_lan = Location { lan: Some(lan), ..loc.clone() };
+        assert_eq!(open(&seal(&with_lan, &server, &bk).unwrap(), &server.verifying_key(), &bk).unwrap(), with_lan);
 
         // Wrong beacon key: can't read it.
         assert!(open(&text, &server.verifying_key(), &crate::random_bytes::<32>()).is_err());

@@ -99,13 +99,13 @@
         <p>Unzip <code>RDP-Gate-&lt;version&gt;-Windows-Server.zip</code>, open PowerShell <strong>as Administrator</strong> in that folder and run:</p>
         <pre><code>Set-ExecutionPolicy -Scope Process Bypass
 .\install-server.ps1</code></pre>
-        <p>Switches: <code>-Protect Now|AfterSignIn</code> (default: <code>AfterSignIn</code> inside a Remote Desktop session, otherwise <code>Now</code>), <code>-DomainSetup</code> or <code>-PublicHost rdp.example.com</code>, <code>-AllowUdp</code>, <code>-SkipLockout</code>, <code>-SkipSleep</code>, <code>-NoBeacon</code>, <code>-RdpPublicPort 53389</code>, <code>-ListenPort 8443</code>.</p>
+        <p>Switches: <code>-Protect Now|AfterSignIn</code> (default: <code>AfterSignIn</code> inside a Remote Desktop session, otherwise <code>Now</code>), <code>-DomainSetup</code> or <code>-PublicHost rdp.example.com</code>, <code>-AllowUdp</code>, <code>-Lan On|Off</code>, <code>-SkipLockout</code>, <code>-SkipSleep</code>, <code>-NoBeacon</code>, <code>-NoTotp</code>, <code>-RdpPublicPort 53389</code>, <code>-ListenPort 8443</code>.</p>
       </details>
     </li>
 
     <li id="totp">
       <h3>Set up 6-digit codes</h3>
-      <p>On the last page of Setup, leave <em>Set up 6-digit codes now</em> ticked. A window shows a QR code: scan it with your authenticator app. To do it later, or again, run in PowerShell as Administrator:</p>
+      <p>Setup shows a QR code in its window, right after the beacon step: scan it with your authenticator app and type the code it shows. (Leave <em>Set up 6-digit codes now</em> ticked on the task page; a reinstall keeps the codes you already have.) To do it later, or again, run in PowerShell as Administrator:</p>
       <pre><code>rdpgate-server totp-setup            # add --invert if the QR code won't scan
 rdpgate-server totp-setup --force    # replace the secret (old codes stop working)</code></pre>
     </li>
@@ -295,7 +295,7 @@ rdpgate lock                    # close access for this network now</code></pre>
     <tr><th>"answered but is NOT your server"</th><td>Something other than your server answered. If you reinstalled the server (new identity), paste its new card. Otherwise treat it as a spoofing attempt.</td></tr>
     <tr><th>"The server refused this computer"</th><td>The computer isn't enrolled (check <code>device-list</code>), or your IP is blocked for a while after repeated failures.</td></tr>
     <tr><th>"this computer is locked after too many wrong codes"</th><td>Run <code>rdpgate-server device-unlock NAME</code> on the server. Check your phone's clock is set automatically.</td></tr>
-    <tr><th>"is not a public address"</th><td>You signed in from your own network. Test from outside, or set <code>"allow_private_sources": true</code> in config.json.</td></tr>
+    <tr><th>"is not a public address"</th><td>You signed in from your own network. Test from outside, or allow it: <code>rdpgate-server lan on</code> (or tick <em>Also allow sign-in from computers on my home network</em> in Setup).</td></tr>
     <tr><th>Can't reach the server from outside</th><td>Run <code>rdpgate-server router</code>. It retries the forwards and tells you if UPnP is off or your ISP uses carrier-grade NAT. Check the PC isn't asleep.</td></tr>
     <tr><th>"Port 443 is already used by …"</th><td>Another program (IIS, a VPN server) holds the port. Stop it, or install with <code>-ListenPort 8443</code> and forward the router's 443 to 8443.</td></tr>
     <tr><th>Beacon errors in <code>status</code></th><td>The GitHub token expired or lost Gists access. Run <code>rdpgate-server beacon-setup</code>.</td></tr>

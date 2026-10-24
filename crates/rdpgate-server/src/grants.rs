@@ -135,7 +135,15 @@ impl Grants {
         if !self.allow_private && !is_public(ip) {
             return Err(format!(
                 "{ip} is not a public address. If your router rewrites source addresses, a grant for it would open \
-                 Remote Desktop to everyone. For sign-in from your own network set \"allow_private_sources\": true"
+                 Remote Desktop to everyone. For sign-in from your own network run: rdpgate-server lan on"
+            ));
+        }
+        // Routers that rewrite source addresses make *every* connection,
+        // including ones from the internet, look like the router itself.
+        if !is_public(ip) && Some(ip) == crate::router::default_gateway() {
+            return Err(format!(
+                "{ip} is your router's own address, and a grant for it could open Remote Desktop to the internet. \
+                 At home, the RDP Gate app connects to this PC directly; update it if it went through the router"
             ));
         }
         let mut inner = self.inner.lock().await;

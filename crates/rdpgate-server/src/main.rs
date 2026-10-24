@@ -78,6 +78,12 @@ enum Cmd {
     },
     /// Print the server card to paste into RDP Gate on your computers
     Card,
+    /// Allow ("on") or refuse ("off") sign-in from computers on this PC's own
+    /// network, e.g. your laptop on the same Wi-Fi
+    Lan {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Forward the needed ports on the router now (UPnP) and report
     Router {
         /// Remove the forwards RDP Gate made instead (used when uninstalling)
@@ -235,11 +241,29 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             std::io::stdout().flush().ok();
             let ip = rdpgate_server::beacon::discover_public_ip()?;
             println!("{ip}");
-            rdpgate_server::beacon::publish(&cfg, &id, ip)?;
+            rdpgate_server::beacon::publish(&cfg, &id, ip, rdpgate_server::beacon::lan_location(&cfg))?;
             cfg.save(data)?;
             println!("Encrypted beacon published to secret gist {gist_id}.");
             println!("Restart the service to keep it updated: Restart-Service RDPGate\n");
             print_card(&cfg, &id);
+            Ok(())
+        }
+        Cmd::Lan { state } => {
+            let mut cfg = Config::load(data)?;
+            cfg.allow_private_sources = state == "on";
+            cfg.save(data)?;
+            if cfg.allow_private_sources {
+                match rdpgate_server::router::lan_ip() {
+                    Some(ip) => println!("Computers on this network can sign in. They reach this PC at {ip} (published in the encrypted beacon)."),
+                    None => println!("Sign-in from this network allowed, but this PC has no private network address right now."),
+                }
+                println!("Give this PC a reserved address in your router's DHCP settings so that address stays the same.");
+            } else {
+                println!("Sign-in from this PC's own network is off.");
+            }
+            if rdpgate_server::service::restart().is_ok() {
+                println!("Service restarted.");
+            }
             Ok(())
         }
         Cmd::Router { remove: true } => {

@@ -83,13 +83,13 @@ You need: a Windows 10/11 **Pro, Enterprise or Education** PC, or Windows Server
 Then download **`RDP-Gate-Server-Setup-<version>.exe`** from [Releases](https://github.com/parthh37/rdpgate/releases) and run it on the Windows PC. The wizard asks for:
 - **when to close Remote Desktop**: *now*, or *after your first sign-in* through RDP Gate. Pick the second if you're installing over Remote Desktop (Setup pre-selects it when it detects that), because closing it now would disconnect you and nothing is enrolled yet to get back in;
 - whether to set up browser sign-in with your own domain (a guided step; only for passkeys),
-- whether to set up the IP beacon now, set an account lockout policy, stop the PC sleeping, or allow UDP.
+- whether to set up the IP beacon now, allow sign-in from computers on your home network (for example a laptop on the same Wi-Fi), set an account lockout policy, stop the PC sleeping, or allow UDP.
 
-When the beacon setup opens, paste the token at its hidden prompt. At the end, leave **Set up 6-digit codes now** ticked: a QR code appears for your authenticator app.
+When the beacon setup opens, paste the token at its hidden prompt. Right after it, in the same window, a QR code appears for your authenticator app: scan it and type the code it shows (untick **Set up 6-digit codes now** to skip this). If you reinstall over an earlier install, the codes you already have are kept.
 
 <details><summary>Prefer a script? (portable zip)</summary>
 
-Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-Protect Now|AfterSignIn`, `-DomainSetup` / `-PublicHost`, `-AllowUdp`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-RdpPublicPort`.
+Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-Protect Now|AfterSignIn`, `-DomainSetup` / `-PublicHost`, `-AllowUdp`, `-Lan On|Off`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-NoTotp`, `-RdpPublicPort`.
 </details>
 
 Setup does the following, in this order (with *after your first sign-in*, the two firewall steps wait: the service does them once a computer has signed in through RDP Gate **and** connected to Remote Desktop, and that address keeps its own opening so its session stays up; `rdpgate-server status` shows `Protection: PENDING` until then, and `rdpgate-server protect` does it immediately):
@@ -121,7 +121,7 @@ The Mac and PC apps only make outgoing connections and need no open ports.
 
 ### 3. Set up 6-digit codes (on the server)
 
-Setup offers this at the end. To do it later (or again):
+Setup does this in its window, right after the beacon. To do it later (or again):
 
 ```powershell
 rdpgate-server totp-setup    # scan the QR code with Google/Microsoft Authenticator, 1Password, …
@@ -145,7 +145,7 @@ The server prints the device fingerprint (check it matches the app) and a **serv
 - **App:** passphrase + 6-digit code → **Sign in and open Remote Desktop**. The app finds the server, verifies it, opens the firewall, checks the RDP certificate, and launches Remote Desktop.
 - **Command line:** `rdpgate connect` (and `rdpgate lock` when you're done).
 
-Test from outside your home network, for example over a phone hotspot. To sign in from inside your own network, set `"allow_private_sources": true` (see below).
+Test from outside your home network, for example over a phone hotspot. To sign in from inside your own network too (a laptop on the same Wi-Fi), tick **Also allow sign-in from computers on my home network** in Setup, or run `rdpgate-server lan on`. The server then puts its home-network address in the encrypted beacon, and the app connects to it directly when you are at home (no router loop-back needed) and to your public address everywhere else. Give the PC a reserved address in your router so that address stays the same. Sign-in from the router's own address is always refused: some routers make every connection from the internet look like it, so a grant for it could open Remote Desktop to everyone.
 
 ### Optional: browser sign-in with a passkey
 
@@ -195,6 +195,7 @@ rdpgate-server beacon-setup            # new token or gist
 rdpgate-server domain-setup            # browser sign-in with your domain (guided); --remove to turn off
 rdpgate-server protect                 # close Remote Desktop to non-signed-in addresses now (if pending)
 rdpgate-server update [--check]        # signed self-update
+rdpgate-server lan on|off              # sign-in from computers on this network (e.g. your laptop at home)
 rdpgate-server router                  # forward router ports now (UPnP) and report
 rdpgate-server totp-setup --force      # new authenticator secret
 ```
@@ -210,7 +211,7 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | `rdp_port` / `rdp_public_port` | 3389 | Local RDP port / external port clients use |
 | `allow_udp` | false | Also open UDP for signed-in addresses |
 | `upnp` | true | Forward the ports on the router automatically |
-| `allow_private_sources` | false | Grant LAN / carrier-NAT source addresses |
+| `allow_private_sources` | false | Grant LAN / carrier-NAT source addresses, and publish this PC's LAN address in the beacon (`rdpgate-server lan on` or `off`) |
 | `grant_minutes` | 10 | Time to start a session after signing in |
 | `max_hours` | 12 | Hard cap on one grant |
 | `keep_awake` | true | Keep the PC from sleeping while a grant is open (`powercfg /requests` shows it) |
@@ -226,7 +227,7 @@ Uninstall: `& "C:\Program Files\RDPGate\uninstall-server.ps1"` (add `-RemoveData
 - **"answered but is NOT your server"**: something other than your server answered at that address. If the server was reinstalled (new identity), paste the new server card. Otherwise, treat it as a spoofing attempt.
 - **"The server refused this computer"**: the device isn't enrolled, or your IP is temporarily blocked after repeated failures.
 - **"this computer is locked after too many wrong codes"**: run `rdpgate-server device-unlock NAME` on the server.
-- **"is not a public address"**: you signed in from your own network. Either test from outside, or set `allow_private_sources`.
+- **"is not a public address"**: you signed in from your own network. Either test from outside, or run `rdpgate-server lan on`.
 - **Can't reach the server from outside**: run `rdpgate-server router`. It re-applies the router forwards and tells you if UPnP is off or the ISP uses carrier-grade NAT.
 - **"Port 443 is already used by …" during Setup**: another program (IIS, a VPN server) holds the port. Stop it, or run the script with `-ListenPort 8443` and forward the router's 443 to 8443.
 - **Beacon errors in `status`**: check the GitHub token still has Gists access (`rdpgate-server beacon-setup` to replace it).
