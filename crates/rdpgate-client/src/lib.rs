@@ -563,6 +563,17 @@ pub fn launch_rdp(path: &Path) -> Result<()> {
             .map(|_| ())
             .map_err(|e| format!("Could not start Remote Desktop (mstsc): {e}"));
     }
+    // Microsoft's Windows App first (same bundle ID as the old Microsoft
+    // Remote Desktop): other apps claim .rdp files too, such as the
+    // "Remote Desktop Connection" stub Parallels Desktop leaves behind, which
+    // only says Parallels is missing. Without it, the default for .rdp files.
+    #[cfg(target_os = "macos")]
+    {
+        let ms = Command::new("/usr/bin/open").args(["-b", "com.microsoft.rdc.macos"]).arg(path).status();
+        if ms.is_ok_and(|s| s.success()) {
+            return Ok(());
+        }
+    }
     let opener = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
     match Command::new(opener).arg(path).status() {
         Ok(s) if s.success() => Ok(()),
