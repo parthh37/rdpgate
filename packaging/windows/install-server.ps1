@@ -222,7 +222,8 @@ if (Test-Path $DataDir) {
 foreach ($icaclsArgs in @(
         @('/setowner', '*S-1-5-32-544', '/T', '/C', '/Q'),
         @('/reset', '/T', '/C', '/Q'),
-        @('/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '/T', '/C', '/Q'))) {
+        # Folder only: with /T every file would end up with an empty ACL.
+        @('/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '/C', '/Q'))) {
     & icacls.exe $DataDir @icaclsArgs | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not secure $DataDir (icacls $($icaclsArgs -join ' '))" }
 }
