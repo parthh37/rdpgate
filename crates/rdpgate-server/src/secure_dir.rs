@@ -33,10 +33,14 @@ pub fn harden(dir: &Path) -> Result<(), String> {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let icacls = format!(r"{root}\System32\icacls.exe");
     let d = dir.as_os_str();
+    // The last step is for the folder alone: its files then inherit the two
+    // grants. With /T it would strip each file's inherited entries and add
+    // (OI)(CI) grants that a file ignores, leaving every file with an empty
+    // ACL that nobody, Administrators included, may read.
     let steps: [&[&str]; 3] = [
         &["/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"],
         &["/reset", "/T", "/C", "/Q"],
-        &["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/T", "/C", "/Q"],
+        &["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/C", "/Q"],
     ];
     for args in steps {
         let out = std::process::Command::new(&icacls)
