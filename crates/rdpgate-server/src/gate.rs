@@ -4,7 +4,7 @@
 
 use crate::app::App;
 use crate::state::{MAX_FAILED_CODES, now};
-use rdpgate_core::wire::{self, OP_REVOKE, OP_TOTP, Request, Response};
+use rdpgate_core::wire::{self, OP_LINK, OP_REVOKE, OP_TOTP, Request, Response};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,6 +87,7 @@ async fn process(app: &App, tls: &mut TlsStream<TcpStream>, ip: IpAddr, src: &st
             app.grants.revoke(ip, &format!("locked by device {name}")).await;
             Response { ok: true, ip: Some(ip.to_string()), ..Default::default() }
         }
+        OP_LINK => link(app, ip, src, name, p.link).await,
         _ => deny(app, src, &name, "unknown op"),
     }
 }
@@ -160,14 +161,38 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String)
                 ok: true,
                 ip: Some(ip.to_string()),
                 expires: Some(g.expires),
+                hard_expires: Some(g.hard_expires),
                 rdp_port: Some(app.cfg.rdp_port_for(ip)),
                 rdp_cert_sha256: app.rdp_cert().await.map(|c| c.sha256),
+                link: g.link.map(|(token, _)| token),
                 ..Default::default()
             }
         }
         Err(e) => {
             crate::logln!("ERROR grant {ip}: {e}");
             reject(src, &device, &format!("could not open the firewall: {e}"))
+        }
+    }
+}
+
+/// A device that just signed in over IPv6 opens its IPv4 address too (or the
+/// other way round). The device signature proves who it is; the one-time
+/// token from that sign-in stands in for the code it already gave.
+async fn link(app: &App, ip: IpAddr, src: &str, device: String, token: String) -> Response {
+    if !app.cfg.desktop_login {
+        return reject(src, &device, "desktop sign-in is disabled on this server");
+    }
+    match app.grants.link(&token, ip, &format!("device {device}")).await {
+        Ok(g) => Response {
+            ok: true,
+            ip: Some(ip.to_string()),
+            expires: Some(g.expires),
+            rdp_port: Some(app.cfg.rdp_port_for(ip)),
+            ..Default::default()
+        },
+        Err(e) => {
+            crate::logln!("REJECT src={src} device={device:?} reason={:?}", format!("link: {e}"));
+            Response::error("could not open this address too")
         }
     }
 }

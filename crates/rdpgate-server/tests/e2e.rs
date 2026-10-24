@@ -91,6 +91,18 @@ async fn start() -> Harness {
 /// A server listening on `ip` only, or None when this machine can't (no IPv6).
 async fn start_at(ip: &str) -> Option<Harness> {
     let ln = tokio::net::TcpListener::bind(format!("{ip}:0")).await.ok()?;
+    start_with(ip, vec![ln]).await
+}
+
+/// A server on both [::1] and 127.0.0.1 (same port), like a dual-stack PC.
+async fn start_dual_stack() -> Option<Harness> {
+    let v6 = tokio::net::TcpListener::bind("[::1]:0").await.ok()?;
+    let v4 = tokio::net::TcpListener::bind(("127.0.0.1", v6.local_addr().unwrap().port())).await.ok()?;
+    start_with("[::1]", vec![v6, v4]).await
+}
+
+async fn start_with(ip: &str, listeners: Vec<tokio::net::TcpListener>) -> Option<Harness> {
+    let ln = &listeners[0];
     rdpgate_server::install_crypto();
     let dir = std::env::temp_dir().join(format!("rdpgate-e2e-{}", rdpgate_core::random_token::<6>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -125,7 +137,7 @@ async fn start_at(ip: &str) -> Option<Harness> {
     let addr = ln.local_addr().unwrap();
     let (tx, mut rx) = tokio::sync::watch::channel(false);
     let served = app.clone();
-    tokio::spawn(async move { app::serve(served, vec![ln], &mut rx).await });
+    tokio::spawn(async move { app::serve(served, listeners, &mut rx).await });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     Some(Harness { dir, addr, fw, secret, ca, card, rdp_sha256, app, _stop: tx })
 }
@@ -432,4 +444,36 @@ async fn desktop_sign_in_over_ipv6() {
 
     client::lock(&d.dir, &d.cfg, &d.key).await.expect("lock succeeds");
     assert!(h.allowed().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn signing_in_over_ipv6_opens_ipv4_too_and_lock_closes_both() {
+    let Some(h) = start_dual_stack().await else {
+        eprintln!("skipped: no IPv6 on this machine");
+        return;
+    };
+    let d = h.device("dual", true);
+    // Found by name, like a dual-stack PC with A and AAAA records.
+    let mut card = rdpgate_core::beacon::Card::decode(&h.card).unwrap();
+    (card.host, card.port) = (Some("localhost".into()), h.addr.port());
+    client::set_card(&d.dir, &card.encode()).unwrap();
+    let mut cfg = client::load_config(&d.dir).unwrap();
+    cfg.connect_override = None;
+    if !tokio::net::lookup_host(("localhost", 1)).await.unwrap().any(|a| a.is_ipv4()) {
+        eprintln!("skipped: localhost has no IPv4 address here");
+        return;
+    }
+
+    let grant = client::sign_in(&d.dir, &cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    assert_eq!(grant.ip, "::1 and 127.0.0.1", "IPv6 first, then IPv4 with the link token");
+    let mut allowed = h.allowed();
+    allowed.sort();
+    assert_eq!(allowed, vec!["127.0.0.1".parse::<IpAddr>().unwrap(), "::1".parse().unwrap()]);
+    let who: Vec<String> = h.app.grants.list().await.into_iter().map(|g| g.who).collect();
+    assert!(who.contains(&"device dual with ::1".to_string()), "{who:?}");
+    assert!(grant.hard_expires.is_some_and(|t| t > grant.expires), "the app learns the longest session");
+
+    let cfg = client::load_config(&d.dir).unwrap();
+    client::lock(&d.dir, &cfg, &d.key).await.expect("lock succeeds");
+    assert!(h.allowed().is_empty(), "locking closes both addresses");
 }

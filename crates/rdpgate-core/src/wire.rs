@@ -29,6 +29,9 @@ pub const MAX_FRAME: usize = 16 * 1024;
 pub const OP_TOTP: &str = "totp";
 /// Close the firewall for this connection's source IP again.
 pub const OP_REVOKE: &str = "revoke";
+/// Open the firewall for this connection's source IP as well, with the
+/// one-time `link` from a sign-in made moments ago over the other IP family.
+pub const OP_LINK: &str = "link";
 
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
@@ -65,6 +68,9 @@ pub struct Payload {
     pub ts: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub totp: String,
+    /// For [`OP_LINK`]: the token from [`Response::link`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub link: String,
 }
 
 /// Every server reply. Before the device is authenticated, errors are a bare
@@ -80,6 +86,9 @@ pub struct Response {
     /// Unix seconds after which the grant lapses unless an RDP connection is live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<i64>,
+    /// Unix seconds when the grant ends even while connected (longest session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hard_expires: Option<i64>,
     /// The port the RDP client should connect to (the router's forwarded port).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdp_port: Option<u16>,
@@ -87,6 +96,10 @@ pub struct Response {
     /// compares it with what it sees on the RDP port before launching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdp_cert_sha256: Option<String>,
+    /// After a sign-in: a short-lived, one-time token that opens this
+    /// computer's address in the other IP family too (see [`OP_LINK`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// First frame the server sends: proof that it holds the pinned server key,
@@ -225,7 +238,7 @@ mod tests {
     fn sign_verify_and_tamper() {
         let k = key();
         let binding = [7u8; 32];
-        let p = Payload { op: OP_TOTP.into(), device: "mac".into(), ts: 1, totp: "123456".into() };
+        let p = Payload { op: OP_TOTP.into(), device: "mac".into(), ts: 1, totp: "123456".into(), ..Default::default() };
         let req = sign(&k, &binding, &p);
         assert_eq!(verify(&k.verifying_key(), &binding, &req).unwrap().totp, "123456");
 

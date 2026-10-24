@@ -444,7 +444,7 @@ impl GateApp {
         if let Some(s) = &self.session {
             let (file, key) = (s.rdp_file.clone(), s.key.clone());
             let verified = s.check == RdpCheck::Verified;
-            let (ip, left) = (s.grant.ip.to_string(), client::minutes_left(s.grant.expires));
+            let (ip, left, held) = (s.grant.ip.to_string(), client::minutes_left(s.grant.expires), s.grant.while_connected());
             theme::card(ui, |ui| {
                 ui.horizontal(|ui| {
                     theme::pill(ui, Tone::Good, "Access open");
@@ -455,7 +455,7 @@ impl GateApp {
                 ui.add_space(6.0);
                 ui.label(muted("Remote Desktop is open for"));
                 ui.label(RichText::new(&ip).monospace().size(26.0).strong().color(theme::TEXT));
-                ui.label(muted(format!("Start Remote Desktop within {left}. Access stays open while you're connected.")));
+                ui.label(muted(format!("Start Remote Desktop within {left}. {held}")));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.add(primary("Open Remote Desktop")).clicked()

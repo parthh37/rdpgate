@@ -138,9 +138,10 @@ fn run(cli: Cli) -> client::Result<()> {
             let rt = runtime();
             let grant = rt.block_on(client::sign_in(&dir, &cfg, &key, &code))?;
             println!(
-                "Access open for {}: start Remote Desktop within {} (it stays open while you're connected).",
+                "Access open for {}: start Remote Desktop within {}. {}",
                 grant.ip,
-                client::minutes_left(grant.expires)
+                client::minutes_left(grant.expires),
+                grant.while_connected()
             );
             match rt.block_on(client::verify_rdp(&grant))? {
                 RdpCheck::Verified => println!("Remote Desktop certificate verified: this is your computer."),

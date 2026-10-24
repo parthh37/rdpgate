@@ -58,6 +58,7 @@ mod tests {
             hard_expires: 0,
             last_connected: None,
             revoke_token: String::new(),
+            link: None,
         };
         assert!(!ready(&[]), "nobody signed in");
         assert!(!ready(std::slice::from_ref(&g)), "signed in but Remote Desktop never connected");
