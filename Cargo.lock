@@ -4281,7 +4281,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-app"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "ed25519-dalek",
  "eframe",
@@ -4294,7 +4294,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-client"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "clap",
  "dirs",
@@ -4313,7 +4313,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-core"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "argon2 0.6.0",
  "base64 0.23.1",
@@ -4341,7 +4341,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-release"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -4355,7 +4355,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-server"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -4395,7 +4395,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-server-app"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "eframe",
  "embed-manifest",
@@ -4409,7 +4409,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-tray"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "embed-manifest",
  "rdpgate-core",
@@ -4419,7 +4419,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-ui"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "egui",
 ]
