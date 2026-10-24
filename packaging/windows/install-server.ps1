@@ -108,15 +108,16 @@ $SetupLog   = Join-Path $DataDir 'logs\setup.log'
 
 $Logging    = $false
 
-if ($FromInstaller) {
-    # No window to read: hand Setup the error to show (and log it, once
-    # the log has started, after the data folder is secured).
-    trap {
-        Write-Host "`nERROR: $_"
-        if ($ErrorFile) { "$_" | Set-Content -Path $ErrorFile -Encoding UTF8 }
-        if ($Logging) { Stop-Transcript | Out-Null }
-        exit 1
-    }
+# With -FromInstaller there's no window to read: hand Setup the error to show
+# (and log it, once the log has started, after the data folder is secured).
+# At script level: a trap only covers the block it's written in, so one inside
+# "if ($FromInstaller) { }" would never fire. Run by hand, errors show as usual.
+trap {
+    if (-not $FromInstaller) { break }
+    Write-Host "`nERROR: $_"
+    if ($ErrorFile) { "$_" | Set-Content -Path $ErrorFile -Encoding UTF8 }
+    if ($Logging) { Stop-Transcript | Out-Null }
+    exit 1
 }
 
 function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
@@ -498,19 +499,19 @@ if (($PublicHost -or $DomainSetup) -and -not $FromInstaller) {
 }
 
 # ---------------------------------------------------------------------------
-$lan = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+$lanIp = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.PrefixOrigin -in 'Dhcp', 'Manual' -and $_.IPAddress -notlike '169.254.*' } |
     Select-Object -First 1 -ExpandProperty IPAddress
 $thumb = (Get-CimInstance -Namespace root\cimv2\TerminalServices -ClassName Win32_TSGeneralSetting -Filter "TerminalName='RDP-Tcp'" -ErrorAction SilentlyContinue).SSLCertificateSHA1Hash
 $rdpExt = if ($RdpPublicPort -gt 0) { $RdpPublicPort } else { $rdpPort }
-$udpLine = if ($AllowUdp) { "`n     UDP $rdpExt  ->  $($lan):$rdpPort   (faster Remote Desktop)" } else { '' }
+$udpLine = if ($AllowUdp) { "`n     UDP $rdpExt  ->  $($lanIp):$rdpPort   (faster Remote Desktop)" } else { '' }
 
 Write-Host ""
 Write-Host "RDP Gate is installed." -ForegroundColor Green
 $routerStep = if ($routerDone) {
-    "1. Your router was set up automatically (the service keeps it that way). In the router's`n   settings, give this PC ($lan) a reserved address so the forwards keep pointing at it."
+    "1. Your router was set up automatically (the service keeps it that way). In the router's`n   settings, give this PC ($lanIp) a reserved address so the forwards keep pointing at it."
 } else {
-    "1. On your router, forward these ports to this PC ($lan) and give it a reserved address:`n     TCP $PublicPort   ->  $($lan):$ListenPort    (sign-in)`n     TCP $rdpExt  ->  $($lan):$rdpPort   (Remote Desktop: closed until someone signs in)$udpLine"
+    "1. On your router, forward these ports to this PC ($lanIp) and give it a reserved address:`n     TCP $PublicPort   ->  $($lanIp):$ListenPort    (sign-in)`n     TCP $rdpExt  ->  $($lanIp):$rdpPort   (Remote Desktop: closed until someone signs in)$udpLine"
 }
 $fwText = if ($deferred) {
     "Windows Firewall: TCP $ListenPort is open for RDP Gate. Remote Desktop is still reachable as`nbefore, so this session keeps working. As soon as a computer signs in through RDP Gate`nand connects, the service closes Remote Desktop to everyone else (or run: rdpgate-server protect)."
