@@ -224,6 +224,8 @@ struct ServerApp {
     token: Zeroizing<String>,
     gist: String,
     router_lines: Vec<String>,
+    /// Time limits being edited (minutes to connect, longest session in hours).
+    limits: Option<(u32, f64)>,
     // Browser sign-in
     passkey_link: Option<(String, i64)>,
     domain: Option<DomainForm>,
@@ -265,6 +267,7 @@ impl ServerApp {
             token: Zeroizing::new(String::new()),
             gist: String::new(),
             router_lines: vec![],
+            limits: None,
             passkey_link: None,
             domain,
             log: String::new(),
@@ -608,23 +611,81 @@ impl ServerApp {
                     ui.label(muted("Nobody has access open right now."));
                 });
             } else {
-                egui::Grid::new("grants").striped(true).num_columns(3).spacing([28.0, 8.0]).min_col_width(120.0).show(ui, |ui| {
+                let t = rdpgate_server::state::now();
+                egui::Grid::new("grants").striped(true).num_columns(4).spacing([28.0, 8.0]).min_col_width(100.0).show(ui, |ui| {
                     ui.label(muted("ADDRESS").small().strong());
                     ui.label(muted("WHO").small().strong());
-                    ui.label(muted("UNTIL").small().strong());
+                    ui.label(muted("REMOTE DESKTOP").small().strong());
+                    ui.label(muted("OPEN UNTIL").small().strong());
                     ui.end_row();
                     for g in &o.grants {
+                        let connected = g.connected(t);
                         ui.horizontal(|ui| {
-                            theme::dot(ui, Tone::Good);
+                            theme::dot(ui, if connected { Tone::Good } else { Tone::Info });
                             ui.monospace(&g.ip);
                         });
                         ui.label(&g.who);
-                        ui.label(when(Some(g.expires)));
+                        ui.label(if connected {
+                            "Connected"
+                        } else if g.last_connected.is_some() {
+                            "Disconnected"
+                        } else {
+                            "Waiting to connect"
+                        });
+                        let until = if connected {
+                            format!("While connected, at most {}", when(Some(g.hard_expires)))
+                        } else {
+                            when(Some(g.closes(t)))
+                        };
+                        ui.label(until).on_hover_text(format!(
+                            "Stays open while Remote Desktop is connected, and {} min after it disconnects, but never past {}.",
+                            rdpgate_server::grants::GRACE.as_secs() / 60,
+                            when(Some(g.hard_expires))
+                        ));
                         ui.end_row();
                     }
                 });
             }
         });
+
+        gap(ui);
+        titled_card(
+            ui,
+            "Time limits",
+            Some("A sign-in opens Remote Desktop for a while to connect. Once connected, it stays open for as long as the session lasts, up to the longest session."),
+            |ui| {
+                let (mut minutes, mut hours) = self.limits.unwrap_or((o.grant_minutes, o.max_hours));
+                egui::Grid::new("limits").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                    ui.label("Time to connect after signing in");
+                    ui.add(egui::DragValue::new(&mut minutes).range(1..=240).suffix(" min"));
+                    ui.end_row();
+                    ui.label("Longest session");
+                    ui.add(egui::DragValue::new(&mut hours).range(0.5..=168.0).speed(0.5).fixed_decimals(1).suffix(" h"));
+                    ui.end_row();
+                });
+                let changed = (minutes, hours) != (o.grant_minutes, o.max_hours);
+                self.limits = changed.then_some((minutes, hours));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(changed, primary("Save")).clicked() {
+                        match admin::set_time_limits(&self.data, minutes, hours) {
+                            Ok(()) => {
+                                self.limits = None;
+                                self.say(Ok(format!(
+                                    "Saved: {minutes} min to connect, sessions up to {hours:.1} h. Applies within a few seconds, \
+                                     to sessions already open too, without disconnecting anyone."
+                                )));
+                                self.refresh();
+                            }
+                            Err(e) => self.say(Err(e)),
+                        }
+                    }
+                    if changed && ui.button("Cancel").clicked() {
+                        self.limits = None;
+                    }
+                });
+            },
+        );
 
         gap(ui);
         titled_card(ui, "Updates", None, |ui| {

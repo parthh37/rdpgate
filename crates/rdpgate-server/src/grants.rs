@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
@@ -27,6 +27,9 @@ const MAX_GRANTS: usize = 32;
 pub const GRACE: Duration = Duration::from_secs(120);
 /// Ticks (10 s each) between full reconciliations against the firewall.
 const RECONCILE_EVERY: u32 = 30;
+/// How long after signing in the same computer can open its address in the
+/// other IP family (a dual-stack computer has one of each).
+const LINK_WINDOW: i64 = 60;
 
 struct Inner {
     grants: HashMap<IpAddr, Grant>,
@@ -37,8 +40,10 @@ struct Inner {
 pub struct Grants {
     fw: Arc<dyn Firewall>,
     inner: Mutex<Inner>,
-    grant: Duration,
-    max: Duration,
+    /// Seconds to start Remote Desktop after signing in, and the most one
+    /// grant can last. Can change while running, see [`Grants::set_limits`].
+    grant: AtomicU64,
+    max: AtomicU64,
     allow_private: bool,
     status_file: Option<PathBuf>,
     power: Option<Arc<dyn Power>>,
@@ -59,8 +64,14 @@ pub struct Grant {
     /// Unix seconds; the grant ends here no matter what.
     pub hard_expires: i64,
     pub last_connected: Option<i64>,
+    /// Closes the grant from the web page. Grants opened together (IPv6 and
+    /// IPv4 of one computer) share it, and close together.
     #[serde(skip)]
     pub revoke_token: String,
+    /// One-time token (and its expiry) that opens the signed-in computer's
+    /// address in the other IP family, see [`Grants::link`].
+    #[serde(skip)]
+    pub link: Option<(String, i64)>,
 }
 
 /// True for addresses that identify one internet host. Private, loopback,
@@ -102,8 +113,8 @@ impl Grants {
         Grants {
             fw,
             inner: Mutex::new(Inner { grants: HashMap::new(), closing: HashSet::new() }),
-            grant,
-            max,
+            grant: AtomicU64::new(grant.as_secs()),
+            max: AtomicU64::new(max.as_secs()),
             allow_private,
             status_file,
             power: None,
@@ -119,6 +130,23 @@ impl Grants {
         self
     }
 
+    /// New time limits from the settings. Open grants keep their time to
+    /// connect, but the longest-session cap moves with the setting, so a
+    /// session already running can be given longer (or less).
+    pub async fn set_limits(&self, grant: Duration, max: Duration) {
+        let (grant, max) = (grant.as_secs(), max.as_secs());
+        if self.grant.swap(grant, Ordering::SeqCst) == grant && self.max.swap(max, Ordering::SeqCst) == max {
+            return;
+        }
+        self.max.store(max, Ordering::SeqCst);
+        let mut inner = self.inner.lock().await;
+        for g in inner.grants.values_mut() {
+            g.hard_expires = g.created + max as i64;
+        }
+        self.changed(&inner.grants);
+        crate::logln!("LIMITS time to connect {} min, longest session {:.1} h", grant / 60, max as f64 / 3600.0);
+    }
+
     pub fn firewall(&self) -> Arc<dyn Firewall> {
         self.fw.clone()
     }
@@ -127,10 +155,41 @@ impl Grants {
     /// the caller goes away, so a rule is never added without being tracked.
     pub async fn allow(self: &Arc<Self>, ip: IpAddr, who: String) -> Result<Grant, String> {
         let me = self.clone();
-        tokio::spawn(async move { me.allow_inner(ip, who).await }).await.map_err(|e| format!("grant task: {e}"))?
+        tokio::spawn(async move { me.allow_inner(ip, who, None).await }).await.map_err(|e| format!("grant task: {e}"))?
     }
 
-    async fn allow_inner(&self, ip: IpAddr, who: String) -> Result<Grant, String> {
+    /// Opens `ip` too, for the computer that just signed in over the other IP
+    /// family and was handed `token` (once, within a minute). `who` must
+    /// match that sign-in. The two grants then close together.
+    pub async fn link(self: &Arc<Self>, token: &str, ip: IpAddr, who: &str) -> Result<Grant, String> {
+        let (ip, t) = (ip.to_canonical(), now());
+        let (group, first) = {
+            let mut inner = self.inner.lock().await;
+            let g = inner
+                .grants
+                .values_mut()
+                .find(|g| g.link.as_ref().is_some_and(|(l, _)| !token.is_empty() && bool::from(l.as_bytes().ct_eq(token.as_bytes()))))
+                .ok_or("unknown or used link token")?;
+            let (_, until) = g.link.take().unwrap_or_default();
+            if t > until {
+                return Err("link token expired".into());
+            }
+            if g.who != who {
+                return Err(format!("link token belongs to {}", g.who));
+            }
+            if g.ip.is_ipv4() == ip.is_ipv4() {
+                return Err(format!("{ip} is the same IP family as {}", g.ip));
+            }
+            (g.revoke_token.clone(), g.ip)
+        };
+        let me = self.clone();
+        let who = format!("{who} with {first}");
+        tokio::spawn(async move { me.allow_inner(ip, who, Some(group)).await }).await.map_err(|e| format!("grant task: {e}"))?
+    }
+
+    /// `group` is the revoke token to share; a new sign-in gets its own,
+    /// and a link token for its other address.
+    async fn allow_inner(&self, ip: IpAddr, who: String, group: Option<String>) -> Result<Grant, String> {
         let ip = ip.to_canonical();
         if !self.allow_private && !is_public(ip) {
             return Err(format!(
@@ -163,10 +222,11 @@ impl Grants {
             ip,
             who,
             created: t,
-            expires: t + self.grant.as_secs() as i64,
-            hard_expires: t + self.max.as_secs() as i64,
+            expires: t + self.grant.load(Ordering::SeqCst) as i64,
+            hard_expires: t + self.max.load(Ordering::SeqCst) as i64,
             last_connected: inner.grants.get(&ip).and_then(|g| g.last_connected),
-            revoke_token: rdpgate_core::random_token::<24>(),
+            link: group.is_none().then(|| (rdpgate_core::random_token::<24>(), t + LINK_WINDOW)),
+            revoke_token: group.unwrap_or_else(rdpgate_core::random_token::<24>),
         };
         inner.grants.insert(ip, g.clone());
         self.changed(&inner.grants);
@@ -193,18 +253,31 @@ impl Grants {
         existed
     }
 
+    /// Closes `ip` and any grant opened together with it.
     pub async fn revoke(&self, ip: IpAddr, why: &str) -> bool {
+        let ip = ip.to_canonical();
         let mut inner = self.inner.lock().await;
-        self.close(&mut inner, ip.to_canonical(), why).await
+        let group = inner.grants.get(&ip).map(|g| g.revoke_token.clone());
+        let mut ips = vec![ip];
+        if let Some(group) = group {
+            ips.extend(inner.grants.values().filter(|g| g.ip != ip && g.revoke_token == group).map(|g| g.ip));
+        }
+        let mut closed = false;
+        for ip in ips {
+            closed |= self.close(&mut inner, ip, why).await;
+        }
+        closed
     }
 
     pub async fn revoke_by_token(&self, token: &str) -> Option<IpAddr> {
         if token.is_empty() {
             return None;
         }
-        let mut inner = self.inner.lock().await;
-        let ip = inner.grants.values().find(|g| bool::from(g.revoke_token.as_bytes().ct_eq(token.as_bytes()))).map(|g| g.ip)?;
-        self.close(&mut inner, ip, "closed from the web page").await;
+        let ip = {
+            let inner = self.inner.lock().await;
+            inner.grants.values().find(|g| bool::from(g.revoke_token.as_bytes().ct_eq(token.as_bytes()))).map(|g| g.ip)?
+        };
+        self.revoke(ip, "closed from the web page").await;
         Some(ip)
     }
 
@@ -357,6 +430,54 @@ mod tests {
         fw.peers.lock().unwrap().clear();
         grants.tick().await;
         assert!(fw.allowed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_opens_the_other_ip_family_once_and_both_close_together() {
+        let fw = Arc::new(DryRun::default());
+        let grants = grants(fw.clone(), false);
+        let (v6, v4): (IpAddr, IpAddr) = ("2a00:1450::1".parse().unwrap(), "81.2.69.160".parse().unwrap());
+        let g = grants.allow(v6, "device mac".into()).await.unwrap();
+        let token = g.link.clone().unwrap().0;
+
+        let err = grants.link(&token, "2a00:1450::2".parse().unwrap(), "device mac").await.unwrap_err();
+        assert!(err.contains("same IP family"), "{err}");
+        assert!(grants.link(&token, v4, "device mac").await.is_err(), "a token works once, even after a refusal");
+
+        let token = grants.allow(v6, "device mac".into()).await.unwrap().link.unwrap().0;
+        assert!(grants.link(&token, v4, "device other").await.unwrap_err().contains("belongs to"));
+        let token = grants.allow(v6, "device mac".into()).await.unwrap().link.unwrap().0;
+        let linked = grants.link(&token, v4, "device mac").await.unwrap();
+        assert_eq!(linked.who, format!("device mac with {v6}"));
+        assert!(linked.link.is_none(), "a linked grant can't link further");
+        assert_eq!(fw.allowed.lock().unwrap().len(), 2);
+
+        // Locking from either address closes both.
+        assert!(grants.revoke(v4, "test").await);
+        assert!(fw.allowed.lock().unwrap().is_empty());
+        assert!(grants.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn changed_limits_apply_to_open_sessions_without_closing_them() {
+        let fw = Arc::new(DryRun::default());
+        let grants = grants(fw.clone(), false);
+        let ip: IpAddr = "81.2.69.160".parse().unwrap();
+        let g = grants.allow(ip, "device mac".into()).await.unwrap();
+        assert_eq!(g.hard_expires - g.created, 3600);
+
+        grants.set_limits(Duration::from_secs(600), Duration::from_secs(24 * 3600)).await;
+        let open = grants.list().await;
+        assert_eq!(open[0].hard_expires - open[0].created, 24 * 3600, "a running session gets the new cap");
+        assert!(fw.allowed.lock().unwrap().contains(&ip), "and stays open");
+        let g2 = grants.allow("81.2.69.161".parse().unwrap(), "x".into()).await.unwrap();
+        assert_eq!((g2.expires - g2.created, g2.hard_expires - g2.created), (600, 24 * 3600));
+
+        // Shortening below what has already passed closes it on the next tick.
+        grants.set_limits(Duration::from_secs(600), Duration::ZERO).await;
+        fw.peers.lock().unwrap().insert(ip);
+        grants.tick().await;
+        assert!(grants.list().await.is_empty());
     }
 
     #[tokio::test]

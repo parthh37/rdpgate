@@ -163,6 +163,19 @@ pub fn set_ipv6(data: &Path, on: bool) -> Result<(), String> {
     cfg.save(data)
 }
 
+/// How long a sign-in stays open for Remote Desktop to connect, and the most
+/// one sign-in can last even while connected. Takes effect when the service
+/// restarts.
+pub fn set_time_limits(data: &Path, grant_minutes: u32, max_hours: f64) -> Result<(), String> {
+    let mut cfg = Config::load(data)?;
+    if max_hours * 60.0 < grant_minutes as f64 {
+        return Err("The longest session can't be shorter than the time to connect.".into());
+    }
+    cfg.grant_minutes = grant_minutes;
+    cfg.max_hours = max_hours;
+    cfg.save(data)
+}
+
 // ---- browser sign-in (domain setup) -------------------------------------
 
 /// The domain name typed in, cleaned up and checked.
@@ -313,7 +326,26 @@ pub fn remove_passkey(data: &Path, name: &str) -> Result<(), String> {
 pub struct GrantInfo {
     pub ip: String,
     pub who: String,
+    /// The time to start Remote Desktop runs out here.
     pub expires: i64,
+    /// The grant ends here even while connected.
+    pub hard_expires: i64,
+    /// Last time an RDP connection from this address was seen.
+    pub last_connected: Option<i64>,
+}
+
+impl GrantInfo {
+    /// When the grant closes if nothing changes: a live connection keeps it
+    /// open (checked every few seconds) until `hard_expires`.
+    pub fn closes(&self, t: i64) -> i64 {
+        let held = self.last_connected.map_or(0, |c| c + crate::grants::GRACE.as_secs() as i64);
+        self.expires.max(held).min(self.hard_expires).max(t)
+    }
+
+    /// Remote Desktop is connected through this grant right now.
+    pub fn connected(&self, t: i64) -> bool {
+        self.last_connected.is_some_and(|c| t - c < 30)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -355,6 +387,8 @@ pub struct Overview {
     pub devices: usize,
     pub warnings: Vec<String>,
     pub grants: Vec<GrantInfo>,
+    pub grant_minutes: u32,
+    pub max_hours: f64,
     pub rdp_port: u16,
     pub rdp_public_port: u16,
     pub public_port: u16,
@@ -398,6 +432,8 @@ pub fn overview(data: &Path) -> Result<Overview, String> {
                 ip: g["ip"].as_str().unwrap_or("?").into(),
                 who: g["who"].as_str().unwrap_or("?").into(),
                 expires: g["expires"].as_i64().unwrap_or(0),
+                hard_expires: g["hard_expires"].as_i64().unwrap_or(0),
+                last_connected: g["last_connected"].as_i64(),
             })
             .collect(),
         _ => vec![],
@@ -425,6 +461,8 @@ pub fn overview(data: &Path) -> Result<Overview, String> {
         devices: st.devices.len(),
         warnings,
         grants,
+        grant_minutes: cfg.grant_minutes,
+        max_hours: cfg.max_hours,
         rdp_port: cfg.rdp_port,
         rdp_public_port: cfg.rdp_public_port,
         public_port: cfg.public_port,

@@ -493,6 +493,10 @@ async fn maintain(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
     loop {
         tokio::select! {
             _ = t.tick() => {
+                // Time limits apply without a restart, which would end sessions.
+                if let Ok(c) = Config::load(&app.cfg.data_dir) {
+                    app.grants.set_limits(c.grant_duration(), c.max_duration()).await;
+                }
                 app.grants.tick().await;
                 app.limiter.prune();
                 protect_when_ready(&app).await;

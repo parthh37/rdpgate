@@ -226,8 +226,8 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | `allow_udp` | false | Also open UDP for signed-in addresses |
 | `upnp` | true | Forward the ports on the router automatically |
 | `allow_private_sources` | false | Grant LAN / carrier-NAT source addresses, and publish this PC's LAN address in the beacon (`rdpgate-server lan on` or `off`) |
-| `grant_minutes` | 10 | Time to start a session after signing in |
-| `max_hours` | 12 | Hard cap on one grant |
+| `grant_minutes` | 10 | Time to start a session after signing in. Also in **RDP Gate Server → Overview → Time limits**; changes apply within seconds, no restart |
+| `max_hours` | 12 | Longest session: a connected session stays open until this cap (up to 168). Changing it also moves the cap of sessions already open |
 | `keep_awake` | true | Keep the PC from sleeping while a grant is open (`powercfg /requests` shows it) |
 | `desktop_login` / `web_login` | true / with domain | Turn either sign-in method off |
 | `public_host`, `tls` | — | Domain and certificate for browser sign-in |

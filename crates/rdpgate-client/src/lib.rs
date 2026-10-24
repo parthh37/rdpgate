@@ -229,6 +229,8 @@ pub struct Grant {
     pub ip: String,
     /// Unix seconds by which the RDP session must start.
     pub expires: i64,
+    /// Unix seconds when access ends even while connected (older servers don't say).
+    pub hard_expires: Option<i64>,
     /// The address the server proved its identity at. RDP goes to the same IP.
     pub server_addr: SocketAddr,
     pub rdp_port: u16,
@@ -239,6 +241,14 @@ pub struct Grant {
 impl Grant {
     pub fn rdp_target(&self) -> SocketAddr {
         SocketAddr::new(self.server_addr.ip(), self.rdp_port)
+    }
+
+    /// "Access stays open while you're connected, for up to 12 h."
+    pub fn while_connected(&self) -> String {
+        match self.hard_expires {
+            Some(t) => format!("Access stays open while you're connected, for up to {}.", minutes_left(t)),
+            None => "Access stays open while you're connected.".into(),
+        }
     }
 }
 
@@ -394,15 +404,29 @@ async fn open_verified(addr: SocketAddr, card: &Card) -> std::result::Result<(Tl
     Ok((tls, binding))
 }
 
-/// Finds the server, verifies it, sends one signed request.
-async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, code: &str) -> Result<(Response, Target)> {
+/// Sends one signed request on a verified connection and reads the reply.
+async fn request(tls: &mut TlsStream<TcpStream>, binding: &[u8], key: &SigningKey, p: Payload) -> Result<Response> {
+    let req = wire::sign(key, binding, &p);
+    tokio::time::timeout(NET_TIMEOUT, async {
+        wire::write_frame(tls, &req).await?;
+        wire::read_frame(tls).await
+    })
+    .await
+    .map_err(|_| "the server did not answer in time".to_string())?
+    .map_err(|e| format!("server connection: {e}"))
+}
+
+/// Finds the server, verifies it, sends one signed request. Also returns the
+/// server's other addresses from the same source, not tried yet.
+async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, code: &str) -> Result<(Response, Target, Vec<Target>)> {
     let card = card(cfg)?;
     let mut notes = Vec::new();
     let mut newest_beacon = None;
     let mut tried: Vec<SocketAddr> = Vec::new();
     let mut impostor = None;
     for src in [Source::Given, Source::Beacon, Source::Host, Source::LastKnown] {
-        for target in resolve(src, cfg, &card, &mut notes, &mut newest_beacon).await {
+        let targets = resolve(src, cfg, &card, &mut notes, &mut newest_beacon).await;
+        for (i, &target) in targets.iter().enumerate() {
             let addr = target.addr;
             if tried.contains(&addr) {
                 continue;
@@ -420,15 +444,8 @@ async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, co
                     continue;
                 }
             };
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-            let req = wire::sign(key, &binding, &Payload { op: op.into(), device: cfg.device.clone(), ts, totp: code.into() });
-            let resp: Response = tokio::time::timeout(NET_TIMEOUT, async {
-                wire::write_frame(&mut tls, &req).await?;
-                wire::read_frame(&mut tls).await
-            })
-            .await
-            .map_err(|_| "the server did not answer in time".to_string())?
-            .map_err(|e| format!("server connection: {e}"))?;
+            let p = Payload { op: op.into(), device: cfg.device.clone(), ts: unix_now(), totp: code.into(), ..Default::default() };
+            let resp = request(&mut tls, &binding, key, p).await?;
 
             // Remember where the server proved itself, and the newest beacon.
             let mut updated = cfg.clone();
@@ -437,7 +454,8 @@ async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, co
             updated.beacon_ts = updated.beacon_ts.max(newest_beacon.unwrap_or(0));
             updated.connect_override = None;
             let _ = save_config(dir, &updated);
-            return Ok((resp, target));
+            let rest = targets[i + 1..].iter().filter(|t| !tried.contains(&t.addr)).copied().collect();
+            return Ok((resp, target, rest));
         }
     }
     if tried.is_empty() {
@@ -480,22 +498,47 @@ pub async fn sign_in(dir: &Path, cfg: &ClientConfig, key: &SigningKey, code: &st
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Enter the 6-digit code from your authenticator app.".into());
     }
-    let (resp, target) = exchange(dir, cfg, key, wire::OP_TOTP, code).await?;
+    let (resp, target, rest) = exchange(dir, cfg, key, wire::OP_TOTP, code).await?;
     if !resp.ok {
         return Err(explain(&resp));
     }
+    let mut ip = resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok()).map(|i| i.to_string()).unwrap_or_default();
+    // Don't hold up signing in for long if the other address doesn't answer.
+    if let Some(token) = resp.link.as_deref()
+        && let Ok(Some(also)) = tokio::time::timeout(IPV6_TIMEOUT, link_other_family(cfg, key, target, &rest, token)).await
+    {
+        ip = format!("{ip} and {also}");
+    }
     Ok(Grant {
-        ip: resp.ip.as_deref().and_then(|i| i.parse::<std::net::IpAddr>().ok()).map(|i| i.to_string()).unwrap_or_default(),
+        ip,
         expires: resp.expires.unwrap_or_default(),
+        hard_expires: resp.hard_expires,
         server_addr: target.addr,
         rdp_port: target.rdp_port.or(resp.rdp_port).unwrap_or(3389),
         rdp_cert_sha256: resp.rdp_cert_sha256.filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())),
     })
 }
 
+/// A computer with both IPv6 and IPv4 signed in over one of them: open the
+/// other as well, so Remote Desktop gets through whichever it ends up using.
+/// Best effort; returns the address the server opened.
+async fn link_other_family(cfg: &ClientConfig, key: &SigningKey, signed_in: Target, rest: &[Target], token: &str) -> Option<String> {
+    // At home the server sees this computer's home address; going out
+    // through the router for the other family would only look like the router.
+    if is_local_network(signed_in.addr.ip()) {
+        return None;
+    }
+    let card = card(cfg).ok()?;
+    let other = rest.iter().find(|t| t.addr.is_ipv4() != signed_in.addr.is_ipv4() && !is_local_network(t.addr.ip()))?;
+    let (mut tls, binding) = open_verified(other.addr, &card).await.ok()?;
+    let p = Payload { op: wire::OP_LINK.into(), device: cfg.device.clone(), ts: unix_now(), link: token.into(), ..Default::default() };
+    let resp = request(&mut tls, &binding, key, p).await.ok().filter(|r| r.ok)?;
+    resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok()).map(|i| i.to_string())
+}
+
 /// Closes the firewall for this network again.
 pub async fn lock(dir: &Path, cfg: &ClientConfig, key: &SigningKey) -> Result<String> {
-    let (resp, _) = exchange(dir, cfg, key, wire::OP_REVOKE, "").await?;
+    let (resp, ..) = exchange(dir, cfg, key, wire::OP_REVOKE, "").await?;
     if !resp.ok {
         return Err(explain(&resp));
     }
@@ -588,7 +631,12 @@ pub fn launch_rdp(path: &Path) -> Result<()> {
 pub fn minutes_left(unix: i64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
     let mins = ((unix - now) as f64 / 60.0).round() as i64;
-    if mins <= 0 { "now".into() } else { format!("{mins} min") }
+    match (mins / 60, mins % 60) {
+        _ if mins <= 0 => "now".into(),
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
+    }
 }
 
 #[cfg(test)]
