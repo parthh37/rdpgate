@@ -300,9 +300,12 @@ fn tls_setup(cfg: &Config, shutdown: watch::Receiver<bool>) -> Result<Tls, Strin
 /// Binds the configured addresses and serves until `shutdown` flips to true.
 pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) -> Result<Exit, String> {
     let mut listeners = Vec::new();
-    for l in &app.cfg.listen {
-        let addr: SocketAddr = l.parse().map_err(|e| format!("listen {l}: {e}"))?;
-        listeners.push(bind(addr).map_err(|e| format!("listen {l}: {e}"))?);
+    for (addr, required) in app.cfg.listen_addrs() {
+        match bind(addr) {
+            Ok(l) => listeners.push(l),
+            Err(e) if required => return Err(format!("listen {addr}: {e}")),
+            Err(e) => crate::logln!("WARN no IPv6 sign-in: could not listen on {addr}: {e}"),
+        }
     }
     serve(app, listeners, &mut shutdown).await
 }

@@ -1,11 +1,12 @@
 ; RDP Gate Server installer (Inno Setup 6).
 ; Build: ISCC /DAppVersion=0.2.0 /DSourceDir=<folder with rdpgate-server.exe> /DOutputDir=<out> server.iss
 ;
-; Installs to C:\Program Files\RDPGate, then runs install-server.ps1, which
-; secures the data folder, locks down Windows Firewall (now, or after the
-; first sign-in when installing over Remote Desktop), turns on hardened
-; Remote Desktop, starts the RDPGate service and, if chosen, runs the guided
-; domain setup for browser sign-in.
+; Installs to C:\Program Files\RDPGate, then runs install-server.ps1 with no
+; window, which secures the data folder, locks down Windows Firewall (now, or
+; after the first sign-in when installing over Remote Desktop), turns on
+; hardened Remote Desktop and starts the RDPGate service. Nothing is typed
+; into a console: RDP Gate Server opens at the end to finish setting up (the
+; beacon, 6-digit codes, computers and, if chosen, browser sign-in).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -49,19 +50,19 @@ CloseApplications=no
 WelcomeLabel2=This installs the RDP Gate agent on this PC and configures Windows Firewall (and, if it allows it, your router) for you.%n%nRemote Desktop will stay closed to the internet. It opens only for a computer you enrolled, after it signs in with its key and a 6-digit code (or a passkey), and only for that computer's IP address.%n%nWindows Home is not supported (it cannot accept Remote Desktop connections).
 
 [Tasks]
-Name: "domain"; Description: "Also sign in from a web browser with a passkey, using my own domain name (guided setup)"; Flags: unchecked
-Name: "beacon"; Description: "Set up the encrypted IP beacon now (asks for a Gists-only GitHub token, ideally from an account used only for this)"
-Name: "totp"; Description: "Set up 6-digit codes now (shows a QR code to scan with your authenticator app)"
+Name: "domain"; Description: "Also sign in from a web browser with a passkey, using my own domain name (set up in RDP Gate Server after Setup)"; Flags: unchecked
 Name: "lan"; Description: "Also allow sign-in from computers on my home network (for example a laptop on the same Wi-Fi)"; Flags: unchecked
 Name: "router"; Description: "Forward ports on my router automatically (UPnP), if the router allows it"
 Name: "lockout"; Description: "Set an account lockout policy (10 wrong passwords lock an account for 15 minutes)"
 Name: "awake"; Description: "Stop this PC sleeping on mains power, so it can always be reached (on a laptop: only a warning)"
 Name: "udp"; Description: "Also open UDP for Remote Desktop (faster, but UDP senders can be forged)"; Flags: unchecked
 Name: "desktopicon"; Description: "Put an RDP Gate Server icon on the desktop"
+Name: "trayicon"; Description: "Show the service's status in the notification area (next to the clock) when anyone signs in"
 
 [Files]
 Source: "{#SourceDir}\rdpgate-server.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\RDP Gate Server.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\rdpgate-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "update-server.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -71,12 +72,16 @@ Source: "rdpgate.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; The window for managing the server: computers, codes, network, updates.
 Name: "{autoprograms}\RDP Gate Server"; Filename: "{app}\RDP Gate Server.exe"; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Manage RDP Gate on this PC"
 Name: "{autodesktop}\RDP Gate Server"; Filename: "{app}\RDP Gate Server.exe"; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Manage RDP Gate on this PC"; Tasks: desktopicon
-; Asks for Administrator rights itself, then checks and offers to install.
-Name: "{autoprograms}\Check for RDP Gate updates"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\update-server.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\rdpgate.ico"; Comment: "Check for and install a signed RDP Gate Server update"
+; The notification-area icon, for everyone who signs in. It runs without
+; Administrator rights; RDP Gate Server asks for them when opened from it.
+Name: "{commonstartup}\RDP Gate status"; Filename: "{app}\rdpgate-tray.exe"; WorkingDir: "{app}"; Comment: "Shows whether the RDP Gate service is running"; Tasks: trayicon
+; Updates are checked and installed from RDP Gate Server's Overview (and by
+; the service itself); update-server.ps1 stays in {app} for the command line.
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "{code:HardenParams}"; StatusMsg: "Hardening Remote Desktop and starting the RDP Gate service..."; Flags: waituntilterminated
-Filename: "{app}\RDP Gate Server.exe"; Description: "Open RDP Gate Server (add your computers, check everything is working)"; Flags: postinstall shellexec nowait
+; install-server.ps1 and the tray icon start from [Code] (CurStepChanged), so a
+; failure shows in a message rather than a console window.
+Filename: "{app}\RDP Gate Server.exe"; Parameters: "{code:WindowParams}"; Description: "Open RDP Gate Server to finish setting up (finding this PC, 6-digit codes, your computers)"; Flags: postinstall shellexec nowait
 Filename: "https://parthh37.github.io/rdpgate/guide.html#client"; Description: "Open the guide for enrolling your computers"; Flags: postinstall shellexec nowait unchecked
 
 [UninstallDelete]
@@ -119,9 +124,9 @@ begin
     'Which domain name should point at this PC?',
     'Browsers only use passkeys with a domain name, never an IP address. Before you continue you need:' + #13#10 +
     '  1. A domain you control, e.g. example.com (any registrar, or Cloudflare).' + #13#10 +
-    '  2. A name under it for this PC, e.g. rdp.example.com. At the end of Setup a window shows the exact DNS' + #13#10 +
-    '      record to create (type A, pointing at your public IP) and checks it for you.' + #13#10 +
-    '  3. If your home IP changes: dynamic DNS ("DDNS") at your registrar or router to keep the record current.' + #13#10 +
+    '  2. A name under it for this PC, e.g. rdp.example.com. At the end of Setup, RDP Gate Server shows the' + #13#10 +
+    '      exact DNS records to create (A for IPv4, AAAA for IPv6) and checks them for you.' + #13#10 +
+    '  3. If your home addresses change: dynamic DNS ("DDNS") at your registrar or router to keep them current.' + #13#10 +
     '  4. Port 443 on your router reaching this PC (Setup does this when your router allows it).' + #13#10 + #13#10 +
     'The certificate comes free from Let''s Encrypt, automatically. The email is optional and only gets expiry notices.');
   HostPage.Add('Domain name (e.g. rdp.example.com):', False);
@@ -192,30 +197,15 @@ begin
   end;
 end;
 
-function HardenParams(Param: String): String;
-var
-  H, E: String;
+// The beacon, 6-digit codes and browser sign-in aren't set up here: the
+// script asks nothing with -FromInstaller, and RDP Gate Server does them.
+function HardenParams(ErrorFile: String): String;
 begin
-  Result := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\install-server.ps1') + '" -FromInstaller';
+  Result := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\install-server.ps1') + '" -FromInstaller -ErrorFile "' + ErrorFile + '"';
   if ProtectPage.SelectedValueIndex = 1 then
     Result := Result + ' -Protect AfterSignIn'
   else
     Result := Result + ' -Protect Now';
-  if WizardIsTaskSelected('domain') then
-  begin
-    H := Trim(HostPage.Values[0]);
-    E := Trim(HostPage.Values[1]);
-    if ValidHost(H) then
-      Result := Result + ' -PublicHost ' + H
-    else
-      Result := Result + ' -DomainSetup';
-    if (E <> '') and ValidEmail(E) then
-      Result := Result + ' -Email ' + E;
-  end;
-  if not WizardIsTaskSelected('beacon') then
-    Result := Result + ' -NoBeacon';
-  if not WizardIsTaskSelected('totp') then
-    Result := Result + ' -NoTotp';
   if WizardIsTaskSelected('lan') then
     Result := Result + ' -Lan On'
   else
@@ -228,6 +218,57 @@ begin
     Result := Result + ' -SkipSleep';
   if WizardIsTaskSelected('udp') then
     Result := Result + ' -AllowUdp';
+end;
+
+// RDP Gate Server opens on browser sign-in, filled in, when it was chosen.
+// The values were checked on the domain page, so they're safe to pass.
+function WindowParams(Param: String): String;
+var
+  H, E: String;
+begin
+  Result := '';
+  if WizardIsTaskSelected('domain') then
+  begin
+    H := Trim(HostPage.Values[0]);
+    E := Trim(HostPage.Values[1]);
+    Result := '--setup-domain';
+    if ValidHost(H) then
+      Result := Result + ' --host ' + H;
+    if (E <> '') and ValidEmail(E) then
+      Result := Result + ' --email ' + E;
+  end;
+end;
+
+// Hardens the PC with no window, then starts the tray icon as the person
+// running Setup (rather than at their next sign-in).
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  RC, I: Integer;
+  ErrorFile, Msg: String;
+  Lines: TArrayOfString;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+  ErrorFile := ExpandConstant('{tmp}\install-error.txt');
+  WizardForm.StatusLabel.Caption := 'Hardening Remote Desktop and starting the RDP Gate service...';
+  WizardForm.FilenameLabel.Caption := 'This can take a minute.';
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), HardenParams(ErrorFile), ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, RC) then
+    RC := -1;
+  if RC <> 0 then
+  begin
+    Msg := 'Windows PowerShell could not run the setup script.';
+    if LoadStringsFromFile(ErrorFile, Lines) and (GetArrayLength(Lines) > 0) then
+    begin
+      Msg := '';
+      for I := 0 to GetArrayLength(Lines) - 1 do
+        Msg := Msg + Lines[I] + #13#10;
+    end;
+    SuppressibleMsgBox('RDP Gate could not finish setting up this PC:' + #13#10 + #13#10 + Trim(Msg) + #13#10 + #13#10 +
+      'Details are in ' + ExpandConstant('{commonappdata}\RDPGate\logs\setup.log') + '. Fix the problem, then run RDP Gate Server Setup again.',
+      mbError, MB_OK, IDOK);
+  end
+  else if WizardIsTaskSelected('trayicon') then
+    ExecAsOriginalUser(ExpandConstant('{app}\rdpgate-tray.exe'), '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, RC);
 end;
 
 // ---- uninstall ---------------------------------------------------------------
@@ -268,6 +309,8 @@ begin
   // The watchdog task would start the service again mid-upgrade; Setup re-enables it.
   Exec(ExpandConstant('{sys}\schtasks.exe'), '/Change /TN "\RDPGate\Watchdog" /DISABLE', '', SW_HIDE, ewWaitUntilTerminated, RC);
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop RDPGate', '', SW_HIDE, ewWaitUntilTerminated, RC);
+  // Everyone's tray icon, so its file can be replaced; Setup starts it again.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM rdpgate-tray.exe', '', SW_HIDE, ewWaitUntilTerminated, RC);
   Sleep(3000);
   Result := '';
 end;

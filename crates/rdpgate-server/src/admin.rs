@@ -135,8 +135,8 @@ pub fn beacon_setup(data: &Path, token: &str, gist: Option<&str>) -> Result<Stri
     };
     cfg.beacon = Some(BeaconConfig { gist_id: gist_id.clone(), token: token.into() });
     let id = Identity::load_or_create(data)?;
-    let ip = crate::beacon::discover_public_ip()?;
-    crate::beacon::publish(&cfg, &id, ip, crate::beacon::lan_location(&cfg))?;
+    let ips = crate::beacon::discover_public_ips(cfg.ipv6)?;
+    crate::beacon::publish(&cfg, &id, ips, crate::beacon::lan_location(&cfg))?;
     cfg.save(data)?;
     Ok(gist_id)
 }
@@ -153,6 +153,128 @@ pub fn set_lan(data: &Path, on: bool) -> Result<Option<std::net::IpAddr>, String
 pub fn set_auto_update(data: &Path, on: bool) -> Result<(), String> {
     let mut cfg = Config::load(data)?;
     cfg.auto_update = on;
+    cfg.save(data)
+}
+
+/// Turns sign-in over IPv6 on or off. Takes effect when the service restarts.
+pub fn set_ipv6(data: &Path, on: bool) -> Result<(), String> {
+    let mut cfg = Config::load(data)?;
+    cfg.ipv6 = on;
+    cfg.save(data)
+}
+
+// ---- browser sign-in (domain setup) -------------------------------------
+
+/// The domain name typed in, cleaned up and checked.
+pub fn clean_host(host: &str) -> Result<String, String> {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if !crate::config::valid_host(&host) {
+        return Err(format!("{host:?} isn't a domain name like rdp.example.com"));
+    }
+    Ok(host)
+}
+
+/// One DNS record to create for browser sign-in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DnsRecord {
+    /// "A" (IPv4) or "AAAA" (IPv6).
+    pub kind: &'static str,
+    /// What most providers want in Name: the part before the domain.
+    pub name: String,
+    pub value: String,
+}
+
+/// The records `host` needs so browsers reach this PC over every address it
+/// has. Blocking: it asks the internet for this network's addresses.
+pub fn dns_records(data: &Path, host: &str) -> Result<(Vec<DnsRecord>, crate::beacon::PublicIps), String> {
+    let cfg = Config::load(data)?;
+    let ips = crate::beacon::discover_public_ips(cfg.ipv6)?;
+    let name = host.split('.').next().unwrap_or(host).to_string();
+    let mut records = Vec::new();
+    if let Some(v4) = ips.v4 {
+        records.push(DnsRecord { kind: "A", name: name.clone(), value: v4.to_string() });
+    }
+    if let Some(v6) = ips.v6 {
+        records.push(DnsRecord { kind: "AAAA", name, value: v6.to_string() });
+    }
+    Ok((records, ips))
+}
+
+/// What `host` resolves to now (blocking).
+pub fn resolve_host(host: &str) -> Vec<std::net::IpAddr> {
+    use std::net::ToSocketAddrs;
+    let mut addrs: Vec<std::net::IpAddr> = (host, 443).to_socket_addrs().map(|i| i.map(|a| a.ip()).collect()).unwrap_or_default();
+    addrs.sort();
+    addrs.dedup();
+    addrs
+}
+
+/// One thing a DNS check found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Finding {
+    /// The record points at this PC.
+    Good,
+    /// Works without it, but worth doing.
+    Hint,
+    /// Browsers would fail.
+    Wrong,
+}
+
+/// Compares what `host` resolves to with this network's addresses. Returns
+/// whether browsers will reach this PC, and a line per finding (good first).
+pub fn dns_verdict(host: &str, public: &crate::beacon::PublicIps, resolved: &[std::net::IpAddr]) -> (bool, Vec<(Finding, String)>) {
+    use std::net::IpAddr;
+    let (v4, v6): (Vec<IpAddr>, Vec<IpAddr>) = resolved.iter().partition(|a| a.is_ipv4());
+    let list = |a: &[IpAddr]| a.iter().map(IpAddr::to_string).collect::<Vec<_>>().join(", ");
+    let mut lines = Vec::new();
+    if resolved.is_empty() {
+        lines.push((Finding::Wrong, format!("{host} doesn't resolve yet. New records can take a few minutes to appear.")));
+        return (false, lines);
+    }
+    // A browser may use any address the name has, so each one must be this PC.
+    let mut every_ok = true;
+    let mut check = |kind: &str, family: &str, ours: Option<IpAddr>, seen: &[IpAddr]| match (ours, seen.is_empty()) {
+        (Some(ip), false) if seen == [ip] => lines.push((Finding::Good, format!("{kind} record: {host} points at {ip}."))),
+        (Some(ip), false) => {
+            every_ok = false;
+            lines.push((Finding::Wrong, format!("{kind} record: {host} points at {}, not {ip}. If that's a Cloudflare address, switch the record to \"DNS only\".", list(seen))));
+        }
+        (Some(ip), true) => lines.push((Finding::Hint, format!("No {kind} record yet: add one for {ip} so {family} visitors reach this PC too."))),
+        (None, false) => {
+            every_ok = false;
+            lines.push((Finding::Wrong, format!("{host} has a {kind} record ({}), but this PC has no public {family} address: delete it, or browsers may try it and fail.", list(seen))));
+        }
+        (None, true) => {}
+    };
+    check("A", "IPv4", public.v4.map(IpAddr::V4), &v4);
+    check("AAAA", "IPv6", public.v6.map(IpAddr::V6), &v6);
+    lines.sort_by_key(|(f, _)| *f);
+    (every_ok, lines)
+}
+
+/// Turns browser sign-in on for `host`. Takes effect when the service
+/// restarts. Returns the sign-in page's address.
+pub fn domain_on(data: &Path, host: &str, email: &str) -> Result<String, String> {
+    let host = clean_host(host)?;
+    let email = email.trim();
+    if !email.is_empty() && (!email.contains('@') || email.chars().any(char::is_whitespace)) {
+        return Err(format!("{email:?} isn't an email address"));
+    }
+    let mut cfg = Config::load(data)?;
+    cfg.public_host = Some(host);
+    cfg.web_login = true;
+    if !email.is_empty() {
+        cfg.tls.email = Some(email.into());
+    }
+    cfg.save(data)?;
+    cfg.portal_url("").ok_or_else(|| "no sign-in address".into())
+}
+
+/// Turns browser sign-in off. Passkeys are kept for if it's turned on again.
+pub fn domain_off(data: &Path) -> Result<(), String> {
+    let mut cfg = Config::load(data)?;
+    cfg.web_login = false;
+    cfg.public_host = None;
     cfg.save(data)
 }
 
@@ -198,6 +320,7 @@ pub struct GrantInfo {
 pub struct BeaconInfo {
     pub gist: String,
     pub ip: Option<String>,
+    pub ip6: Option<String>,
     pub published: Option<i64>,
     pub error: Option<String>,
 }
@@ -223,6 +346,10 @@ pub struct Overview {
     pub router: String,
     pub behind_nat: bool,
     pub browser_url: Option<String>,
+    /// The domain for browser sign-in, and the certificate email, as set up.
+    pub public_host: Option<String>,
+    pub cert_email: Option<String>,
+    pub ipv6: bool,
     pub totp: bool,
     pub passkeys: Vec<PasskeyInfo>,
     pub devices: usize,
@@ -231,6 +358,8 @@ pub struct Overview {
     pub rdp_port: u16,
     pub rdp_public_port: u16,
     pub public_port: u16,
+    /// The port this PC listens on for sign-in (what IPv6 reaches).
+    pub listen_port: u16,
 }
 
 fn read_json(data: &Path, file: &str) -> serde_json::Value {
@@ -246,6 +375,7 @@ pub fn overview(data: &Path) -> Result<Overview, String> {
         BeaconInfo {
             gist: b.gist_id.clone(),
             ip: s["ip"].as_str().map(str::to_string),
+            ip6: s["ip6"].as_str().map(str::to_string),
             published: s["published"].as_i64(),
             error: s["error"].as_str().map(str::to_string),
         }
@@ -287,6 +417,9 @@ pub fn overview(data: &Path) -> Result<Overview, String> {
         router,
         behind_nat: r["behind_nat"].as_bool() == Some(true),
         browser_url: cfg.portal_url("").filter(|_| cfg.web_login),
+        public_host: cfg.public_host.clone(),
+        cert_email: cfg.tls.email.clone(),
+        ipv6: cfg.ipv6,
         totp: st.totp.is_some(),
         passkeys: st.passkeys.iter().map(|p| PasskeyInfo { name: p.name.clone(), added: p.added, last_used: p.last_used }).collect(),
         devices: st.devices.len(),
@@ -295,6 +428,7 @@ pub fn overview(data: &Path) -> Result<Overview, String> {
         rdp_port: cfg.rdp_port,
         rdp_public_port: cfg.rdp_public_port,
         public_port: cfg.public_port,
+        listen_port: crate::router::listen_port(&cfg),
     })
 }
 
@@ -316,4 +450,48 @@ pub fn log_tail(data: &Path, lines: usize) -> String {
 /// "2026-10-23 21:07", or "never".
 pub fn when(t: Option<i64>) -> String {
     t.map(local).unwrap_or_else(|| "never".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::beacon::PublicIps;
+
+    fn ips(v4: Option<&str>, v6: Option<&str>) -> PublicIps {
+        PublicIps { v4: v4.map(|a| a.parse().unwrap()), v6: v6.map(|a| a.parse().unwrap()) }
+    }
+
+    fn resolved(list: &[&str]) -> Vec<std::net::IpAddr> {
+        list.iter().map(|a| a.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn dns_is_right_when_every_address_is_this_pc() {
+        let both = ips(Some("198.72.98.36"), Some("2607:f748:203:b9::11"));
+        let (ok, lines) = dns_verdict("rdp.example.com", &both, &resolved(&["198.72.98.36", "2607:f748:203:b9::11"]));
+        assert!(ok);
+        assert!(lines.iter().all(|(f, _)| *f == Finding::Good) && lines.len() == 2);
+        // An AAAA record can come later: IPv4 alone already works.
+        let (ok, lines) = dns_verdict("rdp.example.com", &both, &resolved(&["198.72.98.36"]));
+        assert!(ok && lines.iter().any(|(f, l)| *f == Finding::Hint && l.contains("No AAAA record yet")));
+        // IPv6 only (carrier-grade NAT for IPv4, say).
+        let (ok, _) = dns_verdict("rdp.example.com", &ips(None, Some("2607:f748::11")), &resolved(&["2607:f748::11"]));
+        assert!(ok);
+    }
+
+    #[test]
+    fn dns_is_wrong_when_any_address_is_elsewhere() {
+        let both = ips(Some("198.72.98.36"), Some("2607:f748:203:b9::11"));
+        // The case from the field: the name points at someone else's IPv6.
+        let (ok, lines) = dns_verdict("rdp.example.com", &both, &resolved(&["198.72.98.36", "2607:f748:203:b9:b::11"]));
+        assert!(!ok);
+        assert_eq!(lines[0].0, Finding::Good, "good findings come first");
+        assert!(lines.iter().any(|(f, l)| *f == Finding::Wrong && l.contains("AAAA") && l.contains("2607:f748:203:b9:b::11")));
+        // A stray AAAA record when this PC has no IPv6.
+        let (ok, _) = dns_verdict("rdp.example.com", &ips(Some("198.72.98.36"), None), &resolved(&["198.72.98.36", "2001:4860::1"]));
+        assert!(!ok);
+        // Not created yet.
+        assert!(!dns_verdict("rdp.example.com", &both, &[]).0);
+        assert!(clean_host(" RDP.Example.com. ").unwrap() == "rdp.example.com" && clean_host("1.2.3.4").is_err());
+    }
 }

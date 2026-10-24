@@ -205,7 +205,7 @@ async fn login_finish(app: &App, ip: IpAddr, src: &str, login_id: &str, body: &[
                     "expires": g.expires,
                     "hard_expires": g.hard_expires,
                     "rdp_host": app.cfg.public_host,
-                    "rdp_port": app.cfg.rdp_public_port,
+                    "rdp_port": app.cfg.rdp_port_for(ip),
                     "revoke_token": g.revoke_token,
                     "rdp_sha256": cert.as_ref().map(|c| rdpgate_core::rdp::pretty(&c.sha256)),
                     "rdp_sha1": cert.as_ref().map(|c| rdpgate_core::rdp::pretty(&c.sha1)),

@@ -30,6 +30,11 @@
     9. With -PublicHost or -DomainSetup, runs the guided domain setup for
        browser (passkey) sign-in: DNS record, check, certificate, passkey.
 
+    With -FromInstaller (how Setup runs it) nothing is asked and no window
+    shows: the beacon, 6-digit codes and browser sign-in of steps 7 and 9
+    are set up in RDP Gate Server afterwards, and the output goes to
+    C:\ProgramData\RDPGate\logs\setup.log.
+
     Run it again at any time to upgrade or re-apply the hardening; enrolled
     devices, passkeys, codes and the server identity are kept.
 
@@ -80,8 +85,12 @@ param(
     [switch] $SkipSleep,
     # Don't forward ports on the router automatically (UPnP)
     [switch] $NoUpnp,
-    # Run by the Setup wizard: files are already in place; pause at the end
-    [switch] $FromInstaller
+    # Run by the Setup wizard, in no window: files are already in place, and
+    # nothing is asked (the beacon, 6-digit codes and browser sign-in are
+    # set up in RDP Gate Server afterwards). Everything goes to setup.log.
+    [switch] $FromInstaller,
+    # With -FromInstaller: where to write the error, if Setup can't finish
+    [string] $ErrorFile
 )
 
 #Requires -RunAsAdministrator
@@ -95,11 +104,17 @@ $Exe        = Join-Path $InstallDir 'rdpgate-server.exe'
 $TsKey      = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
 $RdpTcpKey  = "$TsKey\WinStations\RDP-Tcp"
 
+$SetupLog   = Join-Path $DataDir 'logs\setup.log'
+
+$Logging    = $false
+
 if ($FromInstaller) {
-    # Keep the window open on failure so the message can be read.
+    # No window to read: hand Setup the error to show (and log it, once
+    # the log has started, after the data folder is secured).
     trap {
-        Write-Host "`nERROR: $_" -ForegroundColor Red
-        Read-Host 'Setup could not finish. Press Enter to close'
+        Write-Host "`nERROR: $_"
+        if ($ErrorFile) { "$_" | Set-Content -Path $ErrorFile -Encoding UTF8 }
+        if ($Logging) { Stop-Transcript | Out-Null }
         exit 1
     }
 }
@@ -226,6 +241,12 @@ foreach ($icaclsArgs in @(
         @('/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '/C', '/Q'))) {
     & icacls.exe $DataDir @icaclsArgs | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not secure $DataDir (icacls $($icaclsArgs -join ' '))" }
+}
+if ($FromInstaller) {
+    # Only now: the folder is checked for links and locked to Administrators.
+    New-Item -ItemType Directory -Force -Path (Split-Path $SetupLog) | Out-Null
+    Start-Transcript -Path $SetupLog -Force | Out-Null
+    $Logging = $true
 }
 Ok "Data folder $DataDir (SYSTEM + Administrators only)"
 
@@ -396,7 +417,9 @@ if (-not (Test-Path (Join-Path $DataDir 'config.json'))) {
 
 $cfg = Get-Content (Join-Path $DataDir 'config.json') -Raw | ConvertFrom-Json
 $hasBeacon = $cfg.PSObject.Properties.Name -contains 'beacon'
-if (-not $hasBeacon -and -not $NoBeacon) {
+if ($FromInstaller) {
+    # RDP Gate Server's "Finish setting up" does it in its window.
+} elseif (-not $hasBeacon -and -not $NoBeacon) {
     Write-Host ""
     Write-Host "    Your computers find this PC through an encrypted, signed beacon in a secret GitHub gist."
     Write-Host "    The gist only holds ciphertext, but GitHub sees the IP address each update comes from."
@@ -405,14 +428,12 @@ if (-not $hasBeacon -and -not $NoBeacon) {
     if ($LASTEXITCODE -ne 0) { Warn 'Beacon not set up. Run "rdpgate-server beacon-setup" later.' }
 }
 
-# In this window rather than on Setup's last page, where the step was easy to
-# miss and, after a reinstall that kept the data folder, only printed an error.
 $st = Get-Content (Join-Path $DataDir 'state.json') -Raw | ConvertFrom-Json
 $totpOn = $st.PSObject.Properties.Name -contains 'totp'
 if ($totpOn) {
     Step '6-digit codes'
     Ok 'Already set up (kept from an earlier install). New phone: rdpgate-server totp-setup --force'
-} elseif (-not $NoTotp) {
+} elseif (-not $NoTotp -and -not $FromInstaller) {
     Step 'Setting up 6-digit codes (scan the QR code with your authenticator app)'
     & $Exe totp-setup --data $DataDir
     $totpOn = $LASTEXITCODE -eq 0
@@ -467,7 +488,7 @@ if (-not $NoUpnp) {
 }
 
 # ---------------------------------------------------------------------------
-if ($PublicHost -or $DomainSetup) {
+if (($PublicHost -or $DomainSetup) -and -not $FromInstaller) {
     Step 'Browser sign-in with your domain (guided)'
     $domainArgs = @('domain-setup', '--data', $DataDir)
     if ($PublicHost) { $domainArgs += @('--host', $PublicHost) }
@@ -520,4 +541,4 @@ Remote Desktop certificate thumbprint (the app also checks this automatically):
 Manage everything in RDP Gate Server (Start menu).   Logs: $DataDir\logs\rdpgate.log
 "@
 if (-not ($PublicHost -or $DomainSetup)) { Write-Host "Browser sign-in (optional): rdpgate-server domain-setup" }
-if ($FromInstaller) { Read-Host "`nPress Enter to finish" | Out-Null }
+if ($Logging) { Stop-Transcript | Out-Null }

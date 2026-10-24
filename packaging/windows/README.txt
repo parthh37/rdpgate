@@ -14,6 +14,11 @@ or static IP needed). Then:
     rdpgate-server device-add <name> <key>    # for each Mac/PC (the app shows this line)
     rdpgate-server status
 
+"RDP Gate Server.exe" manages all of this in a window. rdpgate-tray.exe puts
+an icon next to the clock that shows whether the service is running (Setup
+starts it at every sign-in; for this folder, put a shortcut to it in
+shell:common startup).
+
 Router: forward TCP 443 and TCP 3389 to this PC. Remote Desktop stays closed
 until someone signs in.
 

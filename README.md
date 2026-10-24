@@ -88,14 +88,14 @@ You need: a Windows 10/11 **Pro, Enterprise or Education** PC, or Windows Server
 
 Then download **`RDP-Gate-Server-Setup-<version>.exe`** from [Releases](https://github.com/parthh37/rdpgate/releases) and run it on the Windows PC. The wizard asks for:
 - **when to close Remote Desktop**: *now*, or *after your first sign-in* through RDP Gate. Pick the second if you're installing over Remote Desktop (Setup pre-selects it when it detects that), because closing it now would disconnect you and nothing is enrolled yet to get back in;
-- whether to set up browser sign-in with your own domain (a guided step; only for passkeys),
-- whether to set up the IP beacon now, allow sign-in from computers on your home network (for example a laptop on the same Wi-Fi), set an account lockout policy, stop the PC sleeping, or allow UDP.
+- whether to set up browser sign-in with your own domain (only for passkeys),
+- whether to allow sign-in from computers on your home network (for example a laptop on the same Wi-Fi), set an account lockout policy, stop the PC sleeping, show the status icon next to the clock, or allow UDP.
 
-When the beacon setup opens, paste the token at its hidden prompt. Right after it, in the same window, a QR code appears for your authenticator app: scan it and type the code it shows (untick **Set up 6-digit codes now** to skip this). If you reinstall over an earlier install, the codes you already have are kept.
+Setup then hardens the PC without opening any console window. At the end, **RDP Gate Server** opens with a **Finish setting up** list: paste the token (Network), scan the QR code for 6-digit codes, add your computers and, if you chose it, set up your domain. Each step has a **Set up…** button, and the list goes away once everything is done. If you reinstall over an earlier install, your token, codes and computers are kept. Setup's own record is in `C:\ProgramData\RDPGate\logs\setup.log`; if something stops it, it says what in a message.
 
 <details><summary>Prefer a script? (portable zip)</summary>
 
-Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. The same options are available as switches: `-Protect Now|AfterSignIn`, `-DomainSetup` / `-PublicHost`, `-AllowUdp`, `-Lan On|Off`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-NoTotp`, `-RdpPublicPort`.
+Unzip `RDP-Gate-<version>-Windows-Server.zip` and, in PowerShell as Administrator, run `Set-ExecutionPolicy -Scope Process Bypass; .\install-server.ps1`. Run this way, it asks for the token and shows the QR code in the PowerShell window itself. The same options are available as switches: `-Protect Now|AfterSignIn`, `-DomainSetup` / `-PublicHost`, `-AllowUdp`, `-Lan On|Off`, `-SkipLockout`, `-SkipSleep`, `-NoBeacon`, `-NoTotp`, `-RdpPublicPort`.
 </details>
 
 Setup does the following, in this order (with *after your first sign-in*, the two firewall steps wait: the service does them once a computer has signed in through RDP Gate **and** connected to Remote Desktop, and that address keeps its own opening so its session stays up; `rdpgate-server status` shows `Protection: PENDING` until then, and `rdpgate-server protect` does it immediately):
@@ -127,7 +127,7 @@ The Mac and PC apps only make outgoing connections and need no open ports.
 
 ### 3. Set up 6-digit codes (on the server)
 
-Setup does this in its window, right after the beacon. To do it later (or with a new phone), open **RDP Gate Server** from the Start menu → **6-digit codes**: it shows the QR code and asks for the code your app shows. (Command line: `rdpgate-server totp-setup`.)
+It's step 2 of **Finish setting up** in RDP Gate Server, right after Setup. To do it later (or with a new phone), open **RDP Gate Server** from the Start menu → **6-digit codes**: it shows the QR code and asks for the code your app shows. (Command line: `rdpgate-server totp-setup`.)
 
 ### 4. Enroll each computer you'll connect from
 
@@ -147,14 +147,14 @@ Test from outside your home network, for example over a phone hotspot. To sign i
 
 ### Optional: browser sign-in with a passkey
 
-Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control with a DNS "A" record pointing at your home IP (plus dynamic DNS if that IP changes). Tick it in Setup, or run the guided setup at any time:
+Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control with DNS records pointing at your home (an "A" record for IPv4, and "AAAA" for IPv6 if you have it), plus dynamic DNS if those addresses change. Tick it in Setup, or open **RDP Gate Server → Browser sign-in → Set up with my domain**: it shows the records to create with Copy buttons, checks them for you, then turns sign-in on. The same from PowerShell:
 
 ```powershell
 rdpgate-server domain-setup      # domain, DNS record + live check, certificate, first passkey
 rdpgate-server passkey-enroll    # more passkeys: one-time link, open it on your Mac/iPhone/PC
 ```
 
-It shows the exact DNS record to create, checks it until it resolves to your IP (and warns about a Cloudflare proxy or a stray AAAA record), and keeps your beacon, devices and other settings. `domain-setup --remove` turns browser sign-in off.
+Both show the exact records to create, check them until they resolve to this PC (and warn about a Cloudflare proxy, or a record that points elsewhere), and keep your beacon, devices and other settings. `domain-setup --remove` turns browser sign-in off.
 
 The sign-in page shows which IP it opened, lets you close access early, and shows the Remote Desktop certificate fingerprint to compare.
 
@@ -164,7 +164,7 @@ Every program keeps itself up to date, and only ever installs a release signed w
 
 | Program | Automatic | By hand |
 |---|---|---|
-| Server | Checks daily. Installs only while nobody has access open, then restarts the service. `"auto_update": false` in config.json turns it off. | Start menu → **Check for RDP Gate updates** (asks before installing), or `rdpgate-server update` (`--check` to only look) |
+| Server | Checks daily. Installs only while nobody has access open, then restarts the service. `"auto_update": false` in config.json turns it off. | RDP Gate Server → Overview → **Check for updates**, or `rdpgate-server update` (`--check` to only look) |
 | Desktop app | Checks once a day at launch. Installs and offers **Restart now**. There's a toggle under *This computer and server*. | **Check for updates** at the bottom of every screen, even before setup |
 | `rdpgate` CLI | Once a day, after a successful `connect`. | `rdpgate update`, `rdpgate auto-update on\|off` |
 
@@ -195,6 +195,8 @@ Everything here is also in the **RDP Gate Server** window (Start menu, and a des
 | Browser sign-in | The guided domain setup, passkeys, one-time links to add a passkey |
 | Activity log | Sign-ins, refusals, firewall openings and closings, beacon and update activity |
 
+Setup also puts an **RDP Gate icon next to the clock** for everyone who signs in (untick it in Setup if you don't want it). Its dot shows the service at a glance: green running, amber starting or stopping, red stopped. Hover it for the state, click it to open RDP Gate Server, right-click it to start a stopped service. If the service stays stopped, it tells you with a notification. On Windows 11, new icons first appear under the **^** arrow: drag it onto the taskbar to keep it in view.
+
 The same from PowerShell as Administrator:
 
 ```text
@@ -218,7 +220,8 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | Key | Default | Meaning |
 |---|---|---|
 | `public_port` | 443 | External port forwarded to the agent |
-| `listen` | `["0.0.0.0:443"]` | Add `"[::]:443"` for IPv6 |
+| `listen` | `["0.0.0.0:443"]` | Local sign-in address(es) |
+| `ipv6` | true | Also listen on IPv6 (`[::]` next to each `0.0.0.0`) and publish this PC's public IPv6 address in the beacon |
 | `rdp_port` / `rdp_public_port` | 3389 | Local RDP port / external port clients use |
 | `allow_udp` | false | Also open UDP for signed-in addresses |
 | `upnp` | true | Forward the ports on the router automatically |

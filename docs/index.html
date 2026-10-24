@@ -272,19 +272,18 @@
       <div class="vstep-text">
         <h3>Run the server Setup</h3>
         <p class="where"><span class="at-server">Windows PC</span></p>
-        <p>Run <code>RDP-Gate-Server-Setup.exe</code>. The ticked defaults suit most people. Paste the token when it asks. A domain name is only needed for browser sign-in.</p>
-        <p>Setup hardens Remote Desktop, closes it in Windows Firewall and starts the <code>RDPGate</code> service.</p>
+        <p>Run <code>RDP-Gate-Server-Setup.exe</code>. The ticked defaults suit most people. A domain name is only needed for browser sign-in.</p>
+        <p>Setup hardens Remote Desktop, closes it in Windows Firewall and starts the <code>RDPGate</code> service. Then RDP Gate Server opens: paste the token under <em>Finish setting up</em>.</p>
         <p class="note">Installing over Remote Desktop? Setup keeps it reachable until your first sign-in through RDP Gate, so you aren't cut off.</p>
       </div>
       <figure class="vstep-visual window" aria-label="Illustration of the tasks in the server Setup wizard">
         <div class="chrome"><span></span><span></span><span></span><b>RDP Gate Server Setup</b></div>
         <ul class="tasks">
           <li class="off">Browser sign-in with my domain <small>optional</small></li>
-          <li>Set up the IP beacon now <small>asks for the token</small></li>
-          <li>Set up 6-digit codes now</li>
           <li>Forward ports on my router</li>
           <li>Account lockout policy</li>
           <li>Stop this PC sleeping</li>
+          <li>Show the service's status</li>
           <li class="off">Also open UDP</li>
         </ul>
         <figcaption>The task page. Anything Setup changes is put back if you uninstall.</figcaption>
@@ -295,7 +294,7 @@
       <div class="vstep-text">
         <h3>Scan the QR code with your phone</h3>
         <p class="where"><span class="at-server">Windows PC</span><span class="at-phone">Phone</span></p>
-        <p>At the end of Setup a QR code appears. Scan it with any authenticator app (Google or Microsoft Authenticator, 1Password, Bitwarden…) and type the code it shows.</p>
+        <p>In RDP Gate Server, choose <em>Set up…</em> next to the 6-digit codes and a QR code appears. Scan it with any authenticator app (Google or Microsoft Authenticator, 1Password, Bitwarden…) and type the code it shows.</p>
         <p>To do it again later, open <em>Start → RDP Gate Server → 6-digit codes</em>.</p>
       </div>
       <figure class="vstep-visual window">
@@ -430,7 +429,7 @@
       <ul>
         <li>Device keys held in the Secure Enclave or TPM</li>
         <li>Sign-in notifications and approve-from-phone</li>
-        <li>Optional "passkey and code" mode, LAN allow-list, IPv6 by default</li>
+        <li>Optional "passkey and code" mode, LAN allow-list</li>
         <li>Beacon key rotation and more beacon stores (your own HTTPS, S3/R2)</li>
         <li>Linux and macOS servers</li>
       </ul>

@@ -2,7 +2,7 @@
 # Builds release packages into dist/ from a Mac:
 #   RDP-Gate-<v>-macOS.dmg / .zip    RDP Gate.app + rdpgate CLI
 #   RDP-Gate-<v>-Windows-Client.zip  RDP Gate.exe + rdpgate.exe
-#   RDP-Gate-<v>-Windows-Server.zip  rdpgate-server.exe + RDP Gate Server.exe + installer scripts
+#   RDP-Gate-<v>-Windows-Server.zip  rdpgate-server.exe + RDP Gate Server.exe + rdpgate-tray.exe + installer scripts
 # Windows binaries are cross-compiled with cargo-xwin (cargo install cargo-xwin).
 # The Setup installers (Inno Setup) and signed update manifest are only made
 # by GitHub Actions (.github/workflows/release.yml), which is how releases ship.
@@ -46,7 +46,7 @@ hdiutil create -quiet -volname "RDP Gate $VERSION" -srcfolder "$DMG_ROOT" -ov -f
 rm -rf "$DMG_ROOT"
 
 echo "==> Windows ($WIN)"
-cargo xwin build --release --target "$WIN" -p rdpgate-server -p rdpgate-server-app -p rdpgate-client -p rdpgate-app
+cargo xwin build --release --target "$WIN" -p rdpgate-server -p rdpgate-server-app -p rdpgate-tray -p rdpgate-client -p rdpgate-app
 WC="$DIST/RDP-Gate-$VERSION-Windows-Client"
 WS="$DIST/RDP-Gate-$VERSION-Windows-Server"
 mkdir -p "$WC" "$WS"
@@ -54,6 +54,7 @@ cp "target/$WIN/release/rdpgate-app.exe" "$WC/RDP Gate.exe"
 cp "target/$WIN/release/rdpgate.exe" "$WC/rdpgate.exe"
 cp "target/$WIN/release/rdpgate-server.exe" "$WS/"
 cp "target/$WIN/release/rdpgate-server-app.exe" "$WS/RDP Gate Server.exe"
+cp "target/$WIN/release/rdpgate-tray.exe" "$WS/"
 cp packaging/windows/install-server.ps1 packaging/windows/uninstall-server.ps1 packaging/windows/README.txt "$WS/"
 (cd "$DIST" && zip -qr "RDP-Gate-$VERSION-Windows-Client.zip" "RDP-Gate-$VERSION-Windows-Client" \
                 && zip -qr "RDP-Gate-$VERSION-Windows-Server.zip" "RDP-Gate-$VERSION-Windows-Server")

@@ -3,7 +3,8 @@
     Checks for a signed RDP Gate Server update and offers to install it.
 
 .DESCRIPTION
-    Behind the Start menu shortcut "Check for RDP Gate updates". Asks for
+    For checking from PowerShell (RDP Gate Server does the same from its
+    Overview, without a console). Asks for
     Administrator rights, shows the installed and the newest version, and
     installs only after you confirm: installing restarts the RDPGate service,
     which closes access for every computer signed in right now.
