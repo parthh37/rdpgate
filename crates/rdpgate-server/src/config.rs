@@ -5,6 +5,18 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// The default sign-in port, here and on the router. Anything but 80 and
+/// 443, which web servers, VPNs and other software on the same PC or router
+/// expect to have.
+pub const DEFAULT_PORT: u16 = 47443;
+
+/// Ports RDP Gate never listens on or forwards.
+pub const RESERVED_PORTS: [u16; 2] = [80, 443];
+
+pub fn reserved_port(p: u16) -> bool {
+    RESERVED_PORTS.contains(&p)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Optional DNS name, e.g. "rdp.example.com". Only needed for browser
@@ -12,10 +24,10 @@ pub struct Config {
     /// Desktop clients find the server through the encrypted beacon instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_host: Option<String>,
-    /// Port the router forwards to `listen` (normally 443).
-    #[serde(default = "d_443")]
+    /// Port the router forwards to `listen` (never 80 or 443).
+    #[serde(default = "d_port")]
     pub public_port: u16,
-    /// Local addresses to bind, e.g. ["0.0.0.0:443"]. With `ipv6`, each
+    /// Local addresses to bind, e.g. ["0.0.0.0:47443"]. With `ipv6`, each
     /// "0.0.0.0:port" is also bound as "[::]:port".
     #[serde(default = "d_listen")]
     pub listen: Vec<String>,
@@ -24,7 +36,7 @@ pub struct Config {
     /// (carrier-grade NAT) can still be reached this way.
     #[serde(default = "d_true")]
     pub ipv6: bool,
-    /// Certificate for the browser portal (only used with `public_host`).
+    /// Certificate for the browser portal (needed for `web_login`).
     #[serde(default)]
     pub tls: TlsConfig,
     /// Local RDP port the firewall rules open (Windows default 3389).
@@ -82,24 +94,21 @@ pub struct Config {
     pub data_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The browser portal's certificate: PEM files you renew yourself (the
+/// service picks up renewed files without a restart). There is no automatic
+/// Let's Encrypt: its checks need port 80 or 443.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TlsConfig {
-    /// "acme" (automatic Let's Encrypt) or "files".
-    pub mode: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    /// Use the Let's Encrypt staging CA (for testing; browsers won't trust it).
-    #[serde(default)]
-    pub staging: bool,
+    /// Certificate chain covering `public_host`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cert_file: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_file: Option<PathBuf>,
 }
 
-impl Default for TlsConfig {
-    fn default() -> Self {
-        TlsConfig { mode: "acme".into(), email: None, staging: false, cert_file: None, key_file: None }
+impl TlsConfig {
+    pub fn files(&self) -> Option<(&Path, &Path)> {
+        Some((self.cert_file.as_deref()?, self.key_file.as_deref()?))
     }
 }
 
@@ -111,14 +120,14 @@ pub struct BeaconConfig {
     pub token: String,
 }
 
-fn d_443() -> u16 {
-    443
+fn d_port() -> u16 {
+    DEFAULT_PORT
 }
 fn d_3389() -> u16 {
     3389
 }
 fn d_listen() -> Vec<String> {
-    vec!["0.0.0.0:443".into()]
+    vec![format!("0.0.0.0:{DEFAULT_PORT}")]
 }
 fn d_grant() -> u32 {
     10
@@ -159,9 +168,9 @@ impl Config {
     pub fn new(host: Option<&str>) -> Self {
         let host = host.map(|h| h.trim().trim_end_matches('.').to_ascii_lowercase());
         Config {
-            web_login: host.is_some(),
+            web_login: false,
             public_host: host,
-            public_port: 443,
+            public_port: DEFAULT_PORT,
             listen: d_listen(),
             ipv6: true,
             tls: TlsConfig::default(),
@@ -188,12 +197,63 @@ impl Config {
     }
 
     pub fn load(data_dir: &Path) -> Result<Self, String> {
+        Self::load_noting(data_dir).map(|(c, _)| c)
+    }
+
+    /// Like `load`, also returning what was changed to bring a config from
+    /// an older version up to date (saved when this process may write it).
+    pub fn load_noting(data_dir: &Path) -> Result<(Self, Vec<String>), String> {
         let raw = std::fs::read(Self::path(data_dir))
             .map_err(|e| format!("{}: {e} (did you run \"rdpgate-server init\"?)", Self::path(data_dir).display()))?;
         let mut c: Config = serde_json::from_slice(&raw).map_err(|e| format!("config.json: {e}"))?;
         c.data_dir = data_dir.to_path_buf();
+        let notes = c.migrate();
         c.validate().map_err(|e| format!("config.json: {e}"))?;
-        Ok(c)
+        if !notes.is_empty() {
+            let _ = c.save(data_dir);
+        }
+        Ok((c, notes))
+    }
+
+    /// Moves a config from an older version off ports 80 and 443, and turns
+    /// browser sign-in off where it relied on Let's Encrypt. Returns a line
+    /// per change.
+    pub fn migrate(&mut self) -> Vec<String> {
+        let mut notes = Vec::new();
+        for l in &mut self.listen {
+            if let Ok(mut a) = l.parse::<SocketAddr>()
+                && reserved_port(a.port())
+            {
+                a.set_port(DEFAULT_PORT);
+                notes.push(format!("sign-in moved from {l} to {a}: RDP Gate no longer uses ports 80 and 443"));
+                *l = a.to_string();
+            }
+        }
+        if reserved_port(self.public_port) {
+            notes.push(format!(
+                "the router now forwards TCP {DEFAULT_PORT} for sign-in instead of {}; if you forwarded it by hand, change it on the router",
+                self.public_port
+            ));
+            self.public_port = DEFAULT_PORT;
+        }
+        if reserved_port(self.rdp_public_port) {
+            let to = if reserved_port(self.rdp_port) { 3389 } else { self.rdp_port };
+            notes.push(format!(
+                "the router now forwards TCP {to} for Remote Desktop instead of {}; if you forwarded it by hand, change it on the router",
+                self.rdp_public_port
+            ));
+            self.rdp_public_port = to;
+        }
+        if self.web_login && self.tls.files().is_none() {
+            notes.push(
+                "browser sign-in is off: its Let's Encrypt certificate needed port 443. Turn it on again with your own \
+                 certificate files (rdpgate-server domain-setup)"
+                    .into(),
+            );
+            self.web_login = false;
+            self.desktop_login = true;
+        }
+        notes
     }
 
     pub fn save(&self, data_dir: &Path) -> Result<(), String> {
@@ -215,13 +275,18 @@ impl Config {
             return Err("listen must contain at least one address".into());
         }
         for l in &self.listen {
-            l.parse::<SocketAddr>().map_err(|e| format!("listen {l:?}: {e}"))?;
+            let a = l.parse::<SocketAddr>().map_err(|e| format!("listen {l:?}: {e}"))?;
+            if reserved_port(a.port()) {
+                return Err(format!("listen {l:?}: RDP Gate never uses ports 80 or 443; pick another, e.g. {DEFAULT_PORT}"));
+            }
         }
-        match self.tls.mode.as_str() {
-            "acme" => {}
-            "files" if self.tls.cert_file.is_some() && self.tls.key_file.is_some() => {}
-            "files" => return Err("tls mode \"files\" needs cert_file and key_file".into()),
-            m => return Err(format!("tls.mode {m:?} must be \"acme\" or \"files\"")),
+        for (name, p) in [("public_port", self.public_port), ("rdp_public_port", self.rdp_public_port)] {
+            if reserved_port(p) {
+                return Err(format!("{name} {p}: RDP Gate never uses ports 80 or 443; pick another"));
+            }
+        }
+        if self.web_login && self.tls.files().is_none() {
+            return Err("web_login needs tls.cert_file and tls.key_file (a certificate for public_host)".into());
         }
         let p = &self.portal_path;
         if !p.starts_with('/') || !p.ends_with('/') || p.len() < 20 || p[1..p.len() - 1].contains('/') {
@@ -274,7 +339,7 @@ impl Config {
     /// Browser origin, e.g. https://rdp.example.com (only with a host name).
     pub fn public_url(&self) -> Option<String> {
         let h = self.public_host.as_ref()?;
-        Some(if self.public_port == 443 { format!("https://{h}") } else { format!("https://{h}:{}", self.public_port) })
+        Some(format!("https://{h}:{}", self.public_port))
     }
 
     pub fn portal_url(&self, page: &str) -> Option<String> {
@@ -296,10 +361,15 @@ mod tests {
 
     #[test]
     fn defaults_validate_and_reject_bad_hosts() {
-        let c = Config::new(Some("Home.Example.org."));
+        let mut c = Config::new(Some("Home.Example.org."));
         assert_eq!(c.public_host.as_deref(), Some("home.example.org"));
-        assert!(c.web_login);
         c.validate().unwrap();
+        c.web_login = true;
+        assert!(c.validate().is_err(), "web login without a certificate");
+        c.tls.cert_file = Some("cert.pem".into());
+        c.tls.key_file = Some("key.pem".into());
+        c.validate().unwrap();
+        assert_eq!(c.public_url().as_deref(), Some("https://home.example.org:47443"));
 
         let no_host = Config::new(None);
         assert!(!no_host.web_login);
@@ -321,17 +391,75 @@ mod tests {
     fn listens_on_ipv6_too_unless_turned_off() {
         let mut c = Config::new(None);
         let addrs = |c: &Config| c.listen_addrs().into_iter().map(|(a, required)| (a.to_string(), required)).collect::<Vec<_>>();
-        assert_eq!(addrs(&c), [("0.0.0.0:443".into(), true), ("[::]:443".into(), false)]);
+        assert_eq!(addrs(&c), [("0.0.0.0:47443".into(), true), ("[::]:47443".into(), false)]);
         // A config from before IPv6 support turns it on.
         let old: serde_json::Value = serde_json::json!({ "portal_path": c.portal_path });
         assert!(serde_json::from_value::<Config>(old).unwrap().ipv6);
         // Listed by hand: not added twice, and its failure counts.
-        c.listen.push("[::]:443".into());
-        assert_eq!(addrs(&c), [("0.0.0.0:443".into(), true), ("[::]:443".into(), true)]);
+        c.listen.push("[::]:47443".into());
+        assert_eq!(addrs(&c), [("0.0.0.0:47443".into(), true), ("[::]:47443".into(), true)]);
         c.listen = vec!["192.168.1.5:8443".into()];
         assert_eq!(addrs(&c), [("192.168.1.5:8443".into(), true)]);
-        c.listen = vec!["0.0.0.0:443".into()];
+        c.listen = vec!["0.0.0.0:8443".into()];
         c.ipv6 = false;
-        assert_eq!(addrs(&c), [("0.0.0.0:443".into(), true)]);
+        assert_eq!(addrs(&c), [("0.0.0.0:8443".into(), true)]);
+    }
+
+    #[test]
+    fn never_uses_80_or_443() {
+        for port in RESERVED_PORTS {
+            let mut c = Config::new(None);
+            c.listen = vec![format!("0.0.0.0:{port}")];
+            assert!(c.validate().is_err(), "listen on {port} accepted");
+            let mut c = Config::new(None);
+            c.public_port = port;
+            assert!(c.validate().is_err(), "public_port {port} accepted");
+            let mut c = Config::new(None);
+            c.rdp_public_port = port;
+            assert!(c.validate().is_err(), "rdp_public_port {port} accepted");
+        }
+    }
+
+    #[test]
+    fn migrates_old_configs_off_443_and_lets_encrypt() {
+        // Written by 1.2: sign-in on 443, browser sign-in with Let's Encrypt.
+        let old = serde_json::json!({
+            "public_host": "rdp.example.com",
+            "public_port": 443,
+            "listen": ["0.0.0.0:443", "[::]:443", "192.168.1.5:8443"],
+            "tls": { "mode": "acme", "email": "me@example.com" },
+            "rdp_public_port": 443,
+            "web_login": true,
+            "portal_path": format!("/{}/", "a".repeat(24)),
+        });
+        let mut c: Config = serde_json::from_value(old.clone()).unwrap();
+        assert!(c.validate().is_err());
+        let notes = c.migrate();
+        assert_eq!(notes.len(), 5, "{notes:?}");
+        assert_eq!(c.listen, ["0.0.0.0:47443", "[::]:47443", "192.168.1.5:8443"]);
+        assert_eq!((c.public_port, c.rdp_public_port), (47443, 3389));
+        assert!(!c.web_login && c.desktop_login);
+        c.validate().unwrap();
+        assert!(c.migrate().is_empty(), "migrating twice changes nothing");
+
+        // Loading it saves the migrated config, once.
+        let dir = std::env::temp_dir().join(format!("rdpgate-migrate-{}", rdpgate_core::random_token::<6>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(Config::path(&dir), serde_json::to_vec(&old).unwrap()).unwrap();
+        let (loaded, notes) = Config::load_noting(&dir).unwrap();
+        assert_eq!((notes.len(), loaded.public_port), (5, 47443));
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(Config::path(&dir)).unwrap()).unwrap();
+        assert_eq!(saved["listen"][0], "0.0.0.0:47443");
+        assert!(saved["tls"].get("mode").is_none(), "{saved}");
+        assert!(Config::load_noting(&dir).unwrap().1.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Own certificate files keep browser sign-in on.
+        let mut c = Config::new(Some("rdp.example.com"));
+        c.web_login = true;
+        c.tls.cert_file = Some("cert.pem".into());
+        c.tls.key_file = Some("key.pem".into());
+        assert!(c.migrate().is_empty());
+        assert!(c.web_login);
     }
 }

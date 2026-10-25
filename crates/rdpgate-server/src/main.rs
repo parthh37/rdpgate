@@ -29,25 +29,18 @@ enum Cmd {
         /// Without it, only the desktop app can sign in (found via the beacon).
         #[arg(long)]
         host: Option<String>,
-        /// Port your router forwards to this agent
-        #[arg(long, default_value_t = 443)]
+        /// Port your router forwards to this agent (never 80 or 443)
+        #[arg(long, default_value_t = rdpgate_server::config::DEFAULT_PORT)]
         public_port: u16,
-        /// Local listen address (repeatable; default 0.0.0.0:443)
+        /// Local listen address (repeatable; default 0.0.0.0:47443)
         #[arg(long)]
         listen: Vec<String>,
-        /// Browser portal certificate: "acme" (Let's Encrypt) or "files"
-        #[arg(long, default_value = "acme")]
-        tls: String,
-        #[arg(long)]
+        /// Certificate for --host, PEM (turns browser sign-in on, with --key)
+        #[arg(long, requires_all = ["host", "key"])]
         cert: Option<PathBuf>,
-        #[arg(long)]
+        /// Private key for --cert, PEM
+        #[arg(long, requires = "cert")]
         key: Option<PathBuf>,
-        /// Email for Let's Encrypt expiry notices (optional)
-        #[arg(long)]
-        email: Option<String>,
-        /// Use the Let's Encrypt staging CA (testing only)
-        #[arg(long)]
-        staging: bool,
         /// Local Remote Desktop port
         #[arg(long, default_value_t = 3389)]
         rdp_port: u16,
@@ -125,9 +118,12 @@ enum Cmd {
         /// Domain name, e.g. rdp.example.com (asked if not given)
         #[arg(long)]
         host: Option<String>,
-        /// Email for Let's Encrypt certificate notices (optional)
+        /// Certificate covering the domain, PEM (asked if not given)
         #[arg(long)]
-        email: Option<String>,
+        cert: Option<PathBuf>,
+        /// Its private key, PEM (asked if not given)
+        #[arg(long)]
+        key: Option<PathBuf>,
         /// Turn browser sign-in off again
         #[arg(long)]
         remove: bool,
@@ -190,7 +186,7 @@ fn print_card(cfg: &Config, id: &Identity) {
 fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
     match cmd {
         Cmd::Init {
-            host, public_port, listen, tls, cert, key, email, staging, rdp_port, rdp_public_port,
+            host, public_port, listen, cert, key, rdp_port, rdp_public_port,
             allow_udp, no_upnp, user, firewall, force,
         } => {
             // SYSTEM + Administrators only, even if someone created the folder first.
@@ -203,11 +199,13 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             if !listen.is_empty() {
                 c.listen = listen;
             }
-            c.tls.mode = tls;
-            c.tls.cert_file = cert;
-            c.tls.key_file = key;
-            c.tls.email = email;
-            c.tls.staging = staging;
+            if let (Some(cert), Some(key)) = (cert, key) {
+                let (cert, key) = (std::path::absolute(cert).map_err(|e| e.to_string())?, std::path::absolute(key).map_err(|e| e.to_string())?);
+                rdpgate_server::cert::read(&cert, &key, c.public_host.as_deref())?;
+                c.tls.cert_file = Some(cert);
+                c.tls.key_file = Some(key);
+                c.web_login = true;
+            }
             c.rdp_port = rdp_port;
             c.rdp_public_port = rdp_public_port.unwrap_or(rdp_port);
             c.allow_udp = allow_udp;
@@ -321,7 +319,7 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
         Cmd::Protect { after_sign_in, yes, already_applied } => protect(data, after_sign_in, yes, already_applied),
         Cmd::TotpSetup { force, invert } => totp_setup(data, force, invert),
         Cmd::PasskeyEnroll { minutes } => passkey_enroll(data, minutes),
-        Cmd::DomainSetup { host, email, remove } => domain_setup(data, host, email, remove),
+        Cmd::DomainSetup { host, cert, key, remove } => domain_setup(data, host, cert, key, remove),
         Cmd::PasskeyList => {
             let st = Store::new(data).load()?;
             if st.passkeys.is_empty() {
@@ -431,7 +429,7 @@ fn yes_no(prompt: &str, default: bool) -> Result<bool, String> {
     })
 }
 
-fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove: bool) -> Result<(), String> {
+fn domain_setup(data: &Path, host: Option<String>, cert: Option<PathBuf>, key: Option<PathBuf>, remove: bool) -> Result<(), String> {
     let mut cfg = Config::load(data)?;
     if remove {
         cfg.web_login = false;
@@ -450,6 +448,7 @@ fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove
     println!("    pointing at your home's public addresses;");
     println!("  - if your home IP changes, dynamic DNS to keep that record current (most registrars and");
     println!("    routers have it built in: look for \"DDNS\" or \"Dynamic DNS\");");
+    println!("  - a certificate for that name, as PEM files you renew (see step 3);");
     println!("  - port {} on your router reaching this PC (already done for the app).", cfg.public_port);
     println!("The desktop app doesn't need any of this.\n");
 
@@ -514,51 +513,34 @@ fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove
 
     // ---- 3. certificate
     println!("\nStep 3 of 4: certificate");
-    if cfg.tls.mode == "acme" {
-        println!("  The server gets a free certificate from Let's Encrypt by itself, through port 443.");
-        if cfg.public_port != 443 {
-            println!("  ! Your router forwards port {} instead of 443. Let's Encrypt only checks port 443,", cfg.public_port);
-            println!("    so also forward the router's TCP 443 to this PC's port {}.", listen_port(&cfg));
+    println!("  Browsers need a certificate for {host} from a public authority. RDP Gate doesn't fetch one");
+    println!("  itself: Let's Encrypt only checks ports 80 and 443, which RDP Gate never uses. Get one with a");
+    println!("  DNS check instead (win-acme, or certbot with your DNS provider's plugin), and enter its files.");
+    println!("  Renewed files are picked up within an hour.");
+    let file = |given: Option<PathBuf>, what: &str, current: Option<&Path>| -> Result<String, String> {
+        if let Some(p) = given {
+            return Ok(p.display().to_string());
         }
-        let email = match email {
-            Some(e) => Some(e),
-            None => {
-                let current = cfg.tls.email.clone().unwrap_or_default();
-                let prompt = if current.is_empty() {
-                    "  Email for certificate expiry notices (optional, Enter to skip): ".to_string()
-                } else {
-                    format!("  Email for certificate expiry notices [{current}]: ")
-                };
-                match ask(&prompt)? {
-                    Some(e) if !e.is_empty() => Some(e),
-                    _ => cfg.tls.email.clone(),
-                }
-            }
-        };
-        if let Some(e) = &email
-            && (!e.contains('@') || e.chars().any(char::is_whitespace))
-        {
-            return Err(format!("{e:?} isn't an email address"));
+        let current = current.map(|p| p.display().to_string()).unwrap_or_default();
+        let prompt = if current.is_empty() { format!("  {what}: ") } else { format!("  {what} [{current}]: ") };
+        match ask(&prompt)? {
+            Some(p) if !p.is_empty() => Ok(p),
+            Some(_) if !current.is_empty() => Ok(current),
+            _ => Err("no certificate file entered; nothing was changed".into()),
         }
-        cfg.tls.email = email;
-    } else {
-        println!("  Using your own certificate files ({}).", cfg.tls.cert_file.as_ref().map(|p| p.display().to_string()).unwrap_or_default());
-        println!("  Make sure the certificate covers {host}.");
-    }
+    };
+    let cert = file(cert, "Certificate file (PEM, full chain)", cfg.tls.cert_file.as_deref())?;
+    let key = file(key, "Private key file (PEM)", cfg.tls.key_file.as_deref())?;
 
     // ---- 4. save
     println!("\nStep 4 of 4: turning browser sign-in on");
     if cfg.public_host.as_deref().is_some_and(|h| h != host) {
         println!("  ! The domain changes, so passkeys made for the old one stop working. Add new ones below.");
     }
-    cfg.public_host = Some(host.clone());
-    cfg.web_login = true;
-    cfg.save(data)?;
+    let url = admin::domain_on(data, &host, &cert, &key)?;
     restart_service(data)?;
-    let url = cfg.portal_url("").unwrap_or_default();
     println!("\n  Your sign-in page (bookmark the FULL address on each device; the domain alone shows nothing):\n");
     println!("      {url}\n");
-    println!("  The first visit may take up to a minute while the certificate is issued.");
     println!("  Test it from outside your network, e.g. a phone on mobile data: many routers can't");
     println!("  reach their own public address from inside.\n");
 
@@ -573,11 +555,6 @@ fn domain_setup(data: &Path, host: Option<String>, email: Option<String>, remove
         println!("Add more passkeys with: rdpgate-server passkey-enroll");
     }
     Ok(())
-}
-
-/// The local port the router should forward to.
-fn listen_port(cfg: &Config) -> u16 {
-    cfg.listen.first().and_then(|l| l.parse::<std::net::SocketAddr>().ok()).map_or(443, |a| a.port())
 }
 
 /// Restarts the service to apply new settings. Restarting closes every open

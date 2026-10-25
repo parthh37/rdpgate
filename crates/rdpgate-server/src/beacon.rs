@@ -283,13 +283,13 @@ mod tests {
         let ips = PublicIps { v4: Some("81.2.69.160".parse().unwrap()), v6: Some("2607:f748::11".parse().unwrap()) };
         let loc = location(&cfg, ips, None).unwrap();
         assert_eq!((loc.ip6_port, loc.ip6_rdp_port), (None, None), "same ports: nothing extra");
-        // The router forwards 50443 -> 443 and 53389 -> 3389.
+        // The router forwards 50443 -> 47443 and 53389 -> 3389.
         cfg.public_port = 50443;
         cfg.rdp_public_port = 53389;
         let loc = location(&cfg, ips, None).unwrap();
-        assert_eq!((loc.port, loc.rdp_port, loc.ip6_port, loc.ip6_rdp_port), (50443, 53389, Some(443), Some(3389)));
+        assert_eq!((loc.port, loc.rdp_port, loc.ip6_port, loc.ip6_rdp_port), (50443, 53389, Some(47443), Some(3389)));
         let v6_only = location(&cfg, PublicIps { v4: None, ..ips }, None).unwrap();
-        assert_eq!((v6_only.ip, v6_only.port, v6_only.rdp_port, v6_only.ip6), (ips.v6.unwrap().into(), 443, 3389, None));
+        assert_eq!((v6_only.ip, v6_only.port, v6_only.rdp_port, v6_only.ip6), (ips.v6.unwrap().into(), 47443, 3389, None));
         assert!(location(&cfg, PublicIps::default(), None).is_none());
     }
 

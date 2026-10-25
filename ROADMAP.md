@@ -7,7 +7,7 @@
 - [x] Pinned server identity: the server proves its key over the TLS channel binding before the client sends anything
 - [x] Encrypted, signed IP beacon in a secret GitHub gist: no static IP, DNS name or DuckDNS
 - [x] RDP certificate check before launching Remote Desktop (detects interception)
-- [x] Optional browser sign-in with passkeys (own domain, automatic Let's Encrypt)
+- [x] Optional browser sign-in with passkeys (own domain and certificate)
 - [x] Per-IP Windows Firewall grants that stay while connected and expire on their own; private/NAT sources refused; UDP opt-in
 - [x] Per-device lockout after 10 wrong codes
 - [x] Installer that hardens RDP (NLA, TLS, CredSSP), the firewall (incl. Group Policy check) and the data folder

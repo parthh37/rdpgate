@@ -9,7 +9,7 @@
 use crate::config::Config;
 use crate::grants::is_public;
 use crate::state::now;
-use igd_next::{AddPortError, PortMappingProtocol, SearchOptions, search_gateway};
+use igd_next::{AddPortError, Gateway, PortMappingProtocol, SearchOptions, search_gateway};
 use serde::Serialize;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::Duration;
@@ -23,7 +23,7 @@ const DESCRIPTION: &str = "RDP Gate";
 pub struct RouterStatus {
     /// A UPnP router answered.
     pub found: bool,
-    /// e.g. "TCP 443 -> 192.168.1.20:443"
+    /// e.g. "TCP 47443 -> 192.168.1.20:47443"
     pub mapped: Vec<String>,
     pub failed: Vec<String>,
     pub lan_ip: Option<String>,
@@ -77,7 +77,7 @@ pub fn listen_port(cfg: &Config) -> u16 {
         .filter_map(|l| l.parse::<SocketAddr>().ok())
         .find(|a| a.is_ipv4())
         .map(|a| a.port())
-        .unwrap_or(443)
+        .unwrap_or(crate::config::DEFAULT_PORT)
 }
 
 /// The port forwards this configuration needs: (protocol, external, internal).
@@ -157,7 +157,15 @@ pub fn apply(cfg: &Config) -> RouterStatus {
         st.router_external_ip = Some(ext.to_string());
         st.behind_nat = !is_public(ext);
     }
-    for (proto, ext, int) in needed(cfg) {
+    let needed = needed(cfg);
+    // Forwards an older setup made that this one no longer needs, like the
+    // TCP 443 one from before RDP Gate stopped using it.
+    for (proto, ext, _) in ours(&gw, lan) {
+        if !needed.iter().any(|(p, e, _)| (*p, *e) == (proto, ext)) {
+            let _ = gw.remove_port(proto, ext);
+        }
+    }
+    for (proto, ext, int) in needed {
         let local = SocketAddr::new(lan, int);
         let label = format!("{} {ext} -> {local}", proto_name(proto));
         let result = match gw.add_port(proto, ext, local, LEASE_SECS, DESCRIPTION) {
@@ -186,14 +194,7 @@ pub fn remove() -> Vec<String> {
     let Some(lan) = lan_ip_towards(gw.addr.ip()) else {
         return vec!["Could not work out this PC's local address; router forwards left as they are.".into()];
     };
-    let mut ours = Vec::new();
-    // The router numbers its mappings 0..n and errors past the end.
-    for i in 0..256 {
-        let Ok(e) = gw.get_generic_port_mapping_entry(i) else { break };
-        if e.port_mapping_description == DESCRIPTION && e.internal_client == lan.to_string() {
-            ours.push((e.protocol, e.external_port, e.internal_port));
-        }
-    }
+    let ours = ours(&gw, lan);
     if ours.is_empty() {
         return vec!["No RDP Gate forwards on the router.".into()];
     }
@@ -203,6 +204,20 @@ pub fn remove() -> Vec<String> {
             Err(e) => format!("Router: could not remove {} {ext} ({e}); remove it in the router's settings", proto_name(proto)),
         })
         .collect()
+}
+
+/// The router's forwards with our description that point at this PC:
+/// (protocol, external, internal).
+fn ours(gw: &Gateway, lan: IpAddr) -> Vec<(PortMappingProtocol, u16, u16)> {
+    let mut v = Vec::new();
+    // The router numbers its mappings 0..n and errors past the end.
+    for i in 0..256 {
+        let Ok(e) = gw.get_generic_port_mapping_entry(i) else { break };
+        if e.port_mapping_description == DESCRIPTION && e.internal_client == lan.to_string() {
+            v.push((e.protocol, e.external_port, e.internal_port));
+        }
+    }
+    v
 }
 
 fn write_status(cfg: &Config, st: &RouterStatus) {
@@ -244,10 +259,10 @@ mod tests {
     fn needed_forwards_follow_the_config() {
         let mut cfg = Config::new(None);
         cfg.listen = vec!["0.0.0.0:8443".into()];
-        cfg.public_port = 443;
+        cfg.public_port = 50443;
         cfg.rdp_public_port = 53389;
         let n: Vec<_> = needed(&cfg).into_iter().map(|(p, e, i)| (proto_name(p), e, i)).collect();
-        assert_eq!(n, vec![("TCP", 443, 8443), ("TCP", 53389, 3389)]);
+        assert_eq!(n, vec![("TCP", 50443, 8443), ("TCP", 53389, 3389)]);
         cfg.allow_udp = true;
         assert_eq!(needed(&cfg).len(), 3);
     }
@@ -257,10 +272,10 @@ mod tests {
         let cfg = Config::new(None);
         let none = RouterStatus { lan_ip: Some("192.168.1.20".into()), ..Default::default() };
         let text = none.summary(&cfg).join("\n");
-        assert!(text.contains("TCP 443  ->  192.168.1.20:443") && text.contains("TCP 3389"), "{text}");
+        assert!(text.contains("TCP 47443  ->  192.168.1.20:47443") && text.contains("TCP 3389"), "{text}");
         let nat = RouterStatus {
             found: true,
-            mapped: vec!["TCP 443 -> 192.168.1.20:443".into()],
+            mapped: vec!["TCP 47443 -> 192.168.1.20:47443".into()],
             behind_nat: true,
             router_external_ip: Some("100.64.1.2".into()),
             ..Default::default()

@@ -216,7 +216,7 @@ pub fn dns_records(data: &Path, host: &str) -> Result<(Vec<DnsRecord>, crate::be
 /// What `host` resolves to now (blocking).
 pub fn resolve_host(host: &str) -> Vec<std::net::IpAddr> {
     use std::net::ToSocketAddrs;
-    let mut addrs: Vec<std::net::IpAddr> = (host, 443).to_socket_addrs().map(|i| i.map(|a| a.ip()).collect()).unwrap_or_default();
+    let mut addrs: Vec<std::net::IpAddr> = (host, 0).to_socket_addrs().map(|i| i.map(|a| a.ip()).collect()).unwrap_or_default();
     addrs.sort();
     addrs.dedup();
     addrs
@@ -265,20 +265,22 @@ pub fn dns_verdict(host: &str, public: &crate::beacon::PublicIps, resolved: &[st
     (every_ok, lines)
 }
 
-/// Turns browser sign-in on for `host`. Takes effect when the service
+/// Turns browser sign-in on for `host`, with the certificate in `cert` and
+/// its private key in `key` (PEM files). Takes effect when the service
 /// restarts. Returns the sign-in page's address.
-pub fn domain_on(data: &Path, host: &str, email: &str) -> Result<String, String> {
+pub fn domain_on(data: &Path, host: &str, cert: &str, key: &str) -> Result<String, String> {
     let host = clean_host(host)?;
-    let email = email.trim();
-    if !email.is_empty() && (!email.contains('@') || email.chars().any(char::is_whitespace)) {
-        return Err(format!("{email:?} isn't an email address"));
+    let (cert, key) = (cert.trim().trim_matches('"'), key.trim().trim_matches('"'));
+    if cert.is_empty() || key.is_empty() {
+        return Err("choose the certificate file and its private key file".into());
     }
+    let (cert, key) = (std::path::absolute(cert).map_err(|e| e.to_string())?, std::path::absolute(key).map_err(|e| e.to_string())?);
+    crate::cert::read(&cert, &key, Some(&host))?;
     let mut cfg = Config::load(data)?;
     cfg.public_host = Some(host);
     cfg.web_login = true;
-    if !email.is_empty() {
-        cfg.tls.email = Some(email.into());
-    }
+    cfg.tls.cert_file = Some(cert);
+    cfg.tls.key_file = Some(key);
     cfg.save(data)?;
     cfg.portal_url("").ok_or_else(|| "no sign-in address".into())
 }
@@ -378,9 +380,10 @@ pub struct Overview {
     pub router: String,
     pub behind_nat: bool,
     pub browser_url: Option<String>,
-    /// The domain for browser sign-in, and the certificate email, as set up.
+    /// The domain for browser sign-in, and its certificate files, as set up.
     pub public_host: Option<String>,
-    pub cert_email: Option<String>,
+    pub cert_file: Option<String>,
+    pub key_file: Option<String>,
     pub ipv6: bool,
     pub totp: bool,
     pub passkeys: Vec<PasskeyInfo>,
@@ -454,7 +457,8 @@ pub fn overview(data: &Path) -> Result<Overview, String> {
         behind_nat: r["behind_nat"].as_bool() == Some(true),
         browser_url: cfg.portal_url("").filter(|_| cfg.web_login),
         public_host: cfg.public_host.clone(),
-        cert_email: cfg.tls.email.clone(),
+        cert_file: cfg.tls.cert_file.as_ref().map(|p| p.display().to_string()),
+        key_file: cfg.tls.key_file.as_ref().map(|p| p.display().to_string()),
         ipv6: cfg.ipv6,
         totp: st.totp.is_some(),
         passkeys: st.passkeys.iter().map(|p| PasskeyInfo { name: p.name.clone(), added: p.added, last_used: p.last_used }).collect(),
