@@ -307,13 +307,13 @@
       <div class="vstep-text">
         <h3>The router: usually nothing to do</h3>
         <p class="where"><span class="at-server">Windows PC</span></p>
-        <p>Setup forwards TCP 443 and 3389 to this PC by itself (UPnP), and tells you if the router refuses or your ISP uses carrier-grade NAT. Forwarding by hand? Send both ports to this PC.</p>
+        <p>Setup forwards TCP 47443 and 3389 to this PC by itself (UPnP), and tells you if the router refuses or your ISP uses carrier-grade NAT. Forwarding by hand? Send both ports to this PC.</p>
         <p>Either way, give the PC a <strong>reserved address</strong> in the router. The computers you connect <em>from</em> need no open ports.</p>
       </div>
       <figure class="vstep-visual diagram">
         <svg viewBox="0 0 430 250" role="img" aria-labelledby="rt-t rt-d">
           <title id="rt-t">The two ports on the way in</title>
-          <desc id="rt-d">The router forwards TCP 443 and TCP 3389 to the Windows PC. Windows Firewall lets 443 through to the RDP Gate sign-in service, and keeps 3389 shut until you sign in.</desc>
+          <desc id="rt-d">The router forwards TCP 47443 and TCP 3389 to the Windows PC. Windows Firewall lets 47443 through to the RDP Gate sign-in service, and keeps 3389 shut until you sign in.</desc>
           <text x="0" y="26" class="d-col">Internet</text>
           <text x="150" y="26" class="d-col" text-anchor="middle">Router</text>
           <text x="352" y="26" class="d-col" text-anchor="middle">Windows PC</text>
@@ -324,7 +324,7 @@
           <rect x="274" y="44" width="156" height="170" rx="12" class="d-box"/>
 
           <line x1="0" y1="96" x2="304" y2="96" class="d-allow"/>
-          <text x="0" y="84" class="d-port">TCP 443</text>
+          <text x="0" y="84" class="d-port">TCP 47443</text>
           <rect x="304" y="80" width="118" height="32" rx="16" class="d-pill-allow"/>
           <text x="363" y="101" class="d-pill-text" text-anchor="middle">Sign-in</text>
 
@@ -453,7 +453,7 @@
   </details>
   <details>
     <summary>Does anything phone home?</summary>
-    <p>No. The server asks two public "what is my IP" services and updates your own gist. With a domain, it also talks to Let's Encrypt. There is no telemetry and no account with us.</p>
+    <p>No. The server asks two public "what is my IP" services and updates your own gist. There is no telemetry and no account with us.</p>
   </details>
   <details>
     <summary>Could a fake update take over my computers?</summary>

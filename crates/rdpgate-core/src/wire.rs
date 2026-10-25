@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// TLS ALPN identifier. Browsers never offer it, which is how the server tells
-/// the desktop client apart from the web portal on port 443.
+/// the desktop client apart from the web portal on the same port.
 pub const ALPN: &[u8] = b"rdpgate/1";
 /// RFC 5705 / RFC 8446 exporter label for the channel binding.
 pub const EKM_LABEL: &[u8] = b"EXPORTER-rdpgate-client-auth";

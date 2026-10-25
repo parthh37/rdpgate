@@ -11,11 +11,9 @@ use crate::grants::Grants;
 use crate::identity::Identity;
 use crate::limiter::Limiter;
 use crate::state::{State, Store, now};
-use futures_util::StreamExt;
 use rdpgate_core::rdp::RdpCert;
 use rustls::ServerConfig;
-use rustls_acme::{AcmeConfig, caches::DirCache, is_tls_alpn_challenge};
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use rustls_pki_types::PrivateKeyDer;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -233,7 +231,6 @@ impl App {
 struct Tls {
     gate: Arc<ServerConfig>,
     web: Option<Arc<ServerConfig>>,
-    challenge: Option<Arc<ServerConfig>>,
 }
 
 /// TLS for the desktop protocol: 1.3 only, fresh self-signed certificate on
@@ -253,48 +250,14 @@ fn gate_tls() -> Result<Arc<ServerConfig>, String> {
 
 fn tls_setup(cfg: &Config, shutdown: watch::Receiver<bool>) -> Result<Tls, String> {
     let gate = gate_tls()?;
-    let Some(host) = cfg.public_host.clone().filter(|_| cfg.web_login) else {
-        return Ok(Tls { gate, web: None, challenge: None });
+    let (Some(_), Some((cert, key)), true) = (&cfg.public_host, cfg.tls.files(), cfg.web_login) else {
+        return Ok(Tls { gate, web: None });
     };
-    let http = |mut c: ServerConfig| {
-        c.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Arc::new(c)
-    };
-    if cfg.tls.mode == "acme" {
-        let mut state = AcmeConfig::new([host])
-            .contact(cfg.tls.email.iter().map(|e| format!("mailto:{e}")))
-            .cache(DirCache::new(cfg.data_dir.join("acme")))
-            .directory_lets_encrypt(!cfg.tls.staging)
-            .state();
-        let challenge = state.challenge_rustls_config();
-        let web = http(ServerConfig::builder().with_no_client_auth().with_cert_resolver(state.resolver()));
-        let mut shutdown = shutdown;
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    ev = state.next() => match ev {
-                        Some(Ok(ok)) => crate::logln!("ACME {ok:?}"),
-                        Some(Err(err)) => crate::logln!("ACME error: {err:?}"),
-                        None => break,
-                    },
-                    _ = shutdown.changed() => break,
-                }
-            }
-        });
-        return Ok(Tls { gate, web: Some(web), challenge: Some(challenge) });
-    }
-    use rustls_pki_types::pem::PemObject;
-    let cert_path = cfg.tls.cert_file.as_ref().unwrap();
-    let key_path = cfg.tls.key_file.as_ref().unwrap();
-    let certs = CertificateDer::pem_file_iter(cert_path)
-        .and_then(|i| i.collect::<Result<Vec<_>, _>>())
-        .map_err(|e| format!("{}: {e}", cert_path.display()))?;
-    let key = PrivateKeyDer::from_pem_file(key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
-    let c = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("certificate: {e}"))?;
-    Ok(Tls { gate, web: Some(http(c)), challenge: None })
+    let files = crate::cert::FileCert::load(cert, key)?;
+    files.clone().watch(shutdown);
+    let mut c = ServerConfig::builder().with_no_client_auth().with_cert_resolver(files);
+    c.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(Tls { gate, web: Some(Arc::new(c)) })
 }
 
 /// Binds the configured addresses and serves until `shutdown` flips to true.
@@ -456,14 +419,6 @@ async fn connection(app: Arc<App>, tls: Arc<Tls>, tcp: TcpStream, peer: SocketAd
         _ => return,
     };
     let hello = start.client_hello();
-    if let Some(challenge) = &tls.challenge
-        && is_tls_alpn_challenge(&hello)
-    {
-        if let Ok(Ok(mut s)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, start.into_stream(challenge.clone())).await {
-            let _ = tokio::io::AsyncWriteExt::shutdown(&mut s).await;
-        }
-        return;
-    }
     let wants_gate = hello.alpn().is_some_and(|mut protos| protos.any(|p| p == rdpgate_core::wire::ALPN));
     let sni_ok = match (hello.server_name(), &app.cfg.public_host) {
         (Some(n), Some(h)) => n.eq_ignore_ascii_case(h),
