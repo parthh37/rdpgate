@@ -250,14 +250,14 @@ mod tests {
     fn beacon_roundtrip_and_tamper() {
         let server = key();
         let bk = crate::random_bytes::<32>();
-        let loc = Location { ip: "203.0.113.7".parse().unwrap(), ip6: None, ip6_port: None, ip6_rdp_port: None, port: 443, rdp_port: 3389, ts: 1_700_000_000, lan: None };
+        let loc = Location { ip: "203.0.113.7".parse().unwrap(), ip6: None, ip6_port: None, ip6_rdp_port: None, port: 47443, rdp_port: 3389, ts: 1_700_000_000, lan: None };
         let text = seal(&loc, &server, &bk).unwrap();
         assert_eq!(open(&text, &server.verifying_key(), &bk).unwrap(), loc);
-        let lan = LanLocation { ip: "192.168.1.20".parse().unwrap(), port: 443, rdp_port: 3389 };
+        let lan = LanLocation { ip: "192.168.1.20".parse().unwrap(), port: 47443, rdp_port: 3389 };
         let with_lan = Location { lan: Some(lan), ip6: Some("2001:db8::7".parse().unwrap()), ip6_port: Some(8443), ..loc.clone() };
         assert_eq!(open(&seal(&with_lan, &server, &bk).unwrap(), &server.verifying_key(), &bk).unwrap(), with_lan);
         // A beacon from before IPv6 support still opens.
-        let old: Location = serde_json::from_str(r#"{"ip":"203.0.113.7","port":443,"rdp_port":3389,"ts":1}"#).unwrap();
+        let old: Location = serde_json::from_str(r#"{"ip":"203.0.113.7","port":47443,"rdp_port":3389,"ts":1}"#).unwrap();
         assert_eq!(old.ip6, None);
 
         // Wrong beacon key: can't read it.
@@ -281,7 +281,7 @@ mod tests {
             beacon_key: crate::random_bytes::<32>().to_vec(),
             gist: Some("0123456789abcdef0123456789abcdef".into()),
             host: None,
-            port: 443,
+            port: 47443,
         };
         let back = Card::decode(&card.encode()).unwrap();
         assert_eq!(back.server_key(), server.verifying_key());

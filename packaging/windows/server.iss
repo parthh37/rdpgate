@@ -127,10 +127,10 @@ begin
     '  2. A name under it for this PC, e.g. rdp.example.com. At the end of Setup, RDP Gate Server shows the' + #13#10 +
     '      exact DNS records to create (A for IPv4, AAAA for IPv6) and checks them for you.' + #13#10 +
     '  3. If your home addresses change: dynamic DNS ("DDNS") at your registrar or router to keep them current.' + #13#10 +
-    '  4. Port 443 on your router reaching this PC (Setup does this when your router allows it).' + #13#10 + #13#10 +
-    'The certificate comes free from Let''s Encrypt, automatically. The email is optional and only gets expiry notices.');
+    '  4. A certificate for that name, as PEM files you renew (win-acme, or certbot with a DNS plugin).' + #13#10 +
+    '      RDP Gate doesn''t fetch one itself: Let''s Encrypt only checks ports 80 and 443, which RDP Gate never uses.' + #13#10 +
+    '  5. Port 47443 on your router reaching this PC (Setup does this when your router allows it).');
   HostPage.Add('Domain name (e.g. rdp.example.com):', False);
-  HostPage.Add('Email for certificate notices (optional):', False);
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -154,25 +154,9 @@ begin
   end;
 end;
 
-// name@domain with a safe character set (it goes on a command line too).
-function ValidEmail(E: String): Boolean;
-var
-  I, At: Integer;
-  C: Char;
-begin
-  At := Pos('@', E);
-  Result := (At > 1) and ValidHost(Copy(E, At + 1, Length(E)));
-  for I := 1 to At - 1 do
-  begin
-    C := E[I];
-    if not (((C >= 'a') and (C <= 'z')) or ((C >= 'A') and (C <= 'Z')) or ((C >= '0') and (C <= '9')) or (C = '.') or (C = '-') or (C = '_') or (C = '+')) then
-      Result := False;
-  end;
-end;
-
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  H, E: String;
+  H: String;
 begin
   Result := True;
   if CurPageID = ProtectPage.ID then
@@ -183,15 +167,9 @@ begin
   if CurPageID = HostPage.ID then
   begin
     H := Trim(HostPage.Values[0]);
-    E := Trim(HostPage.Values[1]);
     if not ValidHost(H) then
     begin
       MsgBox('Enter a domain name like rdp.example.com, or go Back and untick browser sign-in.', mbError, MB_OK);
-      Result := False;
-    end
-    else if (E <> '') and not ValidEmail(E) then
-    begin
-      MsgBox('Enter an email address like me@example.com, or leave it empty.', mbError, MB_OK);
       Result := False;
     end;
   end;
@@ -224,18 +202,15 @@ end;
 // The values were checked on the domain page, so they're safe to pass.
 function WindowParams(Param: String): String;
 var
-  H, E: String;
+  H: String;
 begin
   Result := '';
   if WizardIsTaskSelected('domain') then
   begin
     H := Trim(HostPage.Values[0]);
-    E := Trim(HostPage.Values[1]);
     Result := '--setup-domain';
     if ValidHost(H) then
       Result := Result + ' --host ' + H;
-    if (E <> '') and ValidEmail(E) then
-      Result := Result + ' --email ' + E;
   end;
 end;
 

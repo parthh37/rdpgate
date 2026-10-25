@@ -19,7 +19,7 @@ an icon next to the clock that shows whether the service is running (Setup
 starts it at every sign-in; for this folder, put a shortcut to it in
 shell:common startup).
 
-Router: forward TCP 443 and TCP 3389 to this PC. Remote Desktop stays closed
+Router: forward TCP 47443 and TCP 3389 to this PC. Remote Desktop stays closed
 until someone signs in.
 
 Installing over Remote Desktop? Use -Protect AfterSignIn (the default inside a

@@ -274,12 +274,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "arboard"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -451,19 +445,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-http-codec"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "096146020b08dbc4587685b0730a7ba905625af13c65f8028035cdfd69573c91"
-dependencies = [
- "anyhow",
- "futures",
- "http",
- "httparse",
- "log",
-]
-
-[[package]]
 name = "async-io"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -490,17 +471,6 @@ dependencies = [
  "event-listener",
  "event-listener-strategy",
  "pin-project-lite",
-]
-
-[[package]]
-name = "async-net"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b948000fad4873c1c9339d60f2623323a0cfd3816e5181033c6a5cb68b2accf7"
-dependencies = [
- "async-io",
- "blocking",
- "futures-lite",
 ]
 
 [[package]]
@@ -587,24 +557,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
-]
-
-[[package]]
-name = "async-web-client"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4116869f17410a5c374022504efa3314ddc6cdabdc2c01b18e2f6ca6e2060935"
-dependencies = [
- "async-http-codec",
- "async-net",
- "futures",
- "futures-rustls",
- "http",
- "lazy_static",
- "log",
- "rustls-pki-types",
- "thiserror 2.0.21",
- "webpki-roots",
 ]
 
 [[package]]
@@ -2085,17 +2037,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
-]
-
-[[package]]
-name = "futures-rustls"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8f2f12607f92c69b12ed746fabf9ca4f5c482cba46679c1a75b874ed7c26adb"
-dependencies = [
- "futures-io",
- "rustls",
- "rustls-pki-types",
 ]
 
 [[package]]
@@ -3761,16 +3702,6 @@ dependencies = [
 
 [[package]]
 name = "pem"
-version = "3.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
-dependencies = [
- "base64 0.22.1",
- "serde_core",
-]
-
-[[package]]
-name = "pem"
 version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
@@ -4254,34 +4185,21 @@ dependencies = [
 
 [[package]]
 name = "rcgen"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
-dependencies = [
- "pem 3.0.6",
- "ring",
- "rustls-pki-types",
- "time",
- "yasna 0.5.2",
-]
-
-[[package]]
-name = "rcgen"
 version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
- "pem 4.0.0",
+ "pem",
  "ring",
  "rustls-pki-types",
  "time",
  "x509-parser 0.18.1",
- "yasna 0.6.0",
+ "yasna",
 ]
 
 [[package]]
 name = "rdpgate-app"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "ed25519-dalek",
  "eframe",
@@ -4294,7 +4212,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-client"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "dirs",
@@ -4316,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-core"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "argon2 0.6.0",
  "base64 0.23.1",
@@ -4326,7 +4244,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hmac 0.13.0",
- "rcgen 0.14.10",
+ "rcgen",
  "rustls",
  "rustls-pki-types",
  "semver",
@@ -4344,7 +4262,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-release"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -4358,13 +4276,12 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-server"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "bytes",
  "chrono",
  "clap",
  "ed25519-dalek",
- "futures-util",
  "getrandom 0.4.3",
  "hex",
  "http-body-util",
@@ -4372,13 +4289,13 @@ dependencies = [
  "hyper-util",
  "igd-next",
  "qrcode",
- "rcgen 0.14.10",
+ "rcgen",
  "rdpgate-client",
  "rdpgate-core",
  "rpassword",
  "rustls",
- "rustls-acme",
  "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -4390,7 +4307,6 @@ dependencies = [
  "uuid",
  "webauthn-authenticator-rs",
  "webauthn-rs",
- "webpki-roots",
  "windows-service",
  "windows-sys 0.61.2",
  "zeroize",
@@ -4398,7 +4314,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-server-app"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eframe",
  "embed-manifest",
@@ -4412,7 +4328,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-tray"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "embed-manifest",
  "rdpgate-core",
@@ -4422,7 +4338,7 @@ dependencies = [
 
 [[package]]
 name = "rdpgate-ui"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "egui",
 ]
@@ -4636,34 +4552,6 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rustls-acme"
-version = "0.15.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64f24daec4ed0dfe6327bcb2b8045bf1d1cb4835e4f824d4cf487140f4b0cee4"
-dependencies = [
- "async-io",
- "async-trait",
- "async-web-client",
- "base64 0.22.1",
- "blocking",
- "chrono",
- "futures",
- "futures-rustls",
- "http",
- "log",
- "pem 3.0.6",
- "rcgen 0.13.2",
- "ring",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "webpki-roots",
- "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -5416,7 +5304,6 @@ checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
 dependencies = [
  "bytes",
  "futures-core",
- "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",
@@ -6647,15 +6534,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
 dependencies = [
  "xml-rs",
-]
-
-[[package]]
-name = "yasna"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
-dependencies = [
- "time",
 ]
 
 [[package]]

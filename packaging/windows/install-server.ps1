@@ -42,7 +42,7 @@
     .\install-server.ps1
 
 .EXAMPLE
-    .\install-server.ps1 -PublicHost rdp.example.com -Email me@example.com -RdpPublicPort 53389
+    .\install-server.ps1 -PublicHost rdp.example.com -CertFile C:\certs\chain.pem -KeyFile C:\certs\key.pem -RdpPublicPort 53389
 
 .EXAMPLE
     # Installing over Remote Desktop: keep this session until the first sign-in
@@ -59,12 +59,15 @@ param(
     # (AfterSignIn inside a Remote Desktop session, otherwise Now)
     [ValidateSet('Auto', 'Now', 'AfterSignIn')]
     [string] $Protect = 'Auto',
-    # Optional email for Let's Encrypt certificate notices (with -PublicHost)
-    [string] $Email,
-    # Local port the agent listens on
-    [int] $ListenPort = 443,
-    # External port your router forwards to -ListenPort
-    [int] $PublicPort = 443,
+    # Certificate (PEM, full chain) and private key for -PublicHost; asked if
+    # not given. RDP Gate doesn't fetch one: Let's Encrypt needs port 80 or 443.
+    [string] $CertFile,
+    [string] $KeyFile,
+    # Local port the agent listens on (never 80 or 443). An existing
+    # configuration keeps its own.
+    [int] $ListenPort = 47443,
+    # External port your router forwards to -ListenPort (never 80 or 443)
+    [int] $PublicPort = 47443,
     # External port your router forwards to Remote Desktop (default: same as the local RDP port)
     [int] $RdpPublicPort = 0,
     # Also open UDP for signed-in addresses (faster, but UDP sources can be forged)
@@ -77,8 +80,6 @@ param(
     [switch] $NoBeacon,
     # Don't set up 6-digit codes now (you can run "rdpgate-server totp-setup" later)
     [switch] $NoTotp,
-    # Use the Let's Encrypt staging CA (testing only)
-    [switch] $Staging,
     # Don't change the account lockout policy
     [switch] $SkipLockout,
     # Don't stop this PC sleeping on mains power (a sleeping PC can't be reached)
@@ -186,6 +187,11 @@ if ($fwSvc.Status -ne 'Running') {
 }
 $rdpPort = [int](Get-ItemProperty -Path $RdpTcpKey).PortNumber
 Ok "$($os.Caption), Remote Desktop port $rdpPort"
+# Left to web servers, VPNs and whatever else on this PC or the router wants them.
+$ReservedPorts = @(80, 443)
+foreach ($p in $ListenPort, $PublicPort, $RdpPublicPort) {
+    if ($p -in $ReservedPorts) { throw "RDP Gate never uses ports 80 or 443. Pick another port (the default is 47443)." }
+}
 $overRdp = "$env:SESSIONNAME" -like 'RDP-Tcp*'
 if ($Protect -eq 'Auto') { $Protect = if ($overRdp) { 'AfterSignIn' } else { 'Now' } }
 $deferred = $Protect -eq 'AfterSignIn'
@@ -215,15 +221,6 @@ if (($machinePath -split ';') -notcontains $InstallDir) {
 if (($env:Path -split ';') -notcontains $InstallDir) { $env:Path += ";$InstallDir" }
 Ok "Installed $Exe"
 
-# The sign-in port must be free for the agent.
-$busy = Get-NetTCPConnection -LocalPort $ListenPort -State Listen -ErrorAction SilentlyContinue |
-    Where-Object { $_.OwningProcess -and ((Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).Path -ne $Exe) } |
-    Select-Object -First 1
-if ($busy) {
-    $who = (Get-Process -Id $busy.OwningProcess -ErrorAction SilentlyContinue).ProcessName
-    throw "Port $ListenPort is already used by '$who'. Stop that program, or install with -ListenPort <another port> and forward your router's port $PublicPort to it."
-}
-
 # Any user can create folders in ProgramData, so one made in advance would
 # stay theirs. Refuse links, take ownership, and replace every ACL entry.
 if (Test-Path $DataDir) {
@@ -250,6 +247,28 @@ if ($FromInstaller) {
     $Logging = $true
 }
 Ok "Data folder $DataDir (SYSTEM + Administrators only)"
+
+# Upgrading: the existing configuration's ports win (read only now that the
+# folder is ours). One still on 80 or 443 moves to 47443 when the service
+# starts, and so does the firewall rule below.
+$cfgPath = Join-Path $DataDir 'config.json'
+if (Test-Path $cfgPath) {
+    $existing = Get-Content $cfgPath -Raw | ConvertFrom-Json
+    $v4 = @($existing.listen) | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+:\d+$' } | Select-Object -First 1
+    if ($v4) { $ListenPort = [int]($v4 -split ':')[-1] }
+    if ($existing.public_port) { $PublicPort = [int]$existing.public_port }
+    if ($ListenPort -in $ReservedPorts) { $ListenPort = 47443 }
+    if ($PublicPort -in $ReservedPorts) { $PublicPort = 47443 }
+}
+
+# The sign-in port must be free for the agent.
+$busy = Get-NetTCPConnection -LocalPort $ListenPort -State Listen -ErrorAction SilentlyContinue |
+    Where-Object { $_.OwningProcess -and ((Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).Path -ne $Exe) } |
+    Select-Object -First 1
+if ($busy) {
+    $who = (Get-Process -Id $busy.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+    throw "Port $ListenPort is already used by '$who'. Stop that program, or install with -ListenPort <another port> and forward your router's port $PublicPort to it."
+}
 
 # ---------------------------------------------------------------------------
 # What this PC looked like before RDP Gate, so Uninstall can put it back.
@@ -409,7 +428,6 @@ if (-not (Test-Path (Join-Path $DataDir 'config.json'))) {
     if ($RdpPublicPort -gt 0) { $initArgs += @('--rdp-public-port', $RdpPublicPort) }
     if ($AllowUdp)          { $initArgs += '--allow-udp' }
     if ($NoUpnp)            { $initArgs += '--no-upnp' }
-    if ($Staging)           { $initArgs += '--staging' }
     & $Exe @initArgs
     if ($LASTEXITCODE -ne 0) { throw 'rdpgate-server init failed' }
 } else {
@@ -493,7 +511,8 @@ if (($PublicHost -or $DomainSetup) -and -not $FromInstaller) {
     Step 'Browser sign-in with your domain (guided)'
     $domainArgs = @('domain-setup', '--data', $DataDir)
     if ($PublicHost) { $domainArgs += @('--host', $PublicHost) }
-    if ($Email)      { $domainArgs += @('--email', $Email) }
+    if ($CertFile)   { $domainArgs += @('--cert', $CertFile) }
+    if ($KeyFile)    { $domainArgs += @('--key', $KeyFile) }
     & $Exe @domainArgs
     if ($LASTEXITCODE -ne 0) { Warn 'Browser sign-in is not set up. Run "rdpgate-server domain-setup" later.' }
 }

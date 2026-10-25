@@ -110,7 +110,7 @@ async fn start_with(ip: &str, listeners: Vec<tokio::net::TcpListener>) -> Option
     let (rdp_addr, rdp_sha256) = fake_rdp(ip).await;
 
     let mut cfg = Config::new(Some(HOST));
-    cfg.tls.mode = "files".into();
+    cfg.web_login = true;
     cfg.tls.cert_file = Some(cert);
     cfg.tls.key_file = Some(key);
     cfg.firewall = "dry-run".into();
@@ -329,7 +329,7 @@ async fn repeated_failures_silence_the_source() {
 async fn web_portal_guards() {
     let h = start().await;
     let portal = Config::load(&h.dir).unwrap().portal_path;
-    let origin = format!("https://{HOST}");
+    let origin = format!("https://{HOST}:{}", rdpgate_server::config::DEFAULT_PORT);
     let json = [("Content-Type", "application/json"), ("Origin", origin.as_str())];
 
     let (s, body) = h.http("GET", &portal, HOST, &[], "").await;
@@ -364,7 +364,7 @@ async fn passkey_enroll_then_browser_sign_in_and_close() {
 
     let h = start().await;
     let portal = Config::load(&h.dir).unwrap().portal_path;
-    let origin = format!("https://{HOST}");
+    let origin = format!("https://{HOST}:{}", rdpgate_server::config::DEFAULT_PORT);
     let origin_url = url::Url::parse(&origin).unwrap();
     let json = [("Content-Type", "application/json"), ("Origin", origin.as_str())];
     let mut authenticator = SoftPasskey::new(true);

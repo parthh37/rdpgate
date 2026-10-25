@@ -38,7 +38,7 @@ Website: **https://parthh37.github.io/rdpgate/** · Step-by-step guide: **[Opera
                  │       (signed by the server key,      when the IP changes
                  ▼        encrypted with the beacon key)          │
  Your Mac / PC                                         Windows PC at home
-┌───────────────────────────┐  TLS 1.3 :443    ┌────────────────────────────────────┐
+┌───────────────────────────┐  TLS 1.3 :47443  ┌────────────────────────────────────┐
 │ RDP Gate app              │ ───────────────▶ │ rdpgate-server (Windows service)   │
 │ 1. read + decrypt beacon  │ ◀── server proves│  proves identity key first         │
 │ 2. check server identity  │     its key      │  checks device signature + code    │
@@ -118,7 +118,7 @@ Setup also **forwards the ports on your router automatically** (UPnP), and the s
 
 | External | → Windows PC | Purpose |
 |---|---|---|
-| TCP 443 | 443 | Sign-in |
+| TCP 47443 | 47443 | Sign-in |
 | TCP 3389 | 3389 | Remote Desktop: closed until someone signs in |
 
 Either way, give the PC a fixed (reserved) LAN address in your router's DHCP settings. If Setup reports **carrier-grade NAT**, your ISP shares one public IP among many customers and nothing can reach your PC from outside: ask the ISP for a public IPv4 address (often free).
@@ -159,10 +159,10 @@ How it's tied to the computer: the app keeps the unlocked device key and the ser
 
 ### Optional: browser sign-in with a passkey
 
-Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control with DNS records pointing at your home (an "A" record for IPv4, and "AAAA" for IPv6 if you have it), plus dynamic DNS if those addresses change. Tick it in Setup, or open **RDP Gate Server → Browser sign-in → Set up with my domain**: it shows the records to create with Copy buttons, checks them for you, then turns sign-in on. The same from PowerShell:
+Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control with DNS records pointing at your home (an "A" record for IPv4, and "AAAA" for IPv6 if you have it), plus dynamic DNS if those addresses change. It also needs a certificate for that name as PEM files you renew yourself: RDP Gate doesn't fetch one, because Let's Encrypt only checks ports 80 and 443, which RDP Gate never uses. Get one with a DNS check instead ([win-acme](https://www.win-acme.com/), or certbot with your DNS provider's plugin); the service picks up renewed files within an hour. Tick it in Setup, or open **RDP Gate Server → Browser sign-in → Set up with my domain**: it shows the records to create with Copy buttons, checks them for you, takes the certificate files, then turns sign-in on. The sign-in page is at `https://your.domain:47443/…`. The same from PowerShell:
 
 ```powershell
-rdpgate-server domain-setup      # domain, DNS record + live check, certificate, first passkey
+rdpgate-server domain-setup      # domain, DNS record + live check, certificate files, first passkey
 rdpgate-server passkey-enroll    # more passkeys: one-time link, open it on your Mac/iPhone/PC
 ```
 
@@ -232,8 +232,8 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 
 | Key | Default | Meaning |
 |---|---|---|
-| `public_port` | 443 | External port forwarded to the agent |
-| `listen` | `["0.0.0.0:443"]` | Local sign-in address(es) |
+| `public_port` | 47443 | External port forwarded to the agent (never 80 or 443) |
+| `listen` | `["0.0.0.0:47443"]` | Local sign-in address(es) (never port 80 or 443) |
 | `ipv6` | true | Also listen on IPv6 (`[::]` next to each `0.0.0.0`) and publish this PC's public IPv6 address in the beacon |
 | `rdp_port` / `rdp_public_port` | 3389 | Local RDP port / external port clients use |
 | `allow_udp` | false | Also open UDP for signed-in addresses |
@@ -242,8 +242,8 @@ Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after
 | `grant_minutes` | 10 | Time to start a session after signing in. Also in **RDP Gate Server → Overview → Time limits**; changes apply within seconds, no restart |
 | `max_hours` | 12 | Longest session: a connected session stays open until this cap (up to 168). Changing it also moves the cap of sessions already open |
 | `keep_awake` | true | Keep the PC from sleeping while a grant is open (`powercfg /requests` shows it) |
-| `desktop_login` / `web_login` | true / with domain | Turn either sign-in method off |
-| `public_host`, `tls` | — | Domain and certificate for browser sign-in |
+| `desktop_login` / `web_login` | true / false | Turn either sign-in method on or off (`web_login` needs `public_host` and `tls`) |
+| `public_host`, `tls` | — | Domain, and `{ "cert_file": …, "key_file": … }` (PEM) for browser sign-in. Renewed files are picked up within an hour |
 | `beacon` | — | `{ "gist_id": …, "token": … }`, set by `beacon-setup` |
 | `auto_update` / `update_prereleases` | true / true | Signed self-updates; include pre-releases (all 0.x) |
 
@@ -256,7 +256,7 @@ Uninstall: `& "C:\Program Files\RDPGate\uninstall-server.ps1"` (add `-RemoveData
 - **"this computer is locked after too many wrong codes"**: run `rdpgate-server device-unlock NAME` on the server.
 - **"is not a public address"**: you signed in from your own network. Either test from outside, or run `rdpgate-server lan on`.
 - **Can't reach the server from outside**: run `rdpgate-server router`. It re-applies the router forwards and tells you if UPnP is off or the ISP uses carrier-grade NAT.
-- **"Port 443 is already used by …" during Setup**: another program (IIS, a VPN server) holds the port. Stop it, or run the script with `-ListenPort 8443` and forward the router's 443 to 8443.
+- **"Port 47443 is already used by …" during Setup**: another program holds the port. Stop it, or run the script with `-ListenPort 8443` and forward the router's 47443 to 8443. RDP Gate never uses ports 80 or 443, so it can share a PC and router with a web server or VPN.
 - **Beacon errors in `status`**: check the GitHub token still has Gists access (`rdpgate-server beacon-setup` to replace it).
 - **Microsoft account with "passwordless" sign-in**: RDP needs a password. Turn off "Require Windows Hello sign-in for Microsoft accounts", or use a local account.
 

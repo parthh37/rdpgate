@@ -195,7 +195,9 @@ enum Done {
 /// The guided domain setup for browser sign-in, as it's filled in.
 struct DomainForm {
     host: String,
-    email: String,
+    /// Paths of the certificate (PEM, full chain) and its private key.
+    cert: String,
+    key: String,
     /// The records to create, for the host they were made for, and this
     /// network's addresses they came from.
     records: Option<(String, Vec<DnsRecord>, PublicIps)>,
@@ -247,11 +249,12 @@ impl ServerApp {
         let args: Vec<String> = std::env::args().collect();
         let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
         let data = value("--data").map(PathBuf::from);
-        // Setup passes --setup-domain [--host H] [--email E] when browser
+        // Setup passes --setup-domain [--host H] when browser
         // sign-in was chosen there: its guided setup is one of the steps to finish.
         let domain = args.iter().any(|a| a == "--setup-domain").then(|| DomainForm {
             host: value("--host").unwrap_or_default(),
-            email: value("--email").unwrap_or_default(),
+            cert: String::new(),
+            key: String::new(),
             records: None,
             check: None,
         });
@@ -443,7 +446,8 @@ impl ServerApp {
                 self.begin_codes(false);
             }
             if p == Page::Browser && self.domain.is_none() && o.browser_url.is_none() {
-                self.domain = Some(DomainForm { host: String::new(), email: String::new(), records: None, check: None });
+                self.domain =
+                    Some(DomainForm { host: String::new(), cert: String::new(), key: String::new(), records: None, check: None });
             }
         }
     }
@@ -1115,7 +1119,8 @@ impl ServerApp {
                 if ui.add_enabled(self.busy.is_none(), egui::Button::new(label)).clicked() {
                     self.domain = Some(DomainForm {
                         host: o.public_host.clone().unwrap_or_default(),
-                        email: o.cert_email.clone().unwrap_or_default(),
+                        cert: o.cert_file.clone().unwrap_or_default(),
+                        key: o.key_file.clone().unwrap_or_default(),
                         records: None,
                         check: None,
                     });
@@ -1191,7 +1196,7 @@ impl ServerApp {
     }
 
     /// The guided domain setup: the name, the DNS records to create (checked
-    /// for you), then the certificate email and turning it on.
+    /// for you), then the certificate files and turning it on.
     fn domain_ui(&mut self, ui: &mut egui::Ui, o: &Overview) {
         let ctx = ui.ctx().clone();
         let idle = self.busy.is_none();
@@ -1276,33 +1281,37 @@ impl ServerApp {
             gap(ui);
             let ok = f.check.as_ref().is_some_and(|(ok, _)| *ok);
             titled_card(ui, "3. Certificate and turning it on", None, |ui| {
-                ui.label(muted("The certificate comes free from Let's Encrypt, automatically, through port 443."));
-                if o.public_port != 443 {
-                    theme::notice(
-                        ui,
-                        Tone::Warn,
-                        &format!("Your router forwards port {} instead of 443. Let's Encrypt only checks port 443, so also forward the router's TCP 443 to this PC's port {}.", o.public_port, o.listen_port),
-                        false,
-                    );
-                }
-                let label = theme::field_label(ui, "Email for certificate expiry notices (optional)");
-                ui.add(TextEdit::singleline(&mut f.email).hint_text("you@example.com").desired_width(360.0)).labelled_by(label.id);
+                ui.label(muted(format!(
+                    "Browsers need a certificate for {host} from a public authority. RDP Gate doesn't fetch one itself: Let's Encrypt \
+                     only checks ports 80 and 443, which RDP Gate never uses. Get one with a DNS check instead (win-acme, or certbot \
+                     with your DNS provider's plugin) and enter its files. Renewed files are picked up within an hour."
+                )));
+                ui.add_space(4.0);
+                let label = theme::field_label(ui, "Certificate file (PEM, full chain)");
+                ui.add(TextEdit::singleline(&mut f.cert).hint_text(r"e.g. C:\certs\rdp.example.com-chain.pem").desired_width(460.0))
+                    .labelled_by(label.id);
+                let label = theme::field_label(ui, "Private key file (PEM)");
+                ui.add(TextEdit::singleline(&mut f.key).hint_text(r"e.g. C:\certs\rdp.example.com-key.pem").desired_width(460.0))
+                    .labelled_by(label.id);
                 if o.public_host.as_deref().is_some_and(|h| *h != *host) && !o.passkeys.is_empty() {
                     ui.add_space(4.0);
                     theme::notice(ui, Tone::Warn, "The domain changes, so passkeys made for the old one stop working. Add new ones afterwards.", false);
                 }
                 ui.add_space(6.0);
+                let files = !f.cert.trim().is_empty() && !f.key.trim().is_empty();
                 ui.horizontal(|ui| {
-                    turn_on = ui.add_enabled(idle && ok, primary("Turn on browser sign-in")).clicked();
+                    turn_on = ui.add_enabled(idle && ok && files, primary("Turn on browser sign-in")).clicked();
                     if f.check.as_ref().is_some_and(|(ok, _)| !ok) {
                         turn_on |= ui
-                            .add_enabled(idle, egui::Button::new("Turn on anyway"))
+                            .add_enabled(idle && files, egui::Button::new("Turn on anyway"))
                             .on_hover_text("Sign-in and the certificate only work once the records are right.")
                             .clicked();
                     }
                 });
                 if !ok {
                     ui.label(muted("Check the records first.").small());
+                } else if !files {
+                    ui.label(muted("Enter the certificate and key files first.").small());
                 }
             });
         }
@@ -1310,7 +1319,7 @@ impl ServerApp {
         let cancel = ui.button("Cancel").clicked();
 
         // Act once the form is no longer borrowed.
-        let (host, email) = (f.host.clone(), f.email.clone());
+        let (host, cert, key) = (f.host.clone(), f.cert.clone(), f.key.clone());
         let made_for = f.records.as_ref().map(|(h, _, ips)| (h.clone(), *ips));
         if cancel {
             self.domain = None;
@@ -1333,14 +1342,10 @@ impl ServerApp {
                 Done::DnsChecked(host, verdict)
             });
         } else if turn_on && let Some((host, _)) = made_for {
-            match admin::domain_on(&self.data, &host, &email) {
+            match admin::domain_on(&self.data, &host, &cert, &key) {
                 Ok(_) => {
                     self.domain = None;
-                    self.restart(
-                        &ctx,
-                        "Browser sign-in is on. The first visit can take up to a minute while the certificate is issued; \
-                         test it from outside your network (a phone on mobile data, say).",
-                    );
+                    self.restart(&ctx, "Browser sign-in is on. Test it from outside your network (a phone on mobile data, say).");
                 }
                 Err(e) => self.say(Err(e)),
             }

@@ -44,7 +44,7 @@ enum Cmd {
         /// Sign in with passphrase and code even when this computer is remembered
         #[arg(long)]
         with_code: bool,
-        /// Try this server address first, e.g. 203.0.113.7:443
+        /// Try this server address first, e.g. 203.0.113.7:47443
         #[arg(long)]
         address: Option<SocketAddr>,
         /// Only sign in; don't launch Remote Desktop

@@ -9,7 +9,6 @@ bytes = "1.12.1"
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive"] }
 ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
-futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 getrandom = "0.4.3"
 hex = "0.4.3"
 http-body-util = "0.1.5"
@@ -21,8 +20,8 @@ rcgen = "0.14.10"
 rdpgate-core = { path = "../rdpgate-core" }
 rpassword = "7.5.4"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "logging", "std", "tls12"] }
-rustls-acme = { version = "0.15.4", default-features = false, features = ["ring", "tls12", "tokio", "webpki-roots"] }
 rustls-pki-types = "1.15.1"
+rustls-webpki = "0.103.16"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -33,7 +32,6 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring
 url = "2.5.8"
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
 webauthn-rs = "=0.6.1-dev"
-webpki-roots = "1.0.10"
 zeroize = "1.9.1"
 
 [target."cfg(windows)".dependencies]

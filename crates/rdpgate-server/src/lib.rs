@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod app;
 pub mod beacon;
+pub mod cert;
 pub mod config;
 pub mod firewall;
 pub mod gate;
@@ -39,8 +40,11 @@ pub fn run_server(data_dir: &Path, interactive: bool, shutdown: watch::Receiver<
     if let Err(e) = swept {
         logln!("ERROR removing leftover firewall rules: {e}");
     }
-    let cfg = config::Config::load(data_dir)?;
+    let (cfg, changed) = config::Config::load_noting(data_dir)?;
     logln!("RDP Gate server {}", updater::VERSION);
+    for c in changed {
+        logln!("CONFIG {c}");
+    }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let fw = firewall::for_config(&cfg);

@@ -839,8 +839,8 @@ mod tests {
     fn tries_what_worked_then_ipv6_then_ipv4() {
         let (v4, v6): (IpAddr, IpAddr) = ("198.72.98.36".parse().unwrap(), "2607:f748:203:b9::11".parse().unwrap());
         assert_eq!(public_order(vec![v4, v6, v4], None), [v6, v4]);
-        assert_eq!(public_order(vec![v6, v4], Some(SocketAddr::new(v4, 443))), [v4, v6]);
-        assert_eq!(public_order(vec![v4], Some(SocketAddr::new(v6, 443))), [v4]);
+        assert_eq!(public_order(vec![v6, v4], Some(SocketAddr::new(v4, 47443))), [v4, v6]);
+        assert_eq!(public_order(vec![v4], Some(SocketAddr::new(v6, 47443))), [v4]);
     }
 
     #[test]
@@ -862,7 +862,7 @@ mod tests {
             beacon_key: rdpgate_core::random_bytes::<32>().to_vec(),
             gist: None,
             host: Some("rdp.example.org".into()),
-            port: 443,
+            port: 47443,
         };
         assert_eq!(set_card(&dir, &c.encode()).unwrap(), wire::fingerprint(&server.verifying_key()));
         assert_eq!(card(&load_config(&dir).unwrap()).unwrap().server_key(), server.verifying_key());
