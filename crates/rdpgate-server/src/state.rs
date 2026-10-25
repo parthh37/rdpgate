@@ -48,11 +48,36 @@ pub struct Device {
     /// until `rdpgate-server device-unlock`, whatever the source address.
     #[serde(default)]
     pub failed_codes: u32,
-    /// Auto mode: after a sign-in with a code, this computer's access follows
-    /// its address when that changes, without another code, until the
-    /// longest session runs out.
+    /// Auto mode: after one sign-in with a code, this computer is remembered
+    /// (see [`Trust`]) and its access follows its address when that changes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto: bool,
+    /// Set by a sign-in with a code while auto mode is on: this computer
+    /// can open access with its device key and this token alone, while its
+    /// hardware stays the same. Cleared when auto mode is turned off or the
+    /// hardware changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<Trust>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Trust {
+    /// SHA-256 of the token, hex. The token itself is never stored.
+    pub token_hash: String,
+    /// The hardware digest the computer sent when it signed in.
+    pub hw: String,
+    pub since: i64,
+}
+
+impl Trust {
+    /// Whether `token` and `hw` are the ones this computer was remembered with.
+    pub fn token_ok(&self, token: &str) -> bool {
+        !token.is_empty() && bool::from(self.token_hash.as_bytes().ct_eq(token_hash(token).as_bytes()))
+    }
+
+    pub fn hw_ok(&self, hw: &str) -> bool {
+        !hw.is_empty() && bool::from(self.hw.as_bytes().ct_eq(hw.as_bytes()))
+    }
 }
 
 pub const MAX_FAILED_CODES: u32 = 10;

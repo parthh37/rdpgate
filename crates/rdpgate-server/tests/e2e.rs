@@ -152,7 +152,7 @@ fn enroll(server_dir: &std::path::Path, name: &str, public_key: String) {
     Store::new(server_dir)
         .update(|st| {
             st.devices.retain(|d| d.name != name);
-            st.devices.push(Device { name: name.into(), public_key, added: now(), last_auth: None, failed_codes: 0, auto: false });
+            st.devices.push(Device { name: name.into(), public_key, added: now(), last_auth: None, failed_codes: 0, auto: false, trust: None });
             Ok(())
         })
         .unwrap();
@@ -478,58 +478,75 @@ async fn signing_in_over_ipv6_opens_ipv4_too_and_lock_closes_both() {
     assert!(h.allowed().is_empty(), "locking closes both addresses");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn without_auto_mode_there_is_nothing_to_follow() {
-    let h = start().await;
-    let d = h.device("mac", true);
-    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
-    assert!(grant.auto.is_none(), "auto mode is off unless the server turns it on");
-    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Ended(_))));
 
-    // A made-up token is refused too: the server decides, not the app.
-    let forged = client::Grant { auto: Some("made-up".into()), ..grant };
-    let Ok(client::Followed::Ended(e)) = client::follow(&d.dir, &d.cfg, &d.key, &forged).await else { panic!() };
-    assert!(e.contains("Auto mode is off"), "{e}");
+/// Turns auto mode on for `name` and gives the client a fixed hardware digest.
+fn auto_mode(h: &Harness, d: &mut TestDevice, name: &str, hw: &str) {
+    rdpgate_server::admin::set_device_auto(&h.dir, name, true).unwrap();
+    d.cfg.hw_override = Some(hw.into());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn auto_mode_follows_reopens_without_a_code_and_ends_on_lock() {
+async fn without_auto_mode_nothing_is_remembered() {
     let h = start().await;
-    let d = h.device("mac", true);
-    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
-    // No time to connect (below what the settings allow), so access closes on
-    // the next tick. Without config.json the service leaves the limits alone.
-    std::fs::remove_file(h.dir.join("config.json")).unwrap();
-    h.app.grants.set_limits(std::time::Duration::ZERO, std::time::Duration::from_secs(3600)).await;
+    let mut d = h.device("mac", true);
+    d.cfg.hw_override = Some("hw-1".into());
     let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
-    let token = grant.auto.clone().expect("the server hands out an auto token");
-    assert_eq!(grant.source, Some("127.0.0.1".parse().unwrap()));
+    assert!(grant.auto.is_none(), "auto mode is off unless the server turns it on");
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Ended(_))));
+    // A made-up token is refused: the server decides, not the app.
+    let err = client::open(&d.dir, &d.cfg, &d.key, "made-up").await.unwrap_err();
+    assert!(err.contains("Auto mode is off"), "{err}");
+}
 
-    // Same address: nothing to do.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remembered_computer_connects_without_a_code_until_its_hardware_changes() {
+    let h = start().await;
+    let mut d = h.device("mac", true);
+    auto_mode(&h, &mut d, "mac", "hw-1");
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    let token = grant.auto.clone().expect("the server remembers this computer");
+    assert!(rdpgate_server::admin::devices(&h.dir).unwrap()[0].remembered.is_some());
+
+    // Same address: nothing to follow.
     assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Same)));
 
-    // Access runs out without Remote Desktop connecting: following doesn't reopen it.
-    h.app.grants.tick().await;
-    assert!(h.allowed().is_empty());
-    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Closed)));
-    assert!(h.allowed().is_empty());
-
-    // Asking opens it again, no code needed, with the same longest-session limit.
-    let again = client::reopen(&d.dir, &d.cfg, &d.key, &token).await.expect("reopen succeeds");
-    assert_eq!(h.allowed(), vec!["127.0.0.1".parse::<IpAddr>().unwrap()]);
-    assert_eq!(again.hard_expires, grant.hard_expires);
-    assert_eq!(again.rdp_cert_sha256.as_deref(), Some(h.rdp_sha256.as_str()));
-
-    // Turned off on the server: the next check ends it.
-    rdpgate_server::admin::set_device_auto(&h.dir, "mac", false).unwrap();
-    let Ok(client::Followed::Ended(e)) = client::follow(&d.dir, &d.cfg, &d.key, &again).await else { panic!() };
-    assert!(e.contains("Auto mode is off"), "{e}");
-
-    // Locking ends the auto session for good.
-    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
+    // Closing access doesn't forget the computer: it connects again, no code.
     client::lock(&d.dir, &d.cfg, &d.key).await.expect("lock succeeds");
-    assert!(client::reopen(&d.dir, &d.cfg, &d.key, &token).await.unwrap_err().contains("ended"));
     assert!(h.allowed().is_empty());
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Closed)), "following never opens");
+    let again = client::open(&d.dir, &d.cfg, &d.key, &token).await.expect("opens without a code");
+    assert_eq!(h.allowed(), vec!["127.0.0.1".parse::<IpAddr>().unwrap()]);
+    assert_eq!(again.rdp_cert_sha256.as_deref(), Some(h.rdp_sha256.as_str()));
+    assert_eq!(client::verify_rdp(&again).await.unwrap(), RdpCheck::Verified);
+
+    // Also after the service restarts (grants are in memory, being remembered isn't).
+    h.app.grants.shutdown().await;
+    let restarted = App::new(Config::load(&h.dir).unwrap(), h.fw.clone()).unwrap();
+    assert!(restarted.state().await.unwrap().device("mac").unwrap().trust.is_some());
+
+    // The wrong token, or another computer with the right key, gets nothing.
+    let err = client::open(&d.dir, &d.cfg, &d.key, "made-up").await.unwrap_err();
+    assert!(err.contains("signed in with a code again"), "{err}");
+    let mut moved_disk = d.cfg.clone();
+    moved_disk.hw_override = Some("hw-2".into());
+    let err = client::open(&d.dir, &moved_disk, &d.key, &token).await.unwrap_err();
+    assert!(err.contains("hardware changed") && err.contains("passphrase and code"), "{err}");
+    // That forgets it on the server: even the original hardware needs a code now.
+    assert!(client::open(&d.dir, &d.cfg, &d.key, &token).await.unwrap_err().contains("isn't remembered"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn turning_auto_mode_off_forgets_the_computer() {
+    let h = start().await;
+    let mut d = h.device("mac", true);
+    auto_mode(&h, &mut d, "mac", "hw-1");
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", false).unwrap();
+    let Ok(client::Followed::Ended(e)) = client::follow(&d.dir, &d.cfg, &d.key, &grant).await else { panic!() };
+    assert!(e.contains("Auto mode is off"), "{e}");
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
+    let err = client::open(&d.dir, &d.cfg, &d.key, grant.auto.as_deref().unwrap()).await.unwrap_err();
+    assert!(err.contains("isn't remembered"), "turned back on, it still needs a code once: {err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -539,7 +556,7 @@ async fn auto_mode_moves_access_when_this_computers_address_changes() {
         return;
     };
     let mut d = h.device("mac", true);
-    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
+    auto_mode(&h, &mut d, "mac", "hw-1");
     // Sign in from 127.0.0.1…
     d.cfg.connect_override = Some(SocketAddr::new("127.0.0.1".parse().unwrap(), h.addr.port()));
     let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");

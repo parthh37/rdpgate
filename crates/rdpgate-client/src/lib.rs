@@ -21,6 +21,8 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
+pub mod trust;
+
 pub type Result<T> = std::result::Result<T, String>;
 
 pub const MIN_PASSPHRASE: usize = 10;
@@ -61,6 +63,9 @@ pub struct ClientConfig {
     /// Connect here first (tests, or `--address`).
     #[serde(skip)]
     pub connect_override: Option<SocketAddr>,
+    /// Tests: send this hardware digest and keep nothing sealed.
+    #[serde(skip)]
+    pub hw_override: Option<String>,
 }
 
 fn yes() -> bool {
@@ -183,6 +188,7 @@ pub fn create_device(dir: &Path, device: &str, rdp_username: Option<String>, pas
         auto_update: true,
         last_update_check: 0,
         connect_override: None,
+        hw_override: None,
     };
     save_config(dir, &cfg)?;
     file.save(&key_path(dir)).map_err(|e| e.to_string())?;
@@ -238,9 +244,14 @@ pub struct Grant {
     pub rdp_cert_sha256: Option<String>,
     /// This computer's address as the server saw it.
     pub source: Option<IpAddr>,
-    /// Auto mode is on (the server decides): the token that moves this
-    /// access when this computer's address changes, see [`keep_following`].
+    /// Auto mode is on (the server decides) and the server remembers this
+    /// computer: the token that opens access without a passphrase or code
+    /// ([`open`]) and moves it when this computer's address changes
+    /// ([`keep_following`]).
     pub auto: Option<String>,
+    /// The token and key are now sealed on this computer, so next time it
+    /// connects without a passphrase or code ([`trust::recall`]).
+    pub remembered: bool,
 }
 
 impl Grant {
@@ -509,12 +520,34 @@ pub async fn sign_in(dir: &Path, cfg: &ClientConfig, key: &SigningKey, code: &st
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Enter the 6-digit code from your authenticator app.".into());
     }
-    let p = Payload { op: wire::OP_TOTP.into(), totp: code.into(), ..Default::default() };
+    // Saying what hardware this is lets a server in auto mode remember it.
+    let hw = hardware(cfg, key);
+    let p = Payload { op: wire::OP_TOTP.into(), totp: code.into(), hw: hw.clone().unwrap_or_default(), ..Default::default() };
     let (resp, target, rest) = exchange(dir, cfg, key, p).await?;
     if !resp.ok {
         return Err(explain(&resp));
     }
-    Ok(opened(cfg, key, resp, target, &rest).await)
+    let mut grant = opened(cfg, key, resp, target, &rest).await;
+    if let (Some(token), Some(hw), None) = (&grant.auto, &hw, &cfg.hw_override) {
+        grant.remembered = trust::remember(dir, key, token, hw).is_ok();
+    }
+    Ok(grant)
+}
+
+/// This computer's hardware digest, where it can be remembered.
+fn hardware(cfg: &ClientConfig, key: &SigningKey) -> Option<String> {
+    cfg.hw_override.clone().or_else(|| trust::supported().then(|| trust::hardware_digest(&key.verifying_key())).flatten())
+}
+
+/// The server no longer remembers this computer: forget it here too.
+fn not_remembered(dir: &Path, resp: &Response) -> Option<String> {
+    let why = resp.error.as_deref()?.strip_prefix(wire::NOT_REMEMBERED)?;
+    trust::forget(dir);
+    let mut why = clean(why);
+    if let Some(f) = why.get_mut(0..1) {
+        f.make_ascii_uppercase();
+    }
+    Some(format!("{why}. Sign in with your passphrase and code."))
 }
 
 /// The grant a successful sign-in (or auto-mode move) answered with.
@@ -536,6 +569,7 @@ async fn opened(cfg: &ClientConfig, key: &SigningKey, resp: Response, target: Ta
         rdp_cert_sha256: resp.rdp_cert_sha256.filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())),
         source,
         auto: resp.auto.filter(|t| !t.is_empty()),
+        remembered: false,
     }
 }
 
@@ -546,11 +580,11 @@ pub enum Followed {
     Same,
     /// It changed: the server opened the new address and closed the old one.
     Moved(Grant),
-    /// Access has closed (time ran out without Remote Desktop connected).
-    /// [`reopen`] opens it again without a code.
+    /// Access has closed (time ran out, the longest session ended, or the
+    /// service restarted). A remembered computer opens it again with [`open`].
     Closed,
-    /// Auto mode is over (longest session reached, turned off on the server,
-    /// the service restarted…): sign in with a code next time.
+    /// Following has stopped: the server no longer remembers this computer
+    /// (it was forgotten here too) or refused for another reason.
     Ended(String),
 }
 
@@ -561,10 +595,14 @@ pub enum Followed {
 pub async fn follow(dir: &Path, cfg: &ClientConfig, key: &SigningKey, grant: &Grant) -> Result<Followed> {
     let Some(token) = grant.auto.clone() else { return Ok(Followed::Ended("auto mode is off for this computer".into())) };
     let cfg = ClientConfig { connect_override: Some(grant.server_addr), ..cfg.clone() };
-    let p = Payload { op: wire::OP_FOLLOW.into(), auto: token, ..Default::default() };
+    let hw = hardware(&cfg, key).unwrap_or_default();
+    let p = Payload { op: wire::OP_FOLLOW.into(), auto: token, hw, ..Default::default() };
     let (resp, mut target, rest) = exchange(dir, &cfg, key, p).await?;
     if !resp.ok {
-        return Ok(if resp.error.as_deref() == Some(wire::CLOSED) { Followed::Closed } else { Followed::Ended(explain(&resp)) });
+        if resp.error.as_deref() == Some(wire::CLOSED) {
+            return Ok(Followed::Closed);
+        }
+        return Ok(Followed::Ended(not_remembered(dir, &resp).unwrap_or_else(|| explain(&resp))));
     }
     let source = resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok());
     if target.addr == grant.server_addr {
@@ -577,18 +615,30 @@ pub async fn follow(dir: &Path, cfg: &ClientConfig, key: &SigningKey, grant: &Gr
     let cert = grant.rdp_cert_sha256.clone();
     let mut moved = opened(&cfg, key, resp, target, &rest).await;
     moved.rdp_cert_sha256 = moved.rdp_cert_sha256.or(cert);
+    (moved.auto, moved.remembered) = (grant.auto.clone(), grant.remembered);
     Ok(Followed::Moved(moved))
 }
 
-/// Auto mode: opens access again for this computer's current address after
-/// it closed, without a code, with the token from the sign-in.
-pub async fn reopen(dir: &Path, cfg: &ClientConfig, key: &SigningKey, token: &str) -> Result<Grant> {
-    let p = Payload { op: wire::OP_REOPEN.into(), auto: token.into(), ..Default::default() };
+/// Auto mode: opens access for a remembered computer with no passphrase or
+/// code: its device `key` and the server's `token` (from [`trust::recall`]).
+/// If the server no longer remembers it, it's forgotten here too.
+pub async fn open(dir: &Path, cfg: &ClientConfig, key: &SigningKey, token: &str) -> Result<Grant> {
+    let hw = hardware(cfg, key).ok_or("this computer's hardware can't be read, so it can't be remembered")?;
+    let p = Payload { op: wire::OP_OPEN.into(), auto: token.into(), hw, ..Default::default() };
     let (resp, target, rest) = exchange(dir, cfg, key, p).await?;
     if !resp.ok {
-        return Err(explain(&resp));
+        return Err(not_remembered(dir, &resp).unwrap_or_else(|| explain(&resp)));
     }
-    Ok(opened(cfg, key, resp, target, &rest).await)
+    let mut grant = opened(cfg, key, resp, target, &rest).await;
+    (grant.auto, grant.remembered) = (Some(token.into()), true);
+    Ok(grant)
+}
+
+/// [`open`] with what this computer remembers. The key is returned too, for
+/// following and closing access later.
+pub async fn open_remembered(dir: &Path, cfg: &ClientConfig) -> Result<(Grant, SigningKey)> {
+    let r = trust::recall(dir).ok_or("This computer isn't remembered (or its hardware changed). Sign in with your passphrase and code.")?;
+    Ok((open(dir, cfg, &r.key, &r.token).await?, r.key))
 }
 
 /// How often auto mode checks this computer's address. Remote Desktop keeps
@@ -604,7 +654,8 @@ pub enum FollowEvent {
     /// Access moved to this computer's new address. The connection file was
     /// rewritten for it, and the Remote Desktop certificate checked again.
     Moved { grant: Grant, check: RdpCheck, rdp_file: PathBuf },
-    /// Access has closed; [`reopen`] opens it again. Following has stopped.
+    /// Access has closed; a remembered computer opens it again with [`open`].
+    /// Following has stopped.
     Closed,
     /// Auto mode is over, or the server at the new address failed the
     /// certificate check. Following has stopped.

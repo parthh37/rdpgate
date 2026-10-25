@@ -61,9 +61,6 @@ struct Session {
     check: RdpCheck,
     /// Auto mode, while it is following this computer's address.
     follower: Option<Follower>,
-    /// Auto mode found that access closed (time ran out); it can be opened
-    /// again without a code.
-    closed: bool,
 }
 
 /// Auto mode, in a thread of its own so it keeps following this computer's
@@ -104,7 +101,7 @@ fn launch(dir: &std::path::Path, cfg: &client::ClientConfig, grant: Grant, key: 
     let check = rt()?.block_on(client::verify_rdp(&grant))?;
     let rdp_file = client::write_rdp_file(dir, cfg, &grant)?;
     client::launch_rdp(&rdp_file)?;
-    Ok(Box::new(Session { grant, key, rdp_file, check, follower: None, closed: false }))
+    Ok(Box::new(Session { grant, key, rdp_file, check, follower: None }))
 }
 
 /// Self-update progress, shown as a banner.
@@ -155,6 +152,10 @@ struct GateApp {
     // sign-in form
     passphrase: Zeroizing<String>,
     code: String,
+    /// Auto mode remembers this computer: Connect needs no passphrase or code.
+    remembered: bool,
+    /// Show the passphrase and code form even so.
+    use_code: bool,
     session: Option<Session>,
     busy: Option<&'static str>,
     status: Option<(bool, String)>,
@@ -198,6 +199,8 @@ impl GateApp {
         let dir = client::default_dir();
         let screen = if client::is_set_up(&dir) { Screen::Main } else { Screen::Setup };
         GateApp {
+            remembered: client::trust::is_remembered(&dir),
+            use_code: false,
             dir,
             screen,
             device: default_device_name(),
@@ -355,13 +358,16 @@ impl GateApp {
                 (s.grant, s.check, s.rdp_file) = (grant, check, rdp_file);
             }
             FollowEvent::Closed => {
-                s.follower = None;
-                s.closed = true;
+                self.session = None;
+                self.remembered = client::trust::is_remembered(&self.dir);
+                let again = if self.remembered { " Connect opens it again, no passphrase or code needed." } else { "" };
+                self.status = Some((true, format!("Access has closed.{again}")));
             }
             FollowEvent::Ended(e) => {
                 s.follower = None;
                 s.grant.auto = None;
-                self.status = Some((false, format!("Auto mode ended: {e}")));
+                self.remembered = client::trust::is_remembered(&self.dir);
+                self.status = Some((false, format!("Auto mode stopped: {e}")));
             }
         }
     }
@@ -384,9 +390,13 @@ impl GateApp {
                         format!("Access open for {}. Couldn't verify the Remote Desktop certificate ({why}).", s.grant.ip)
                     }
                 };
+                let newly = s.grant.remembered && !self.remembered;
+                let msg = if newly { format!("{msg} This computer is remembered now: next time, just click Connect.") } else { msg };
                 self.status = Some((true, msg));
                 self.passphrase = Default::default();
                 self.code.clear();
+                self.use_code = false;
+                self.remembered = client::trust::is_remembered(&self.dir);
                 let mut s = *s;
                 s.follower = start_follow(ctx, self.dir.clone(), &s.grant, s.key.clone());
                 self.session = Some(s);
@@ -395,7 +405,12 @@ impl GateApp {
                 self.status = Some((true, format!("Access closed for {ip}.")));
                 self.session = None;
             }
-            Done::Created(Err(e)) | Done::SignedIn(Err(e)) | Done::Locked(Err(e)) => self.status = Some((false, e)),
+            Done::SignedIn(Err(e)) => {
+                // Connecting may have found this computer is no longer remembered.
+                self.remembered = client::trust::is_remembered(&self.dir);
+                self.status = Some((false, e));
+            }
+            Done::Created(Err(e)) | Done::Locked(Err(e)) => self.status = Some((false, e)),
         }
     }
 
@@ -512,39 +527,6 @@ impl GateApp {
             }
         };
 
-        if let Some(s) = &self.session
-            && s.closed
-        {
-            let (key, token, until) = (s.key.clone(), s.grant.auto.clone().unwrap_or_default(), s.grant.hard_expires);
-            theme::card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    theme::pill(ui, Tone::Neutral, "Access closed");
-                    theme::pill(ui, Tone::Info, "Auto mode");
-                });
-                ui.add_space(6.0);
-                ui.label(muted("Access closed because Remote Desktop wasn't connected in time."));
-                let left = until.map(|t| format!(" for {}", client::minutes_left(t))).unwrap_or_default();
-                ui.label(muted(format!("Auto mode can open it again for this computer without a code{left}.")));
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(self.busy.is_none(), primary("Open again")).clicked() {
-                        let (dir, cfg) = (self.dir.clone(), cfg.clone());
-                        let ctx = ui.ctx().clone();
-                        self.run(&ctx, "Opening access again…", move || {
-                            Done::SignedIn((|| {
-                                let grant = rt()?.block_on(client::reopen(&dir, &cfg, &key, &token))?;
-                                launch(&dir, &cfg, grant, key)
-                            })())
-                        });
-                    }
-                    if ui.add_enabled(self.busy.is_none(), egui::Button::new("Sign in with a code").min_size(egui::vec2(0.0, 36.0))).clicked() {
-                        self.session = None;
-                    }
-                });
-            });
-            return;
-        }
-
         if let Some(s) = &self.session {
             let (file, key) = (s.rdp_file.clone(), s.key.clone());
             let verified = s.check == RdpCheck::Verified;
@@ -566,7 +548,7 @@ impl GateApp {
                 ui.label(muted(format!("Start Remote Desktop within {left}. {held}")));
                 if following {
                     ui.label(muted(
-                        "Auto mode: if this computer's IP address changes, access moves with it, no code needed. \
+                        "Auto mode: if this computer's IP address changes, access moves with it. \
                          Keep RDP Gate open (minimised is fine).",
                     ));
                 }
@@ -593,6 +575,43 @@ impl GateApp {
                 "Anyone who shares your public IP (same Wi-Fi or mobile carrier) can reach the Windows login screen until access closes. They still need your Windows password.",
                 false,
             );
+            return;
+        }
+
+        if self.remembered && !self.use_code {
+            theme::card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(RichText::new("Connect to Remote Desktop").strong().size(16.0).color(theme::TEXT));
+                        ui.label(muted(format!("{}  →  server {server}", cfg.device)).small());
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        theme::pill(ui, Tone::Info, "Remembered");
+                    });
+                });
+                ui.add_space(6.0);
+                ui.label(muted(
+                    "Auto mode remembers this computer: no passphrase or code until its hardware changes. \
+                     Access moves with it when its IP address changes.",
+                ));
+                ui.add_space(8.0);
+                let go = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (primary_wide(ui, self.busy.is_none(), "Connect").clicked() || go) && self.busy.is_none() {
+                    let (dir, cfg, ctx) = (self.dir.clone(), cfg.clone(), ui.ctx().clone());
+                    self.run(&ctx, "Finding your server and connecting…", move || {
+                        Done::SignedIn((|| {
+                            let (grant, key) = rt()?.block_on(client::open_remembered(&dir, &cfg))?;
+                            launch(&dir, &cfg, grant, key)
+                        })())
+                    });
+                }
+                ui.add_space(2.0);
+                if ui.add(egui::Button::new(muted("Sign in with passphrase and code instead").small()).frame(false)).clicked() {
+                    self.use_code = true;
+                }
+            });
+            self.details_ui(ui, &cfg);
             return;
         }
 
@@ -632,8 +651,15 @@ impl GateApp {
                     Done::SignedIn(result)
                 });
             }
+            if self.remembered && ui.add(egui::Button::new(muted("Back to one-click Connect").small()).frame(false)).clicked() {
+                self.use_code = false;
+            }
         });
+        self.details_ui(ui, &cfg);
+    }
 
+    /// "This computer and server", below the sign-in card.
+    fn details_ui(&mut self, ui: &mut egui::Ui, cfg: &client::ClientConfig) {
         ui.add_space(10.0);
         theme::card(ui, |ui| {
             egui::CollapsingHeader::new(RichText::new("This computer and server").strong()).show(ui, |ui| {
@@ -647,6 +673,15 @@ impl GateApp {
                 }
                 if let Some(a) = cfg.last_known {
                     ui.label(muted(format!("Server last seen at {a}")));
+                }
+                if self.remembered {
+                    ui.separator();
+                    ui.label(muted("Auto mode remembers this computer: it connects without a passphrase or code."));
+                    if ui.button("Forget this computer").clicked() {
+                        client::trust::forget(&self.dir);
+                        self.remembered = client::trust::is_remembered(&self.dir);
+                        self.status = Some((true, "Forgotten. Next time, sign in with your passphrase and code.".into()));
+                    }
                 }
                 ui.separator();
                 let mut auto = cfg.auto_update;
@@ -665,7 +700,6 @@ impl GateApp {
         match self.screen {
             Screen::Setup => (Tone::Neutral, "Not set up"),
             Screen::Enroll(_) => (Tone::Warn, "Enrolling"),
-            Screen::Main if self.session.as_ref().is_some_and(|s| s.closed) => (Tone::Neutral, "Access closed"),
             Screen::Main if self.session.is_some() => (Tone::Good, "Access open"),
             Screen::Main => (Tone::Info, "Ready"),
         }

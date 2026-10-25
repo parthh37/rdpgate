@@ -12,9 +12,9 @@ use zeroize::Zeroizing;
 const REFRESH: Duration = Duration::from_secs(3);
 /// Passed to the relaunched window when Direct3D couldn't start.
 const OPENGL_ARG: &str = "--opengl";
-const AUTO_MODE_HELP: &str = "Auto mode: after a computer signs in with a code, the app moves its access to its new IP address \
-    whenever that changes (and can open it again without a code) until the longest session runs out. \
-    Locking from the app ends it.";
+const AUTO_MODE_HELP: &str = "Auto mode: after one sign-in with passphrase and code, the computer is remembered. It then connects \
+    with one click, no passphrase or code, until its hardware changes, and its access moves with it when its IP address changes. \
+    Anyone using that computer's account can connect, so use it only for computers you trust. Turning it off forgets the computer.";
 
 pub fn main() {
     rdpgate_core::update::cleanup_previous();
@@ -803,16 +803,21 @@ impl ServerApp {
                     ui.monospace(d.fingerprint.get(..14).unwrap_or(&d.fingerprint));
                     ui.label(when(d.last_auth));
                     let mut auto = d.auto;
-                    if ui
-                        .checkbox(&mut auto, if d.auto { "On" } else { "Off" })
-                        .on_hover_text(AUTO_MODE_HELP)
-                        .changed()
-                    {
+                    let label = match (d.auto, d.remembered) {
+                        (true, Some(_)) => "On, remembered",
+                        (true, None) => "On",
+                        _ => "Off",
+                    };
+                    let hover = match d.remembered {
+                        Some(t) => format!("Remembered since {}.\n\n{AUTO_MODE_HELP}", when(Some(t))),
+                        None => AUTO_MODE_HELP.to_string(),
+                    };
+                    if ui.checkbox(&mut auto, label).on_hover_text(hover).changed() {
                         let r = admin::set_device_auto(&self.data, &d.name, auto).map(|()| {
                             if auto {
-                                format!("Auto mode on for {}. From its next sign-in with a code, its access follows it when its IP changes.", d.name)
+                                format!("Auto mode on for {}. After its next sign-in with passphrase and code it is remembered.", d.name)
                             } else {
-                                format!("Auto mode off for {}. It needs a code again once its access closes.", d.name)
+                                format!("Auto mode off for {}. It is forgotten and signs in with passphrase and code again.", d.name)
                             }
                         });
                         self.say(r);

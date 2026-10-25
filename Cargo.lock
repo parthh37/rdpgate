@@ -4299,15 +4299,18 @@ dependencies = [
  "clap",
  "dirs",
  "ed25519-dalek",
+ "hex",
  "rdpgate-core",
  "rpassword",
  "rustls",
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

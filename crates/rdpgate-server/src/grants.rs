@@ -8,11 +8,11 @@
 //! found and removed every few minutes. While any grant is open the PC is
 //! kept awake, so it can't fall asleep under a session.
 //!
-//! A computer in auto mode also gets an auto session at sign-in. Until the
-//! longest session runs out, it lets that computer move its grant to a new
-//! address (its IP changed) or open it again after it closed, with its device
-//! key alone. It never outlives the sign-in's `max_hours`, ends when the
-//! computer locks, and is in memory only, like the grants.
+//! A computer in auto mode also gets an auto session when it opens access.
+//! It lets that computer move its grant to a new address (its IP changed);
+//! the gate checks that it is still remembered first. A move never extends
+//! `max_hours`. The session ends with the grant it follows (it closed, the
+//! computer locked, the service restarted) and is in memory only.
 
 use crate::firewall::Firewall;
 use crate::power::Power;
@@ -45,27 +45,24 @@ struct Inner {
     autos: Vec<Auto>,
 }
 
-/// Lets the computer that signed in follow its own address changes.
+/// Lets the computer that opened access follow its own address changes.
 struct Auto {
-    token: String,
     who: String,
-    /// When it signed in with a code, and when that sign-in's grants end
-    /// no matter what. Moved and reopened grants keep both.
+    /// When access was opened, and when it ends no matter what. Moved
+    /// grants keep both.
     created: i64,
     hard_expires: i64,
     /// The revoke token its grants share, so locking ends the session too.
     group: String,
 }
 
-/// What [`Grants::renew`] did.
+/// What [`Grants::follow`] did.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Renewed {
     /// The computer's address hasn't changed: nothing to do.
     Same,
     /// Opened its new address and closed the old ones.
     Moved,
-    /// Opened its address again after access had closed.
-    Reopened,
 }
 
 /// How [`Grants::open`] makes a grant. The default is a new sign-in: its
@@ -209,71 +206,55 @@ impl Grants {
         .map_err(|e| format!("grant task: {e}"))?
     }
 
-    /// Starts auto mode for the computer that just opened `g`, replacing any
-    /// earlier auto session of the same computer. Returns its token.
-    pub async fn start_auto(&self, g: &Grant) -> String {
-        let token = rdpgate_core::random_token::<24>();
+    /// Lets the computer that just opened `g` follow its address changes,
+    /// replacing any earlier auto session of the same computer. Its grants
+    /// from before are closed: one computer is in one place.
+    pub async fn start_auto(&self, g: &Grant) {
         let mut inner = self.inner.lock().await;
+        let earlier: Vec<String> = inner.autos.iter().filter(|a| a.who == g.who && a.group != g.revoke_token).map(|a| a.group.clone()).collect();
+        let stale: Vec<IpAddr> = inner.grants.values().filter(|o| earlier.contains(&o.revoke_token)).map(|o| o.ip).collect();
+        for ip in stale {
+            self.close(&mut inner, ip, &format!("{} opened access again at {}", g.who, g.ip)).await;
+        }
         inner.autos.retain(|a| a.who != g.who);
-        inner.autos.push(Auto {
-            token: token.clone(),
-            who: g.who.clone(),
-            created: g.created,
-            hard_expires: g.hard_expires,
-            group: g.revoke_token.clone(),
-        });
-        token
+        inner.autos.push(Auto { who: g.who.clone(), created: g.created, hard_expires: g.hard_expires, group: g.revoke_token.clone() });
     }
 
-    /// Auto mode: `who` presents its auto `token` from `ip`. If `ip` already
-    /// has the computer's grant, nothing changes. If the computer has an open
-    /// grant elsewhere, its address changed: `ip` is opened and the old
-    /// addresses closed. If everything has closed, `ip` is opened again only
-    /// when `reopen` (the person asked); otherwise the answer is [`wire::CLOSED`].
-    /// Moved and reopened grants keep the sign-in's longest-session limit.
+    /// Auto mode: `who` (already checked as remembered) asks from `ip`. If
+    /// `ip` already has its grant, nothing changes. If it has an open grant
+    /// elsewhere, its address changed: `ip` is opened and the old addresses
+    /// closed, with the same longest-session limit. With nothing open, the
+    /// answer is [`wire::CLOSED`]: following never opens access by itself.
     ///
     /// [`wire::CLOSED`]: rdpgate_core::wire::CLOSED
-    pub async fn renew(self: &Arc<Self>, token: &str, ip: IpAddr, who: &str, reopen: bool) -> Result<(Grant, Renewed), String> {
-        let (me, token, who) = (self.clone(), token.to_string(), who.to_string());
-        tokio::spawn(async move { me.renew_inner(&token, ip.to_canonical(), &who, reopen).await })
-            .await
-            .map_err(|e| format!("grant task: {e}"))?
+    pub async fn follow(self: &Arc<Self>, ip: IpAddr, who: &str) -> Result<(Grant, Renewed), String> {
+        let (me, who) = (self.clone(), who.to_string());
+        tokio::spawn(async move { me.follow_inner(ip.to_canonical(), &who).await }).await.map_err(|e| format!("grant task: {e}"))?
     }
 
-    async fn renew_inner(&self, token: &str, ip: IpAddr, who: &str, reopen: bool) -> Result<(Grant, Renewed), String> {
+    async fn follow_inner(&self, ip: IpAddr, who: &str) -> Result<(Grant, Renewed), String> {
+        let closed = || rdpgate_core::wire::CLOSED.to_string();
         let mut inner = self.inner.lock().await;
-        let a = inner
-            .autos
-            .iter()
-            .find(|a| !token.is_empty() && bool::from(a.token.as_bytes().ct_eq(token.as_bytes())))
-            .ok_or("auto mode has ended for this sign-in")?;
-        if a.who != who {
-            return Err(format!("auto token belongs to {}", a.who));
-        }
+        let a = inner.autos.iter().find(|a| a.who == who).ok_or_else(closed)?;
         if now() >= a.hard_expires {
-            return Err("the longest session is over".into());
+            return Err(closed());
         }
         let (group, created) = (a.group.clone(), a.created);
         if let Some(g) = inner.grants.get(&ip).filter(|g| g.revoke_token == group) {
             return Ok((g.clone(), Renewed::Same));
         }
         let old: Vec<IpAddr> = inner.grants.values().filter(|g| g.revoke_token == group).map(|g| g.ip).collect();
-        if old.is_empty() && !reopen {
-            return Err(rdpgate_core::wire::CLOSED.into());
+        if old.is_empty() {
+            return Err(closed());
         }
         let opening = Opening { group: Some(group), link: true, created: Some(created) };
         let g = self.open(&mut inner, ip, who.to_string(), opening).await?;
         for &o in &old {
             self.close(&mut inner, o, &format!("{who} moved to {ip}")).await;
         }
-        if old.is_empty() {
-            crate::logln!("AUTO reopened ip={ip} who={who:?}");
-            Ok((g, Renewed::Reopened))
-        } else {
-            let old: Vec<String> = old.iter().map(|o| o.to_string()).collect();
-            crate::logln!("AUTO moved who={who:?} from={} to={ip}", old.join(","));
-            Ok((g, Renewed::Moved))
-        }
+        let old: Vec<String> = old.iter().map(|o| o.to_string()).collect();
+        crate::logln!("AUTO moved who={who:?} from={} to={ip}", old.join(","));
+        Ok((g, Renewed::Moved))
     }
 
     /// Opens `ip` too, for the computer that just signed in over the other IP
@@ -590,52 +571,45 @@ mod tests {
         let grants = Arc::new(Grants::new(fw.clone(), Duration::from_secs(600), Duration::from_secs(3600), false, None));
         let (home, cafe): (IpAddr, IpAddr) = ("81.2.69.160".parse().unwrap(), "81.2.69.200".parse().unwrap());
         let g = grants.allow(home, "device mac".into()).await.unwrap();
-        let token = grants.start_auto(&g).await;
+        grants.start_auto(&g).await;
+        let closed = rdpgate_core::wire::CLOSED;
 
         // Same address: nothing changes.
-        let (same, how) = grants.renew(&token, home, "device mac", false).await.unwrap();
+        let (same, how) = grants.follow(home, "device mac").await.unwrap();
         assert_eq!((same.ip, how), (home, Renewed::Same));
-
-        // Another computer can't use it, nor can a wrong token.
-        assert!(grants.renew(&token, cafe, "device other", false).await.unwrap_err().contains("belongs to"));
-        assert!(grants.renew("nope", cafe, "device mac", false).await.is_err());
-        assert!(grants.renew("", cafe, "device mac", false).await.is_err());
+        // Another computer has nothing to follow.
+        assert_eq!(grants.follow(cafe, "device other").await.unwrap_err(), closed);
 
         // New address: opened there, closed at the old one, same session limit.
-        let (moved, how) = grants.renew(&token, cafe, "device mac", false).await.unwrap();
+        let (moved, how) = grants.follow(cafe, "device mac").await.unwrap();
         assert_eq!(how, Renewed::Moved);
         assert_eq!(fw.allowed.lock().unwrap().iter().copied().collect::<Vec<_>>(), vec![cafe]);
         assert_eq!((moved.created, moved.hard_expires), (g.created, g.hard_expires), "moving doesn't extend the session");
         assert!(moved.link.is_some(), "the new address can open its other IP family too");
 
-        // Locking ends auto mode.
-        grants.revoke(cafe, "test").await;
-        assert!(grants.renew(&token, home, "device mac", true).await.unwrap_err().contains("ended"));
+        // Opening access again closes what the same computer had open before.
+        let again = grants.allow(home, "device mac".into()).await.unwrap();
+        grants.start_auto(&again).await;
+        assert_eq!(fw.allowed.lock().unwrap().iter().copied().collect::<Vec<_>>(), vec![home]);
+
+        // Locking ends following.
+        grants.revoke(home, "test").await;
+        assert_eq!(grants.follow(cafe, "device mac").await.unwrap_err(), closed);
         assert!(fw.allowed.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn auto_mode_never_reopens_closed_access_by_itself() {
+    async fn following_never_opens_closed_access() {
         let fw = Arc::new(DryRun::default());
         let grants = grants(fw.clone(), false); // grant_minutes 0: closes on the next tick
         let ip: IpAddr = "81.2.69.160".parse().unwrap();
-        let token = grants.start_auto(&grants.allow(ip, "device mac".into()).await.unwrap()).await;
+        grants.start_auto(&grants.allow(ip, "device mac".into()).await.unwrap()).await;
         grants.tick().await;
         assert!(fw.allowed.lock().unwrap().is_empty(), "expired without Remote Desktop connecting");
-
-        let err = grants.renew(&token, "81.2.69.200".parse().unwrap(), "device mac", false).await.unwrap_err();
-        assert_eq!(err, rdpgate_core::wire::CLOSED, "following alone doesn't reopen");
+        let closed = rdpgate_core::wire::CLOSED;
+        assert_eq!(grants.follow("81.2.69.200".parse().unwrap(), "device mac").await.unwrap_err(), closed);
+        assert_eq!(grants.follow(ip, "device mac").await.unwrap_err(), closed);
         assert!(fw.allowed.lock().unwrap().is_empty());
-
-        // When the person asks, it opens again without a code.
-        let (g, how) = grants.renew(&token, ip, "device mac", true).await.unwrap();
-        assert_eq!((g.ip, how), (ip, Renewed::Reopened));
-        assert!(fw.allowed.lock().unwrap().contains(&ip));
-
-        // Never past the longest session.
-        grants.set_limits(Duration::ZERO, Duration::ZERO).await;
-        grants.tick().await;
-        assert!(grants.renew(&token, ip, "device mac", true).await.is_err());
     }
 
     #[tokio::test]

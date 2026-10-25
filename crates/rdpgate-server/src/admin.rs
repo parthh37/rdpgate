@@ -17,6 +17,8 @@ pub struct DeviceInfo {
     pub last_auth: Option<i64>,
     pub locked: bool,
     pub auto: bool,
+    /// Remembered (auto mode) since then.
+    pub remembered: Option<i64>,
 }
 
 pub fn devices(data: &Path) -> Result<Vec<DeviceInfo>, String> {
@@ -31,6 +33,7 @@ pub fn devices(data: &Path) -> Result<Vec<DeviceInfo>, String> {
             last_auth: d.last_auth,
             locked: d.failed_codes >= MAX_FAILED_CODES,
             auto: d.auto,
+            remembered: d.trust.as_ref().map(|t| t.since),
         })
         .collect())
 }
@@ -64,6 +67,7 @@ pub fn add_device(data: &Path, name: &str, key_text: &str) -> Result<String, Str
             last_auth: None,
             failed_codes: 0,
             auto: false,
+            trust: None,
         });
         Ok(())
     })?;
@@ -90,12 +94,15 @@ pub fn unlock_device(data: &Path, name: &str) -> Result<(), String> {
 }
 
 /// Turns auto mode on or off for a computer. Takes effect on the running
-/// service immediately: with it off, the computer stops following its
-/// address and needs a code again once its access closes.
+/// service immediately: turning it off forgets the computer, so it stops
+/// following its address and signs in with passphrase and code again.
 pub fn set_device_auto(data: &Path, name: &str, on: bool) -> Result<(), String> {
     Store::new(data).update(|st| {
         let d = st.devices.iter_mut().find(|d| d.name == name).ok_or(format!("no computer named {name:?}"))?;
         d.auto = on;
+        if !on {
+            d.trust = None;
+        }
         Ok(())
     })
 }

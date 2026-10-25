@@ -150,9 +150,10 @@ enum Cmd {
     DeviceRemove { name: String },
     /// Unlock a computer that was locked after too many wrong codes
     DeviceUnlock { name: String },
-    /// Auto mode for a computer: after it signs in with a code, its access
-    /// follows it when its IP address changes, without another code, until
-    /// the longest session runs out
+    /// Auto mode for a computer: after one sign-in with passphrase and code
+    /// it is remembered and connects with no passphrase or code until its
+    /// hardware changes, and its access follows it when its IP changes.
+    /// "off" forgets it
     DeviceAuto {
         name: String,
         #[arg(value_parser = ["on", "off"])]
@@ -367,7 +368,11 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             }
             for d in &devices {
                 let locked = if d.locked { "  LOCKED (device-unlock)" } else { "" };
-                let auto = if d.auto { "  auto mode" } else { "" };
+                let auto = match (d.auto, d.remembered) {
+                    (true, Some(t)) => format!("  auto mode, remembered since {}", local(t)),
+                    (true, None) => "  auto mode (not remembered yet)".into(),
+                    _ => String::new(),
+                };
                 println!(
                     "{:<20} {}  added {}  last sign-in {}{auto}{locked}",
                     d.name,
@@ -391,9 +396,9 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
         Cmd::DeviceAuto { name, state } => {
             admin::set_device_auto(data, &name, state == "on")?;
             if state == "on" {
-                println!("Auto mode on for {name:?}. From its next sign-in with a code, its access follows it when its IP changes.");
+                println!("Auto mode on for {name:?}. After its next sign-in with passphrase and code it is remembered.");
             } else {
-                println!("Auto mode off for {name:?}. It needs a code again once its access closes.");
+                println!("Auto mode off for {name:?}. It is forgotten and signs in with passphrase and code again.");
             }
             Ok(())
         }
