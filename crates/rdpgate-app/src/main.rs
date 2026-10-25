@@ -6,10 +6,12 @@
 
 use eframe::egui::{self, RichText, TextEdit};
 use ed25519_dalek::SigningKey;
-use rdpgate_client::{self as client, Grant, Identity, RdpCheck};
+use rdpgate_client::{self as client, FollowEvent, Grant, Identity, RdpCheck};
 use rdpgate_core::update::{Available, Component};
 use rdpgate_ui::{self as theme, MUTED, Tone, muted, primary, primary_wide};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use zeroize::Zeroizing;
 
@@ -57,6 +59,52 @@ struct Session {
     key: SigningKey,
     rdp_file: PathBuf,
     check: RdpCheck,
+    /// Auto mode, while it is following this computer's address.
+    follower: Option<Follower>,
+    /// Auto mode found that access closed (time ran out); it can be opened
+    /// again without a code.
+    closed: bool,
+}
+
+/// Auto mode, in a thread of its own so it keeps following this computer's
+/// address while the window is minimised (egui doesn't repaint then).
+/// Dropping it stops the thread.
+struct Follower {
+    rx: Receiver<FollowEvent>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Follower {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Starts auto mode for `grant` if the server turned it on for this computer.
+fn start_follow(ctx: &egui::Context, dir: PathBuf, grant: &Grant, key: SigningKey) -> Option<Follower> {
+    grant.auto.as_ref()?;
+    let cfg = client::load_config(&dir).ok()?;
+    let (tx, rx) = channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (grant, flag, ctx) = (grant.clone(), stop.clone(), ctx.clone());
+    std::thread::spawn(move || {
+        let Ok(rt) = rt() else { return };
+        rt.block_on(client::keep_following(&dir, &cfg, &key, grant, &flag, |ev| {
+            let _ = tx.send(ev);
+            ctx.request_repaint();
+        }));
+    });
+    Some(Follower { rx, stop })
+}
+
+/// Checks the Remote Desktop certificate, writes the connection file and
+/// opens Remote Desktop for a fresh grant.
+fn launch(dir: &std::path::Path, cfg: &client::ClientConfig, grant: Grant, key: SigningKey) -> Result<Box<Session>, String> {
+    // A certificate mismatch is an error: never launch into an interception.
+    let check = rt()?.block_on(client::verify_rdp(&grant))?;
+    let rdp_file = client::write_rdp_file(dir, cfg, &grant)?;
+    client::launch_rdp(&rdp_file)?;
+    Ok(Box::new(Session { grant, key, rdp_file, check, follower: None, closed: false }))
 }
 
 /// Self-update progress, shown as a banner.
@@ -297,7 +345,28 @@ impl GateApp {
         self.status = None;
     }
 
-    fn poll(&mut self) {
+    /// What auto mode found since the last frame.
+    fn poll_follow(&mut self) {
+        let Some(s) = self.session.as_mut() else { return };
+        let Some(Ok(ev)) = s.follower.as_ref().map(|f| f.rx.try_recv()) else { return };
+        match ev {
+            FollowEvent::Moved { grant, check, rdp_file } => {
+                self.status = Some((true, format!("This computer's address changed. Access moved to {} automatically.", grant.ip)));
+                (s.grant, s.check, s.rdp_file) = (grant, check, rdp_file);
+            }
+            FollowEvent::Closed => {
+                s.follower = None;
+                s.closed = true;
+            }
+            FollowEvent::Ended(e) => {
+                s.follower = None;
+                s.grant.auto = None;
+                self.status = Some((false, format!("Auto mode ended: {e}")));
+            }
+        }
+    }
+
+    fn poll(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.rx else { return };
         let Ok(done) = rx.try_recv() else { return };
         self.rx = None;
@@ -318,7 +387,9 @@ impl GateApp {
                 self.status = Some((true, msg));
                 self.passphrase = Default::default();
                 self.code.clear();
-                self.session = Some(*s);
+                let mut s = *s;
+                s.follower = start_follow(ctx, self.dir.clone(), &s.grant, s.key.clone());
+                self.session = Some(s);
             }
             Done::Locked(Ok(ip)) => {
                 self.status = Some((true, format!("Access closed for {ip}.")));
@@ -441,9 +512,43 @@ impl GateApp {
             }
         };
 
+        if let Some(s) = &self.session
+            && s.closed
+        {
+            let (key, token, until) = (s.key.clone(), s.grant.auto.clone().unwrap_or_default(), s.grant.hard_expires);
+            theme::card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    theme::pill(ui, Tone::Neutral, "Access closed");
+                    theme::pill(ui, Tone::Info, "Auto mode");
+                });
+                ui.add_space(6.0);
+                ui.label(muted("Access closed because Remote Desktop wasn't connected in time."));
+                let left = until.map(|t| format!(" for {}", client::minutes_left(t))).unwrap_or_default();
+                ui.label(muted(format!("Auto mode can open it again for this computer without a code{left}.")));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(self.busy.is_none(), primary("Open again")).clicked() {
+                        let (dir, cfg) = (self.dir.clone(), cfg.clone());
+                        let ctx = ui.ctx().clone();
+                        self.run(&ctx, "Opening access again…", move || {
+                            Done::SignedIn((|| {
+                                let grant = rt()?.block_on(client::reopen(&dir, &cfg, &key, &token))?;
+                                launch(&dir, &cfg, grant, key)
+                            })())
+                        });
+                    }
+                    if ui.add_enabled(self.busy.is_none(), egui::Button::new("Sign in with a code").min_size(egui::vec2(0.0, 36.0))).clicked() {
+                        self.session = None;
+                    }
+                });
+            });
+            return;
+        }
+
         if let Some(s) = &self.session {
             let (file, key) = (s.rdp_file.clone(), s.key.clone());
             let verified = s.check == RdpCheck::Verified;
+            let following = s.follower.is_some();
             let (ip, left, held) = (s.grant.ip.to_string(), client::minutes_left(s.grant.expires), s.grant.while_connected());
             theme::card(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -451,11 +556,20 @@ impl GateApp {
                     if verified {
                         theme::pill(ui, Tone::Info, "Certificate verified");
                     }
+                    if following {
+                        theme::pill(ui, Tone::Info, "Auto mode");
+                    }
                 });
                 ui.add_space(6.0);
                 ui.label(muted("Remote Desktop is open for"));
                 ui.label(RichText::new(&ip).monospace().size(26.0).strong().color(theme::TEXT));
                 ui.label(muted(format!("Start Remote Desktop within {left}. {held}")));
+                if following {
+                    ui.label(muted(
+                        "Auto mode: if this computer's IP address changes, access moves with it, no code needed. \
+                         Keep RDP Gate open (minimised is fine).",
+                    ));
+                }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.add(primary("Open Remote Desktop")).clicked()
@@ -512,13 +626,8 @@ impl GateApp {
                 self.run(&ctx, "Finding your server and signing in…", move || {
                     let result = (|| {
                         let key = client::unlock(&dir, &pass)?;
-                        let rt = rt()?;
-                        let grant = rt.block_on(client::sign_in(&dir, &cfg, &key, &code))?;
-                        // A certificate mismatch is an error: never launch into an interception.
-                        let check = rt.block_on(client::verify_rdp(&grant))?;
-                        let rdp_file = client::write_rdp_file(&dir, &cfg, &grant)?;
-                        client::launch_rdp(&rdp_file)?;
-                        Ok(Box::new(Session { grant, key, rdp_file, check }))
+                        let grant = rt()?.block_on(client::sign_in(&dir, &cfg, &key, &code))?;
+                        launch(&dir, &cfg, grant, key)
                     })();
                     Done::SignedIn(result)
                 });
@@ -556,6 +665,7 @@ impl GateApp {
         match self.screen {
             Screen::Setup => (Tone::Neutral, "Not set up"),
             Screen::Enroll(_) => (Tone::Warn, "Enrolling"),
+            Screen::Main if self.session.as_ref().is_some_and(|s| s.closed) => (Tone::Neutral, "Access closed"),
             Screen::Main if self.session.is_some() => (Tone::Good, "Access open"),
             Screen::Main => (Tone::Info, "Ready"),
         }
@@ -564,8 +674,9 @@ impl GateApp {
 
 impl eframe::App for GateApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.poll();
         let ctx = ui.ctx().clone();
+        self.poll(&ctx);
+        self.poll_follow();
         self.poll_update(&ctx, matches!(self.screen, Screen::Main));
         let bar = egui::Frame::new().fill(theme::BAR).inner_margin(egui::Margin::symmetric(16, 10));
         egui::Panel::top("brand").frame(bar).show(ui, |ui| {

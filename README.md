@@ -145,6 +145,12 @@ The window shows the device fingerprint (check it matches the app) and a **serve
 
 Test from outside your home network, for example over a phone hotspot. To sign in from inside your own network too (a laptop on the same Wi-Fi), tick **Also allow sign-in from computers on my home network** in Setup, or run `rdpgate-server lan on`. The server then puts its home-network address in the encrypted beacon, and the app connects to it directly when you are at home (no router loop-back needed) and to your public address everywhere else. Give the PC a reserved address in your router so that address stays the same. Sign-in from the router's own address is always refused: some routers make every connection from the internet look like it, so a grant for it could open Remote Desktop to everyone.
 
+### Auto mode: access that follows your IP
+
+If a computer's IP address changes while you work (a laptop moving between Wi-Fi and a hotspot, an ISP that changes your address, IPv6 addresses that rotate), its opening stays at the old address and you'd normally sign in again. Turn on **auto mode** for that computer on the server: **RDP Gate Server → Computers → Auto mode**, or `rdpgate-server device-auto macbook on`.
+
+After that computer signs in once with its code, the app checks every 15 seconds, and if the server sees it at a new address, the server opens the new one and closes the old one. No new code is needed. If access closes because Remote Desktop wasn't connected in time, the app offers **Open again**, also without a code. Auto mode never lasts past the **longest session** set on the server (12 hours by default), and it ends when you choose **Close access now**, when the service restarts, or as soon as you turn it off on the server. Only that computer can use it: every request is still signed with its device key, together with a token from its last sign-in with a code. The app keeps the unlocked key in memory, so keep it open (minimised is fine). On the command line, `rdpgate connect --follow` does the same until you press Ctrl+C.
+
 ### Optional: browser sign-in with a passkey
 
 Browsers bind passkeys to a domain name, never an IP, so this needs a domain you control with DNS records pointing at your home (an "A" record for IPv4, and "AAAA" for IPv6 if you have it), plus dynamic DNS if those addresses change. Tick it in Setup, or open **RDP Gate Server → Browser sign-in → Set up with my domain**: it shows the records to create with Copy buttons, checks them for you, then turns sign-in on. The same from PowerShell:
@@ -203,6 +209,7 @@ The same from PowerShell as Administrator:
 rdpgate-server status                  # identity, beacon, warnings, open firewall grants
 rdpgate-server card                    # print the server card again
 rdpgate-server device-list | device-remove NAME | device-unlock NAME
+rdpgate-server device-auto NAME on|off # auto mode: access follows that computer's IP changes
 rdpgate-server passkey-list | passkey-remove NAME
 rdpgate-server beacon-setup            # new token or gist
 rdpgate-server domain-setup            # browser sign-in with your domain (guided); --remove to turn off

@@ -16,6 +16,7 @@ pub struct DeviceInfo {
     pub added: i64,
     pub last_auth: Option<i64>,
     pub locked: bool,
+    pub auto: bool,
 }
 
 pub fn devices(data: &Path) -> Result<Vec<DeviceInfo>, String> {
@@ -29,6 +30,7 @@ pub fn devices(data: &Path) -> Result<Vec<DeviceInfo>, String> {
             added: d.added,
             last_auth: d.last_auth,
             locked: d.failed_codes >= MAX_FAILED_CODES,
+            auto: d.auto,
         })
         .collect())
 }
@@ -55,7 +57,14 @@ pub fn add_device(data: &Path, name: &str, key_text: &str) -> Result<String, Str
         if let Some(d) = st.devices.iter().find(|d| d.public_key == encoded) {
             return Err(format!("that key is already enrolled as {:?}", d.name));
         }
-        st.devices.push(Device { name: name.into(), public_key: encoded.clone(), added: now(), last_auth: None, failed_codes: 0 });
+        st.devices.push(Device {
+            name: name.into(),
+            public_key: encoded.clone(),
+            added: now(),
+            last_auth: None,
+            failed_codes: 0,
+            auto: false,
+        });
         Ok(())
     })?;
     Ok(wire::fingerprint(&key))
@@ -76,6 +85,17 @@ pub fn unlock_device(data: &Path, name: &str) -> Result<(), String> {
     Store::new(data).update(|st| {
         let d = st.devices.iter_mut().find(|d| d.name == name).ok_or(format!("no computer named {name:?}"))?;
         d.failed_codes = 0;
+        Ok(())
+    })
+}
+
+/// Turns auto mode on or off for a computer. Takes effect on the running
+/// service immediately: with it off, the computer stops following its
+/// address and needs a code again once its access closes.
+pub fn set_device_auto(data: &Path, name: &str, on: bool) -> Result<(), String> {
+    Store::new(data).update(|st| {
+        let d = st.devices.iter_mut().find(|d| d.name == name).ok_or(format!("no computer named {name:?}"))?;
+        d.auto = on;
         Ok(())
     })
 }

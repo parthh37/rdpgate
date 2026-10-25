@@ -307,6 +307,7 @@ rdpgate lock                    # close access for this network now</code></pre>
     <tr><th>Add or change a domain</th><td><em>RDP Gate Server &gt; Browser sign-in</em>, or <code>rdpgate-server domain-setup</code> (see <a href="#browser">browser sign-in</a>).</td></tr>
     <tr><th>List or remove computers</th><td><code>rdpgate-server device-list</code>, <code>rdpgate-server device-remove macbook</code>. Removing takes effect immediately.</td></tr>
     <tr><th>Lost or stolen laptop</th><td><code>device-remove</code> it. Its key is useless without your passphrase and code anyway, but remove it.</td></tr>
+    <tr><th>IP address keeps changing</th><td>Turn on auto mode for that computer: <em>RDP Gate Server &gt; Computers &gt; Auto mode</em>, or <code>rdpgate-server device-auto macbook on</code>. After one sign-in with a code, the app moves access to the new address by itself, until the longest session runs out.</td></tr>
     <tr><th>Too many wrong codes</th><td>After 10 wrong codes that computer is locked: <code>rdpgate-server device-unlock macbook</code>.</td></tr>
     <tr><th>New phone</th><td><code>rdpgate-server totp-setup --force</code> and scan the new QR code.</td></tr>
     <tr><th>Replace the GitHub token</th><td><code>rdpgate-server beacon-setup</code>.</td></tr>

@@ -3,8 +3,9 @@
 //! firewall opening for the connection's source address.
 
 use crate::app::App;
+use crate::grants::{Grant, Renewed};
 use crate::state::{MAX_FAILED_CODES, now};
-use rdpgate_core::wire::{self, OP_LINK, OP_REVOKE, OP_TOTP, Request, Response};
+use rdpgate_core::wire::{self, OP_FOLLOW, OP_LINK, OP_REOPEN, OP_REVOKE, OP_TOTP, Request, Response};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,12 +89,21 @@ async fn process(app: &App, tls: &mut TlsStream<TcpStream>, ip: IpAddr, src: &st
             Response { ok: true, ip: Some(ip.to_string()), ..Default::default() }
         }
         OP_LINK => link(app, ip, src, name, p.link).await,
+        OP_FOLLOW | OP_REOPEN => {
+            if !dev.auto {
+                return reject(src, &name, "auto mode is off for this computer on the server; sign in with a code");
+            }
+            if dev.failed_codes >= MAX_FAILED_CODES {
+                return reject(src, &name, "this computer is locked after too many wrong codes");
+            }
+            renew(app, ip, src, name, p.auto, p.op == OP_REOPEN).await
+        }
         _ => deny(app, src, &name, "unknown op"),
     }
 }
 
 enum Check {
-    Ok,
+    Ok { auto: bool },
     BadCode,
     Locked,
     Gone,
@@ -119,10 +129,11 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String)
                 Some(step) => {
                     d.failed_codes = 0;
                     d.last_auth = Some(t);
+                    let auto = d.auto;
                     if let Some(s) = st.totp.as_mut() {
                         s.last_step = step;
                     }
-                    Ok(Check::Ok)
+                    Ok(Check::Ok { auto })
                 }
                 None => {
                     d.failed_codes += 1;
@@ -131,8 +142,8 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String)
             }
         })
         .await;
-    match checked {
-        Ok(Check::Ok) => {}
+    let auto = match checked {
+        Ok(Check::Ok { auto }) => auto,
         Ok(Check::BadCode) => {
             let r = deny(app, src, &device, "wrong or already-used code");
             return Response { error: Some("wrong or already-used code".into()), ..r };
@@ -153,25 +164,55 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String)
             crate::logln!("ERROR state: {e}");
             return Response::error("server error");
         }
-    }
+    };
     match app.grants.allow(ip, format!("device {device}")).await {
         Ok(g) => {
             app.limiter.reset(src);
-            Response {
-                ok: true,
-                ip: Some(ip.to_string()),
-                expires: Some(g.expires),
-                hard_expires: Some(g.hard_expires),
-                rdp_port: Some(app.cfg.rdp_port_for(ip)),
-                rdp_cert_sha256: app.rdp_cert().await.map(|c| c.sha256),
-                link: g.link.map(|(token, _)| token),
-                ..Default::default()
-            }
+            let auto = if auto { Some(app.grants.start_auto(&g).await) } else { None };
+            Response { auto, ..opened(app, ip, g).await }
         }
         Err(e) => {
             crate::logln!("ERROR grant {ip}: {e}");
             reject(src, &device, &format!("could not open the firewall: {e}"))
         }
+    }
+}
+
+/// The answer to a sign-in that opened `g` for `ip`.
+async fn opened(app: &App, ip: IpAddr, g: Grant) -> Response {
+    Response {
+        ok: true,
+        ip: Some(ip.to_string()),
+        expires: Some(g.expires),
+        hard_expires: Some(g.hard_expires),
+        rdp_port: Some(app.cfg.rdp_port_for(ip)),
+        rdp_cert_sha256: app.rdp_cert().await.map(|c| c.sha256),
+        link: g.link.map(|(token, _)| token),
+        ..Default::default()
+    }
+}
+
+/// Auto mode: a computer that signed in with a code earlier presents its
+/// auto token from wherever it is now. The device signature proves who it
+/// is; the token proves that sign-in, so no new code is needed.
+async fn renew(app: &App, ip: IpAddr, src: &str, device: String, token: String, reopen: bool) -> Response {
+    if !app.cfg.desktop_login {
+        return reject(src, &device, "desktop sign-in is disabled on this server");
+    }
+    match app.grants.renew(&token, ip, &format!("device {device}"), reopen).await {
+        // Asked every few seconds: keep it cheap and quiet.
+        Ok((g, Renewed::Same)) => Response {
+            ok: true,
+            ip: Some(ip.to_string()),
+            expires: Some(g.expires),
+            hard_expires: Some(g.hard_expires),
+            rdp_port: Some(app.cfg.rdp_port_for(ip)),
+            auto: Some(token),
+            ..Default::default()
+        },
+        Ok((g, _)) => Response { auto: Some(token), ..opened(app, ip, g).await },
+        Err(e) if e == wire::CLOSED => Response::error(e),
+        Err(e) => reject(src, &device, &e),
     }
 }
 

@@ -152,7 +152,7 @@ fn enroll(server_dir: &std::path::Path, name: &str, public_key: String) {
     Store::new(server_dir)
         .update(|st| {
             st.devices.retain(|d| d.name != name);
-            st.devices.push(Device { name: name.into(), public_key, added: now(), last_auth: None, failed_codes: 0 });
+            st.devices.push(Device { name: name.into(), public_key, added: now(), last_auth: None, failed_codes: 0, auto: false });
             Ok(())
         })
         .unwrap();
@@ -476,4 +476,84 @@ async fn signing_in_over_ipv6_opens_ipv4_too_and_lock_closes_both() {
     let cfg = client::load_config(&d.dir).unwrap();
     client::lock(&d.dir, &cfg, &d.key).await.expect("lock succeeds");
     assert!(h.allowed().is_empty(), "locking closes both addresses");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_auto_mode_there_is_nothing_to_follow() {
+    let h = start().await;
+    let d = h.device("mac", true);
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    assert!(grant.auto.is_none(), "auto mode is off unless the server turns it on");
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Ended(_))));
+
+    // A made-up token is refused too: the server decides, not the app.
+    let forged = client::Grant { auto: Some("made-up".into()), ..grant };
+    let Ok(client::Followed::Ended(e)) = client::follow(&d.dir, &d.cfg, &d.key, &forged).await else { panic!() };
+    assert!(e.contains("Auto mode is off"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_mode_follows_reopens_without_a_code_and_ends_on_lock() {
+    let h = start().await;
+    let d = h.device("mac", true);
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
+    // No time to connect (below what the settings allow), so access closes on
+    // the next tick. Without config.json the service leaves the limits alone.
+    std::fs::remove_file(h.dir.join("config.json")).unwrap();
+    h.app.grants.set_limits(std::time::Duration::ZERO, std::time::Duration::from_secs(3600)).await;
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    let token = grant.auto.clone().expect("the server hands out an auto token");
+    assert_eq!(grant.source, Some("127.0.0.1".parse().unwrap()));
+
+    // Same address: nothing to do.
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Same)));
+
+    // Access runs out without Remote Desktop connecting: following doesn't reopen it.
+    h.app.grants.tick().await;
+    assert!(h.allowed().is_empty());
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Closed)));
+    assert!(h.allowed().is_empty());
+
+    // Asking opens it again, no code needed, with the same longest-session limit.
+    let again = client::reopen(&d.dir, &d.cfg, &d.key, &token).await.expect("reopen succeeds");
+    assert_eq!(h.allowed(), vec!["127.0.0.1".parse::<IpAddr>().unwrap()]);
+    assert_eq!(again.hard_expires, grant.hard_expires);
+    assert_eq!(again.rdp_cert_sha256.as_deref(), Some(h.rdp_sha256.as_str()));
+
+    // Turned off on the server: the next check ends it.
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", false).unwrap();
+    let Ok(client::Followed::Ended(e)) = client::follow(&d.dir, &d.cfg, &d.key, &again).await else { panic!() };
+    assert!(e.contains("Auto mode is off"), "{e}");
+
+    // Locking ends the auto session for good.
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
+    client::lock(&d.dir, &d.cfg, &d.key).await.expect("lock succeeds");
+    assert!(client::reopen(&d.dir, &d.cfg, &d.key, &token).await.unwrap_err().contains("ended"));
+    assert!(h.allowed().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_mode_moves_access_when_this_computers_address_changes() {
+    let Some(h) = start_dual_stack().await else {
+        eprintln!("skipped: no IPv6 on this machine");
+        return;
+    };
+    let mut d = h.device("mac", true);
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
+    // Sign in from 127.0.0.1…
+    d.cfg.connect_override = Some(SocketAddr::new("127.0.0.1".parse().unwrap(), h.addr.port()));
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    assert_eq!(h.allowed(), vec!["127.0.0.1".parse::<IpAddr>().unwrap()]);
+
+    // …then this computer turns up at ::1 instead (as the server sees it).
+    let at_v6 = client::Grant { server_addr: h.addr, ..grant.clone() };
+    let Ok(client::Followed::Moved(moved)) = client::follow(&d.dir, &d.cfg, &d.key, &at_v6).await else { panic!("should move") };
+    assert_eq!(moved.source, Some("::1".parse().unwrap()));
+    assert_eq!(h.allowed(), vec!["::1".parse::<IpAddr>().unwrap()], "the old address is closed");
+    assert_eq!(moved.hard_expires, grant.hard_expires, "moving doesn't extend the session");
+    assert_eq!(moved.auto, grant.auto);
+    assert_eq!(client::verify_rdp(&moved).await.unwrap(), RdpCheck::Verified);
+
+    // And from there on it's the same place again.
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &moved).await, Ok(client::Followed::Same)));
 }

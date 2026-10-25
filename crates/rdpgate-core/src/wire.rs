@@ -32,6 +32,15 @@ pub const OP_REVOKE: &str = "revoke";
 /// Open the firewall for this connection's source IP as well, with the
 /// one-time `link` from a sign-in made moments ago over the other IP family.
 pub const OP_LINK: &str = "link";
+/// Auto mode: move this computer's open access to the connection's source IP
+/// if it changed, with the `auto` token from a sign-in. Never reopens access
+/// that has closed (answers [`CLOSED`] instead).
+pub const OP_FOLLOW: &str = "follow";
+/// Auto mode: open access for the connection's source IP again with the
+/// `auto` token after it closed, without a new code.
+pub const OP_REOPEN: &str = "reopen";
+/// The error [`OP_FOLLOW`] gets once access has closed.
+pub const CLOSED: &str = "access has closed";
 
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
@@ -71,6 +80,9 @@ pub struct Payload {
     /// For [`OP_LINK`]: the token from [`Response::link`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub link: String,
+    /// For [`OP_FOLLOW`] and [`OP_REOPEN`]: the token from [`Response::auto`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auto: String,
 }
 
 /// Every server reply. Before the device is authenticated, errors are a bare
@@ -100,6 +112,11 @@ pub struct Response {
     /// computer's address in the other IP family too (see [`OP_LINK`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// Auto mode is on for this computer: a token that lets it follow its own
+    /// address changes ([`OP_FOLLOW`], [`OP_REOPEN`]) without another code,
+    /// until `hard_expires`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<String>,
 }
 
 /// First frame the server sends: proof that it holds the pinned server key,

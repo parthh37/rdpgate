@@ -150,6 +150,14 @@ enum Cmd {
     DeviceRemove { name: String },
     /// Unlock a computer that was locked after too many wrong codes
     DeviceUnlock { name: String },
+    /// Auto mode for a computer: after it signs in with a code, its access
+    /// follows it when its IP address changes, without another code, until
+    /// the longest session runs out
+    DeviceAuto {
+        name: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Check for and install a signed update, then restart the service
     Update {
         /// Only check; don't install
@@ -359,7 +367,14 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             }
             for d in &devices {
                 let locked = if d.locked { "  LOCKED (device-unlock)" } else { "" };
-                println!("{:<20} {}  added {}  last sign-in {}{locked}", d.name, d.fingerprint, local(d.added), admin::when(d.last_auth));
+                let auto = if d.auto { "  auto mode" } else { "" };
+                println!(
+                    "{:<20} {}  added {}  last sign-in {}{auto}{locked}",
+                    d.name,
+                    d.fingerprint,
+                    local(d.added),
+                    admin::when(d.last_auth)
+                );
             }
             Ok(())
         }
@@ -371,6 +386,15 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
         Cmd::DeviceUnlock { name } => {
             admin::unlock_device(data, &name)?;
             println!("Unlocked {name:?}.");
+            Ok(())
+        }
+        Cmd::DeviceAuto { name, state } => {
+            admin::set_device_auto(data, &name, state == "on")?;
+            if state == "on" {
+                println!("Auto mode on for {name:?}. From its next sign-in with a code, its access follows it when its IP changes.");
+            } else {
+                println!("Auto mode off for {name:?}. It needs a code again once its access closes.");
+            }
             Ok(())
         }
         Cmd::ServiceInstall => {

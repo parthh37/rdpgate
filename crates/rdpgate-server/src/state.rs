@@ -48,6 +48,11 @@ pub struct Device {
     /// until `rdpgate-server device-unlock`, whatever the source address.
     #[serde(default)]
     pub failed_codes: u32,
+    /// Auto mode: after a sign-in with a code, this computer's access follows
+    /// its address when that changes, without another code, until the
+    /// longest session runs out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 pub const MAX_FAILED_CODES: u32 = 10;

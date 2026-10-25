@@ -12,6 +12,9 @@ use zeroize::Zeroizing;
 const REFRESH: Duration = Duration::from_secs(3);
 /// Passed to the relaunched window when Direct3D couldn't start.
 const OPENGL_ARG: &str = "--opengl";
+const AUTO_MODE_HELP: &str = "Auto mode: after a computer signs in with a code, the app moves its access to its new IP address \
+    whenever that changes (and can open it again without a code) until the longest session runs out. \
+    Locking from the app ends it.";
 
 pub fn main() {
     rdpgate_core::update::cleanup_previous();
@@ -785,10 +788,11 @@ impl ServerApp {
                 ui.label(muted("No computers yet."));
                 return;
             }
-            egui::Grid::new("devices").striped(true).num_columns(4).spacing([24.0, 8.0]).show(ui, |ui| {
+            egui::Grid::new("devices").striped(true).num_columns(5).spacing([24.0, 8.0]).show(ui, |ui| {
                 ui.label(muted("NAME").small().strong());
                 ui.label(muted("FINGERPRINT").small().strong());
                 ui.label(muted("LAST SIGN-IN").small().strong());
+                ui.label(muted("AUTO MODE").small().strong());
                 ui.label("");
                 ui.end_row();
                 for d in &devices {
@@ -798,6 +802,22 @@ impl ServerApp {
                     });
                     ui.monospace(d.fingerprint.get(..14).unwrap_or(&d.fingerprint));
                     ui.label(when(d.last_auth));
+                    let mut auto = d.auto;
+                    if ui
+                        .checkbox(&mut auto, if d.auto { "On" } else { "Off" })
+                        .on_hover_text(AUTO_MODE_HELP)
+                        .changed()
+                    {
+                        let r = admin::set_device_auto(&self.data, &d.name, auto).map(|()| {
+                            if auto {
+                                format!("Auto mode on for {}. From its next sign-in with a code, its access follows it when its IP changes.", d.name)
+                            } else {
+                                format!("Auto mode off for {}. It needs a code again once its access closes.", d.name)
+                            }
+                        });
+                        self.say(r);
+                        self.refresh();
+                    }
                     ui.horizontal(|ui| {
                         if d.locked {
                             theme::pill(ui, Tone::Bad, "Locked (10 wrong codes)");
@@ -814,6 +834,8 @@ impl ServerApp {
                     ui.end_row();
                 }
             });
+            ui.add_space(6.0);
+            ui.label(muted(AUTO_MODE_HELP).small());
         });
 
         if self.added.is_none() {

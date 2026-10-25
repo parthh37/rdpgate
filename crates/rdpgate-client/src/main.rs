@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use rdpgate_client::{self as client, RdpCheck};
+use rdpgate_client::{self as client, FollowEvent, RdpCheck};
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -45,6 +45,10 @@ enum Cmd {
         /// Only sign in; don't launch Remote Desktop
         #[arg(long)]
         no_launch: bool,
+        /// Keep running and move access with this computer when its IP
+        /// address changes (needs auto mode on for it on the server)
+        #[arg(long)]
+        follow: bool,
     },
     /// Close the firewall for this network now
     Lock,
@@ -125,7 +129,7 @@ fn run(cli: Cli) -> client::Result<()> {
             println!("Check it matches \"Server key\" in rdpgate-server status.");
             Ok(())
         }
-        Cmd::Connect { code, address, no_launch } => {
+        Cmd::Connect { code, address, no_launch, follow } => {
             let mut cfg = client::load_config(&dir)?;
             client::card(&cfg)?;
             cfg.connect_override = address;
@@ -160,6 +164,27 @@ fn run(cli: Cli) -> client::Result<()> {
                     && client::install_update(&av, rdpgate_core::update::Component::Cli).is_ok()
                 {
                     println!("rdpgate updated to {} (takes effect next time).", av.version);
+                }
+            }
+            match grant.auto {
+                _ if !follow => {}
+                None => println!(
+                    "Auto mode is off for this computer on the server (rdpgate-server device-auto {} on), so there's nothing to follow.",
+                    cfg.device
+                ),
+                Some(_) => {
+                    println!("Auto mode: access moves with this computer if its IP address changes. Keep this running; Ctrl+C stops.");
+                    let stop = std::sync::atomic::AtomicBool::new(false);
+                    rt.block_on(client::keep_following(&dir, &cfg, &key, grant, &stop, |ev| match ev {
+                        FollowEvent::Moved { grant, check, .. } => {
+                            println!("This computer's address changed: access moved to {}.", grant.ip);
+                            if let RdpCheck::Unchecked(why) = check {
+                                println!("Warning: couldn't verify the Remote Desktop certificate ({why}).");
+                            }
+                        }
+                        FollowEvent::Closed => println!("Access has closed. Run rdpgate connect again when you need it."),
+                        FollowEvent::Ended(e) => println!("Auto mode ended: {e}"),
+                    }));
                 }
             }
             Ok(())

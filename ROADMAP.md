@@ -44,6 +44,7 @@ address, and many people can share one (hotel Wi-Fi, carrier NAT).
 ## Convenience
 
 - [x] Keep the PC awake while someone is signed in
+- [x] Auto mode (per computer, set on the server): access follows the computer's IP changes without a new code, within the longest session
 - [ ] Sign-in notifications (email / push) and a revoke link
 - [ ] LAN allow-list (skip sign-in at home)
 - [x] IPv6 listening by default, with dual-stack grants and the IPv6 address in the beacon
