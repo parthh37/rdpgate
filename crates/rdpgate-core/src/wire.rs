@@ -32,6 +32,18 @@ pub const OP_REVOKE: &str = "revoke";
 /// Open the firewall for this connection's source IP as well, with the
 /// one-time `link` from a sign-in made moments ago over the other IP family.
 pub const OP_LINK: &str = "link";
+/// Auto mode, for a remembered computer (the `auto` token and `hw` from its
+/// sign-in with a code): move its open access to the connection's source IP
+/// if that changed. Never opens access that has closed (answers [`CLOSED`]).
+pub const OP_FOLLOW: &str = "follow";
+/// Auto mode: open access for a remembered computer without a passphrase
+/// or code (the `auto` token and `hw` from its sign-in with a code).
+pub const OP_OPEN: &str = "open";
+/// The error [`OP_FOLLOW`] gets when this computer has no open access.
+pub const CLOSED: &str = "access has closed";
+/// Starts every error that means the server no longer remembers this
+/// computer (hardware changed, auto mode turned off…): sign in with a code.
+pub const NOT_REMEMBERED: &str = "not remembered: ";
 
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
@@ -71,6 +83,14 @@ pub struct Payload {
     /// For [`OP_LINK`]: the token from [`Response::link`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub link: String,
+    /// For [`OP_FOLLOW`] and [`OP_OPEN`]: the token from [`Response::auto`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auto: String,
+    /// A digest of this computer's hardware (never the hardware IDs
+    /// themselves). Sent with [`OP_TOTP`] so the server can remember the
+    /// computer, and with [`OP_FOLLOW`] and [`OP_OPEN`] to show it's the same.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hw: String,
 }
 
 /// Every server reply. Before the device is authenticated, errors are a bare
@@ -100,6 +120,11 @@ pub struct Response {
     /// computer's address in the other IP family too (see [`OP_LINK`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// Auto mode is on for this computer and the server now remembers it: a
+    /// token that opens access ([`OP_OPEN`]) and follows its address changes
+    /// ([`OP_FOLLOW`]) with no passphrase or code, until its hardware changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<String>,
 }
 
 /// First frame the server sends: proof that it holds the pinned server key,

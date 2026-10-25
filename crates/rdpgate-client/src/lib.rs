@@ -21,6 +21,8 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
+pub mod trust;
+
 pub type Result<T> = std::result::Result<T, String>;
 
 pub const MIN_PASSPHRASE: usize = 10;
@@ -61,6 +63,9 @@ pub struct ClientConfig {
     /// Connect here first (tests, or `--address`).
     #[serde(skip)]
     pub connect_override: Option<SocketAddr>,
+    /// Tests: send this hardware digest and keep nothing sealed.
+    #[serde(skip)]
+    pub hw_override: Option<String>,
 }
 
 fn yes() -> bool {
@@ -183,6 +188,7 @@ pub fn create_device(dir: &Path, device: &str, rdp_username: Option<String>, pas
         auto_update: true,
         last_update_check: 0,
         connect_override: None,
+        hw_override: None,
     };
     save_config(dir, &cfg)?;
     file.save(&key_path(dir)).map_err(|e| e.to_string())?;
@@ -236,6 +242,16 @@ pub struct Grant {
     pub rdp_port: u16,
     /// SHA-256 of the real RDP certificate, as read by the server itself.
     pub rdp_cert_sha256: Option<String>,
+    /// This computer's address as the server saw it.
+    pub source: Option<IpAddr>,
+    /// Auto mode is on (the server decides) and the server remembers this
+    /// computer: the token that opens access without a passphrase or code
+    /// ([`open`]) and moves it when this computer's address changes
+    /// ([`keep_following`]).
+    pub auto: Option<String>,
+    /// The token and key are now sealed on this computer, so next time it
+    /// connects without a passphrase or code ([`trust::recall`]).
+    pub remembered: bool,
 }
 
 impl Grant {
@@ -416,9 +432,10 @@ async fn request(tls: &mut TlsStream<TcpStream>, binding: &[u8], key: &SigningKe
     .map_err(|e| format!("server connection: {e}"))
 }
 
-/// Finds the server, verifies it, sends one signed request. Also returns the
-/// server's other addresses from the same source, not tried yet.
-async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, code: &str) -> Result<(Response, Target, Vec<Target>)> {
+/// Finds the server, verifies it, sends one signed request (`p`, stamped
+/// with this device and the time). Also returns the server's other
+/// addresses from the same source, not tried yet.
+async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, p: Payload) -> Result<(Response, Target, Vec<Target>)> {
     let card = card(cfg)?;
     let mut notes = Vec::new();
     let mut newest_beacon = None;
@@ -444,7 +461,7 @@ async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, co
                     continue;
                 }
             };
-            let p = Payload { op: op.into(), device: cfg.device.clone(), ts: unix_now(), totp: code.into(), ..Default::default() };
+            let p = Payload { device: cfg.device.clone(), ts: unix_now(), ..p.clone() };
             let resp = request(&mut tls, &binding, key, p).await?;
 
             // Remember where the server proved itself, and the newest beacon.
@@ -453,7 +470,12 @@ async fn exchange(dir: &Path, cfg: &ClientConfig, key: &SigningKey, op: &str, co
             updated.last_known_rdp_port = target.rdp_port;
             updated.beacon_ts = updated.beacon_ts.max(newest_beacon.unwrap_or(0));
             updated.connect_override = None;
-            let _ = save_config(dir, &updated);
+            // Auto mode asks every few seconds: only write what changed.
+            let same = (cfg.last_known, cfg.last_known_rdp_port, cfg.beacon_ts)
+                == (updated.last_known, updated.last_known_rdp_port, updated.beacon_ts);
+            if !same {
+                let _ = save_config(dir, &updated);
+            }
             let rest = targets[i + 1..].iter().filter(|t| !tried.contains(&t.addr)).copied().collect();
             return Ok((resp, target, rest));
         }
@@ -498,25 +520,195 @@ pub async fn sign_in(dir: &Path, cfg: &ClientConfig, key: &SigningKey, code: &st
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Enter the 6-digit code from your authenticator app.".into());
     }
-    let (resp, target, rest) = exchange(dir, cfg, key, wire::OP_TOTP, code).await?;
+    // Saying what hardware this is lets a server in auto mode remember it.
+    let hw = hardware(cfg, key);
+    let p = Payload { op: wire::OP_TOTP.into(), totp: code.into(), hw: hw.clone().unwrap_or_default(), ..Default::default() };
+    let (resp, target, rest) = exchange(dir, cfg, key, p).await?;
     if !resp.ok {
         return Err(explain(&resp));
     }
-    let mut ip = resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok()).map(|i| i.to_string()).unwrap_or_default();
+    let mut grant = opened(cfg, key, resp, target, &rest).await;
+    if let (Some(token), Some(hw), None) = (&grant.auto, &hw, &cfg.hw_override) {
+        grant.remembered = trust::remember(dir, key, token, hw).is_ok();
+    }
+    Ok(grant)
+}
+
+/// This computer's hardware digest, where it can be remembered.
+fn hardware(cfg: &ClientConfig, key: &SigningKey) -> Option<String> {
+    cfg.hw_override.clone().or_else(|| trust::supported().then(|| trust::hardware_digest(&key.verifying_key())).flatten())
+}
+
+/// The server no longer remembers this computer: forget it here too.
+fn not_remembered(dir: &Path, resp: &Response) -> Option<String> {
+    let why = resp.error.as_deref()?.strip_prefix(wire::NOT_REMEMBERED)?;
+    trust::forget(dir);
+    let mut why = clean(why);
+    if let Some(f) = why.get_mut(0..1) {
+        f.make_ascii_uppercase();
+    }
+    Some(format!("{why}. Sign in with your passphrase and code."))
+}
+
+/// The grant a successful sign-in (or auto-mode move) answered with.
+async fn opened(cfg: &ClientConfig, key: &SigningKey, resp: Response, target: Target, rest: &[Target]) -> Grant {
+    let source = resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok());
+    let mut ip = source.map(|i| i.to_string()).unwrap_or_default();
     // Don't hold up signing in for long if the other address doesn't answer.
     if let Some(token) = resp.link.as_deref()
-        && let Ok(Some(also)) = tokio::time::timeout(IPV6_TIMEOUT, link_other_family(cfg, key, target, &rest, token)).await
+        && let Ok(Some(also)) = tokio::time::timeout(IPV6_TIMEOUT, link_other_family(cfg, key, target, rest, token)).await
     {
         ip = format!("{ip} and {also}");
     }
-    Ok(Grant {
+    Grant {
         ip,
         expires: resp.expires.unwrap_or_default(),
         hard_expires: resp.hard_expires,
         server_addr: target.addr,
         rdp_port: target.rdp_port.or(resp.rdp_port).unwrap_or(3389),
         rdp_cert_sha256: resp.rdp_cert_sha256.filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())),
-    })
+        source,
+        auto: resp.auto.filter(|t| !t.is_empty()),
+        remembered: false,
+    }
+}
+
+/// What one auto-mode check found.
+#[derive(Debug, Clone)]
+pub enum Followed {
+    /// This computer's address hasn't changed.
+    Same,
+    /// It changed: the server opened the new address and closed the old one.
+    Moved(Grant),
+    /// Access has closed (time ran out, the longest session ended, or the
+    /// service restarted). A remembered computer opens it again with [`open`].
+    Closed,
+    /// Following has stopped: the server no longer remembers this computer
+    /// (it was forgotten here too) or refused for another reason.
+    Ended(String),
+}
+
+/// Auto mode: asks the server, from wherever this computer is now, to move
+/// `grant` here if this computer's address changed. Goes to the address the
+/// server proved itself at, and only searches again (beacon, host name) if
+/// that fails. An `Err` means the server couldn't be reached; try again later.
+pub async fn follow(dir: &Path, cfg: &ClientConfig, key: &SigningKey, grant: &Grant) -> Result<Followed> {
+    let Some(token) = grant.auto.clone() else { return Ok(Followed::Ended("auto mode is off for this computer".into())) };
+    let cfg = ClientConfig { connect_override: Some(grant.server_addr), ..cfg.clone() };
+    let hw = hardware(&cfg, key).unwrap_or_default();
+    let p = Payload { op: wire::OP_FOLLOW.into(), auto: token, hw, ..Default::default() };
+    let (resp, mut target, rest) = exchange(dir, &cfg, key, p).await?;
+    if !resp.ok {
+        if resp.error.as_deref() == Some(wire::CLOSED) {
+            return Ok(Followed::Closed);
+        }
+        return Ok(Followed::Ended(not_remembered(dir, &resp).unwrap_or_else(|| explain(&resp))));
+    }
+    let source = resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok());
+    if target.addr == grant.server_addr {
+        if source == grant.source {
+            return Ok(Followed::Same);
+        }
+        // Same place as before (perhaps the server's own-network address).
+        target.rdp_port = Some(grant.rdp_port);
+    }
+    let cert = grant.rdp_cert_sha256.clone();
+    let mut moved = opened(&cfg, key, resp, target, &rest).await;
+    moved.rdp_cert_sha256 = moved.rdp_cert_sha256.or(cert);
+    (moved.auto, moved.remembered) = (grant.auto.clone(), grant.remembered);
+    Ok(Followed::Moved(moved))
+}
+
+/// Auto mode: opens access for a remembered computer with no passphrase or
+/// code: its device `key` and the server's `token` (from [`trust::recall`]).
+/// If the server no longer remembers it, it's forgotten here too.
+pub async fn open(dir: &Path, cfg: &ClientConfig, key: &SigningKey, token: &str) -> Result<Grant> {
+    let hw = hardware(cfg, key).ok_or("this computer's hardware can't be read, so it can't be remembered")?;
+    let p = Payload { op: wire::OP_OPEN.into(), auto: token.into(), hw, ..Default::default() };
+    let (resp, target, rest) = exchange(dir, cfg, key, p).await?;
+    if !resp.ok {
+        return Err(not_remembered(dir, &resp).unwrap_or_else(|| explain(&resp)));
+    }
+    let mut grant = opened(cfg, key, resp, target, &rest).await;
+    (grant.auto, grant.remembered) = (Some(token.into()), true);
+    Ok(grant)
+}
+
+/// [`open`] with what this computer remembers. The key is returned too, for
+/// following and closing access later.
+pub async fn open_remembered(dir: &Path, cfg: &ClientConfig) -> Result<(Grant, SigningKey)> {
+    let r = trust::recall(dir).ok_or("This computer isn't remembered (or its hardware changed). Sign in with your passphrase and code.")?;
+    Ok((open(dir, cfg, &r.key, &r.token).await?, r.key))
+}
+
+/// How often auto mode checks this computer's address. Remote Desktop keeps
+/// trying to reconnect for a minute or so after the address changes.
+pub const FOLLOW_EVERY: Duration = Duration::from_secs(15);
+/// Longest wait between checks while the server can't be reached (offline,
+/// asleep), so the beacon isn't fetched every few seconds.
+const FOLLOW_BACKOFF_MAX: Duration = Duration::from_secs(120);
+
+/// What [`keep_following`] reports.
+#[derive(Debug, Clone)]
+pub enum FollowEvent {
+    /// Access moved to this computer's new address. The connection file was
+    /// rewritten for it, and the Remote Desktop certificate checked again.
+    Moved { grant: Grant, check: RdpCheck, rdp_file: PathBuf },
+    /// Access has closed; a remembered computer opens it again with [`open`].
+    /// Following has stopped.
+    Closed,
+    /// Auto mode is over, or the server at the new address failed the
+    /// certificate check. Following has stopped.
+    Ended(String),
+}
+
+/// Auto mode: checks every [`FOLLOW_EVERY`] whether this computer's address
+/// changed and moves the access with it, until access closes, auto mode
+/// ends or `stop` is set. Only for a grant that has an auto token.
+pub async fn keep_following(
+    dir: &Path,
+    cfg: &ClientConfig,
+    key: &SigningKey,
+    mut grant: Grant,
+    stop: &std::sync::atomic::AtomicBool,
+    mut on: impl FnMut(FollowEvent),
+) {
+    use std::sync::atomic::Ordering;
+    let mut wait = FOLLOW_EVERY;
+    loop {
+        let until = tokio::time::Instant::now() + wait;
+        while tokio::time::Instant::now() < until {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        // The newest beacon time, if signing in elsewhere saw one.
+        let cfg = load_config(dir).map(|c| ClientConfig { connect_override: None, ..c }).unwrap_or_else(|_| cfg.clone());
+        let result = follow(dir, &cfg, key, &grant).await;
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        match result {
+            Ok(Followed::Same) => wait = FOLLOW_EVERY,
+            Ok(Followed::Moved(g)) => {
+                wait = FOLLOW_EVERY;
+                // Never send Remote Desktop into an interception.
+                let check = match verify_rdp(&g).await {
+                    Ok(c) => c,
+                    Err(e) => return on(FollowEvent::Ended(e)),
+                };
+                match write_rdp_file(dir, &cfg, &g) {
+                    Ok(rdp_file) => on(FollowEvent::Moved { grant: g.clone(), check, rdp_file }),
+                    Err(e) => return on(FollowEvent::Ended(format!("could not write the connection file: {e}"))),
+                }
+                grant = g;
+            }
+            Ok(Followed::Closed) => return on(FollowEvent::Closed),
+            Ok(Followed::Ended(e)) => return on(FollowEvent::Ended(e)),
+            Err(_) => wait = (wait * 2).min(FOLLOW_BACKOFF_MAX),
+        }
+    }
 }
 
 /// A computer with both IPv6 and IPv4 signed in over one of them: open the
@@ -538,7 +730,7 @@ async fn link_other_family(cfg: &ClientConfig, key: &SigningKey, signed_in: Targ
 
 /// Closes the firewall for this network again.
 pub async fn lock(dir: &Path, cfg: &ClientConfig, key: &SigningKey) -> Result<String> {
-    let (resp, ..) = exchange(dir, cfg, key, wire::OP_REVOKE, "").await?;
+    let (resp, ..) = exchange(dir, cfg, key, Payload { op: wire::OP_REVOKE.into(), ..Default::default() }).await?;
     if !resp.ok {
         return Err(explain(&resp));
     }

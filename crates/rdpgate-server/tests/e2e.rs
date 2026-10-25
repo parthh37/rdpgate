@@ -152,7 +152,7 @@ fn enroll(server_dir: &std::path::Path, name: &str, public_key: String) {
     Store::new(server_dir)
         .update(|st| {
             st.devices.retain(|d| d.name != name);
-            st.devices.push(Device { name: name.into(), public_key, added: now(), last_auth: None, failed_codes: 0 });
+            st.devices.push(Device { name: name.into(), public_key, added: now(), last_auth: None, failed_codes: 0, auto: false, trust: None });
             Ok(())
         })
         .unwrap();
@@ -476,4 +476,101 @@ async fn signing_in_over_ipv6_opens_ipv4_too_and_lock_closes_both() {
     let cfg = client::load_config(&d.dir).unwrap();
     client::lock(&d.dir, &cfg, &d.key).await.expect("lock succeeds");
     assert!(h.allowed().is_empty(), "locking closes both addresses");
+}
+
+
+/// Turns auto mode on for `name` and gives the client a fixed hardware digest.
+fn auto_mode(h: &Harness, d: &mut TestDevice, name: &str, hw: &str) {
+    rdpgate_server::admin::set_device_auto(&h.dir, name, true).unwrap();
+    d.cfg.hw_override = Some(hw.into());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_auto_mode_nothing_is_remembered() {
+    let h = start().await;
+    let mut d = h.device("mac", true);
+    d.cfg.hw_override = Some("hw-1".into());
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    assert!(grant.auto.is_none(), "auto mode is off unless the server turns it on");
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Ended(_))));
+    // A made-up token is refused: the server decides, not the app.
+    let err = client::open(&d.dir, &d.cfg, &d.key, "made-up").await.unwrap_err();
+    assert!(err.contains("Auto mode is off"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remembered_computer_connects_without_a_code_until_its_hardware_changes() {
+    let h = start().await;
+    let mut d = h.device("mac", true);
+    auto_mode(&h, &mut d, "mac", "hw-1");
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    let token = grant.auto.clone().expect("the server remembers this computer");
+    assert!(rdpgate_server::admin::devices(&h.dir).unwrap()[0].remembered.is_some());
+
+    // Same address: nothing to follow.
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Same)));
+
+    // Closing access doesn't forget the computer: it connects again, no code.
+    client::lock(&d.dir, &d.cfg, &d.key).await.expect("lock succeeds");
+    assert!(h.allowed().is_empty());
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Closed)), "following never opens");
+    let again = client::open(&d.dir, &d.cfg, &d.key, &token).await.expect("opens without a code");
+    assert_eq!(h.allowed(), vec!["127.0.0.1".parse::<IpAddr>().unwrap()]);
+    assert_eq!(again.rdp_cert_sha256.as_deref(), Some(h.rdp_sha256.as_str()));
+    assert_eq!(client::verify_rdp(&again).await.unwrap(), RdpCheck::Verified);
+
+    // Also after the service restarts (grants are in memory, being remembered isn't).
+    h.app.grants.shutdown().await;
+    let restarted = App::new(Config::load(&h.dir).unwrap(), h.fw.clone()).unwrap();
+    assert!(restarted.state().await.unwrap().device("mac").unwrap().trust.is_some());
+
+    // The wrong token, or another computer with the right key, gets nothing.
+    let err = client::open(&d.dir, &d.cfg, &d.key, "made-up").await.unwrap_err();
+    assert!(err.contains("signed in with a code again"), "{err}");
+    let mut moved_disk = d.cfg.clone();
+    moved_disk.hw_override = Some("hw-2".into());
+    let err = client::open(&d.dir, &moved_disk, &d.key, &token).await.unwrap_err();
+    assert!(err.contains("hardware changed") && err.contains("passphrase and code"), "{err}");
+    // That forgets it on the server: even the original hardware needs a code now.
+    assert!(client::open(&d.dir, &d.cfg, &d.key, &token).await.unwrap_err().contains("isn't remembered"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn turning_auto_mode_off_forgets_the_computer() {
+    let h = start().await;
+    let mut d = h.device("mac", true);
+    auto_mode(&h, &mut d, "mac", "hw-1");
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", false).unwrap();
+    let Ok(client::Followed::Ended(e)) = client::follow(&d.dir, &d.cfg, &d.key, &grant).await else { panic!() };
+    assert!(e.contains("Auto mode is off"), "{e}");
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
+    let err = client::open(&d.dir, &d.cfg, &d.key, grant.auto.as_deref().unwrap()).await.unwrap_err();
+    assert!(err.contains("isn't remembered"), "turned back on, it still needs a code once: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_mode_moves_access_when_this_computers_address_changes() {
+    let Some(h) = start_dual_stack().await else {
+        eprintln!("skipped: no IPv6 on this machine");
+        return;
+    };
+    let mut d = h.device("mac", true);
+    auto_mode(&h, &mut d, "mac", "hw-1");
+    // Sign in from 127.0.0.1…
+    d.cfg.connect_override = Some(SocketAddr::new("127.0.0.1".parse().unwrap(), h.addr.port()));
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    assert_eq!(h.allowed(), vec!["127.0.0.1".parse::<IpAddr>().unwrap()]);
+
+    // …then this computer turns up at ::1 instead (as the server sees it).
+    let at_v6 = client::Grant { server_addr: h.addr, ..grant.clone() };
+    let Ok(client::Followed::Moved(moved)) = client::follow(&d.dir, &d.cfg, &d.key, &at_v6).await else { panic!("should move") };
+    assert_eq!(moved.source, Some("::1".parse().unwrap()));
+    assert_eq!(h.allowed(), vec!["::1".parse::<IpAddr>().unwrap()], "the old address is closed");
+    assert_eq!(moved.hard_expires, grant.hard_expires, "moving doesn't extend the session");
+    assert_eq!(moved.auto, grant.auto);
+    assert_eq!(client::verify_rdp(&moved).await.unwrap(), RdpCheck::Verified);
+
+    // And from there on it's the same place again.
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &moved).await, Ok(client::Followed::Same)));
 }

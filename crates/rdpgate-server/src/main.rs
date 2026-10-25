@@ -146,6 +146,15 @@ enum Cmd {
     DeviceRemove { name: String },
     /// Unlock a computer that was locked after too many wrong codes
     DeviceUnlock { name: String },
+    /// Auto mode for a computer: after one sign-in with passphrase and code
+    /// it is remembered and connects with no passphrase or code until its
+    /// hardware changes, and its access follows it when its IP changes.
+    /// "off" forgets it
+    DeviceAuto {
+        name: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Check for and install a signed update, then restart the service
     Update {
         /// Only check; don't install
@@ -357,7 +366,18 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             }
             for d in &devices {
                 let locked = if d.locked { "  LOCKED (device-unlock)" } else { "" };
-                println!("{:<20} {}  added {}  last sign-in {}{locked}", d.name, d.fingerprint, local(d.added), admin::when(d.last_auth));
+                let auto = match (d.auto, d.remembered) {
+                    (true, Some(t)) => format!("  auto mode, remembered since {}", local(t)),
+                    (true, None) => "  auto mode (not remembered yet)".into(),
+                    _ => String::new(),
+                };
+                println!(
+                    "{:<20} {}  added {}  last sign-in {}{auto}{locked}",
+                    d.name,
+                    d.fingerprint,
+                    local(d.added),
+                    admin::when(d.last_auth)
+                );
             }
             Ok(())
         }
@@ -369,6 +389,15 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
         Cmd::DeviceUnlock { name } => {
             admin::unlock_device(data, &name)?;
             println!("Unlocked {name:?}.");
+            Ok(())
+        }
+        Cmd::DeviceAuto { name, state } => {
+            admin::set_device_auto(data, &name, state == "on")?;
+            if state == "on" {
+                println!("Auto mode on for {name:?}. After its next sign-in with passphrase and code it is remembered.");
+            } else {
+                println!("Auto mode off for {name:?}. It is forgotten and signs in with passphrase and code again.");
+            }
             Ok(())
         }
         Cmd::ServiceInstall => {

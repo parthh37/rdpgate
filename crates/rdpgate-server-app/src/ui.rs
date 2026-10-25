@@ -12,6 +12,9 @@ use zeroize::Zeroizing;
 const REFRESH: Duration = Duration::from_secs(3);
 /// Passed to the relaunched window when Direct3D couldn't start.
 const OPENGL_ARG: &str = "--opengl";
+const AUTO_MODE_HELP: &str = "Auto mode: after one sign-in with passphrase and code, the computer is remembered. It then connects \
+    with one click, no passphrase or code, until its hardware changes, and its access moves with it when its IP address changes. \
+    Anyone using that computer's account can connect, so use it only for computers you trust. Turning it off forgets the computer.";
 
 pub fn main() {
     rdpgate_core::update::cleanup_previous();
@@ -789,10 +792,11 @@ impl ServerApp {
                 ui.label(muted("No computers yet."));
                 return;
             }
-            egui::Grid::new("devices").striped(true).num_columns(4).spacing([24.0, 8.0]).show(ui, |ui| {
+            egui::Grid::new("devices").striped(true).num_columns(5).spacing([24.0, 8.0]).show(ui, |ui| {
                 ui.label(muted("NAME").small().strong());
                 ui.label(muted("FINGERPRINT").small().strong());
                 ui.label(muted("LAST SIGN-IN").small().strong());
+                ui.label(muted("AUTO MODE").small().strong());
                 ui.label("");
                 ui.end_row();
                 for d in &devices {
@@ -802,6 +806,27 @@ impl ServerApp {
                     });
                     ui.monospace(d.fingerprint.get(..14).unwrap_or(&d.fingerprint));
                     ui.label(when(d.last_auth));
+                    let mut auto = d.auto;
+                    let label = match (d.auto, d.remembered) {
+                        (true, Some(_)) => "On, remembered",
+                        (true, None) => "On",
+                        _ => "Off",
+                    };
+                    let hover = match d.remembered {
+                        Some(t) => format!("Remembered since {}.\n\n{AUTO_MODE_HELP}", when(Some(t))),
+                        None => AUTO_MODE_HELP.to_string(),
+                    };
+                    if ui.checkbox(&mut auto, label).on_hover_text(hover).changed() {
+                        let r = admin::set_device_auto(&self.data, &d.name, auto).map(|()| {
+                            if auto {
+                                format!("Auto mode on for {}. After its next sign-in with passphrase and code it is remembered.", d.name)
+                            } else {
+                                format!("Auto mode off for {}. It is forgotten and signs in with passphrase and code again.", d.name)
+                            }
+                        });
+                        self.say(r);
+                        self.refresh();
+                    }
                     ui.horizontal(|ui| {
                         if d.locked {
                             theme::pill(ui, Tone::Bad, "Locked (10 wrong codes)");
@@ -818,6 +843,8 @@ impl ServerApp {
                     ui.end_row();
                 }
             });
+            ui.add_space(6.0);
+            ui.label(muted(AUTO_MODE_HELP).small());
         });
 
         if self.added.is_none() {

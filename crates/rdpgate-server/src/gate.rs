@@ -3,8 +3,9 @@
 //! firewall opening for the connection's source address.
 
 use crate::app::App;
-use crate::state::{MAX_FAILED_CODES, now};
-use rdpgate_core::wire::{self, OP_LINK, OP_REVOKE, OP_TOTP, Request, Response};
+use crate::grants::{Grant, Renewed};
+use crate::state::{Device, MAX_FAILED_CODES, Trust, now, token_hash};
+use rdpgate_core::wire::{self, OP_FOLLOW, OP_LINK, OP_OPEN, OP_REVOKE, OP_TOTP, Payload, Request, Response};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,30 +83,35 @@ async fn process(app: &App, tls: &mut TlsStream<TcpStream>, ip: IpAddr, src: &st
     // The request provably comes from an enrolled device from here on.
     let name = dev.name.clone();
     match p.op.as_str() {
-        OP_TOTP => sign_in(app, ip, src, name, p.totp).await,
+        OP_TOTP => sign_in(app, ip, src, name, p.totp, p.hw).await,
         OP_REVOKE => {
             app.grants.revoke(ip, &format!("locked by device {name}")).await;
             Response { ok: true, ip: Some(ip.to_string()), ..Default::default() }
         }
         OP_LINK => link(app, ip, src, name, p.link).await,
+        OP_FOLLOW | OP_OPEN => remembered(app, ip, src, dev, &p).await,
         _ => deny(app, src, &name, "unknown op"),
     }
 }
 
 enum Check {
-    Ok,
+    /// `remembered`: auto mode is on and this computer is remembered now.
+    Ok { remembered: bool },
     BadCode,
     Locked,
     Gone,
     NoTotp,
 }
 
-async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String) -> Response {
+async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String, hw: String) -> Response {
     if !app.cfg.desktop_login {
         return reject(src, &device, "desktop sign-in is disabled on this server");
     }
     let t = now();
     let dev = device.clone();
+    // In auto mode, a computer that says what hardware it is gets remembered.
+    let token = (!hw.is_empty() && hw.len() <= 128).then(rdpgate_core::random_token::<32>);
+    let remember = token.clone();
     // One locked read-modify-write: the device must still exist, must not be
     // locked, and the code must be new. Wrong codes are counted per device.
     let checked = app
@@ -119,10 +125,17 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String)
                 Some(step) => {
                     d.failed_codes = 0;
                     d.last_auth = Some(t);
+                    let remembered = match remember.filter(|_| d.auto) {
+                        Some(token) => {
+                            d.trust = Some(Trust { token_hash: token_hash(&token), hw, since: t });
+                            true
+                        }
+                        None => false,
+                    };
                     if let Some(s) = st.totp.as_mut() {
                         s.last_step = step;
                     }
-                    Ok(Check::Ok)
+                    Ok(Check::Ok { remembered })
                 }
                 None => {
                     d.failed_codes += 1;
@@ -131,8 +144,8 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String)
             }
         })
         .await;
-    match checked {
-        Ok(Check::Ok) => {}
+    let remembered = match checked {
+        Ok(Check::Ok { remembered }) => remembered,
         Ok(Check::BadCode) => {
             let r = deny(app, src, &device, "wrong or already-used code");
             return Response { error: Some("wrong or already-used code".into()), ..r };
@@ -153,24 +166,107 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String)
             crate::logln!("ERROR state: {e}");
             return Response::error("server error");
         }
-    }
+    };
     match app.grants.allow(ip, format!("device {device}")).await {
         Ok(g) => {
             app.limiter.reset(src);
-            Response {
+            if !remembered {
+                return opened(app, ip, g).await;
+            }
+            crate::logln!("REMEMBER device={device:?}: it opens access without a passphrase or code until its hardware changes");
+            app.grants.start_auto(&g).await;
+            Response { auto: token, ..opened(app, ip, g).await }
+        }
+        Err(e) => {
+            crate::logln!("ERROR grant {ip}: {e}");
+            reject(src, &device, &format!("could not open the firewall: {e}"))
+        }
+    }
+}
+
+/// The answer to a sign-in that opened `g` for `ip`.
+async fn opened(app: &App, ip: IpAddr, g: Grant) -> Response {
+    Response {
+        ok: true,
+        ip: Some(ip.to_string()),
+        expires: Some(g.expires),
+        hard_expires: Some(g.hard_expires),
+        rdp_port: Some(app.cfg.rdp_port_for(ip)),
+        rdp_cert_sha256: app.rdp_cert().await.map(|c| c.sha256),
+        link: g.link.map(|(token, _)| token),
+        ..Default::default()
+    }
+}
+
+/// Auto mode: a remembered computer opens access ([`OP_OPEN`]) or moves it
+/// to its new address ([`OP_FOLLOW`]) with no passphrase or code. The device
+/// signature proves which computer it is, the token its sign-in with a code,
+/// and the hardware digest that it is still the same machine.
+async fn remembered(app: &App, ip: IpAddr, src: &str, dev: &Device, p: &Payload) -> Response {
+    let name = dev.name.as_str();
+    let forgotten = |why: &str| reject(src, name, &format!("{}{why}", wire::NOT_REMEMBERED));
+    if !app.cfg.desktop_login {
+        return reject(src, name, "desktop sign-in is disabled on this server");
+    }
+    if !dev.auto {
+        return forgotten("auto mode is off for this computer on the server");
+    }
+    if dev.failed_codes >= MAX_FAILED_CODES {
+        return forgotten("this computer is locked after too many wrong codes");
+    }
+    let Some(trust) = &dev.trust else { return forgotten("this computer isn't remembered yet") };
+    if !trust.token_ok(&p.auto) {
+        return forgotten("this computer signed in with a code again since");
+    }
+    if !trust.hw_ok(&p.hw) {
+        let n = name.to_string();
+        let _ = app
+            .update_state(move |st| {
+                if let Some(d) = st.devices.iter_mut().find(|d| d.name == n) {
+                    d.trust = None;
+                }
+                Ok(())
+            })
+            .await;
+        crate::logln!("FORGET device={name:?}: its hardware changed; it signs in with passphrase and code again");
+        return forgotten("this computer's hardware changed");
+    }
+    let who = format!("device {name}");
+    if p.op == OP_FOLLOW {
+        return match app.grants.follow(ip, &who).await {
+            // Asked every few seconds: keep it cheap and quiet.
+            Ok((g, Renewed::Same)) => Response {
                 ok: true,
                 ip: Some(ip.to_string()),
                 expires: Some(g.expires),
                 hard_expires: Some(g.hard_expires),
                 rdp_port: Some(app.cfg.rdp_port_for(ip)),
-                rdp_cert_sha256: app.rdp_cert().await.map(|c| c.sha256),
-                link: g.link.map(|(token, _)| token),
                 ..Default::default()
-            }
+            },
+            Ok((g, Renewed::Moved)) => opened(app, ip, g).await,
+            Err(e) if e == wire::CLOSED => Response::error(e),
+            Err(e) => reject(src, name, &e),
+        };
+    }
+    match app.grants.allow(ip, who).await {
+        Ok(g) => {
+            app.limiter.reset(src);
+            app.grants.start_auto(&g).await;
+            let (n, t) = (name.to_string(), now());
+            let _ = app
+                .update_state(move |st| {
+                    if let Some(d) = st.devices.iter_mut().find(|d| d.name == n) {
+                        d.last_auth = Some(t);
+                    }
+                    Ok(())
+                })
+                .await;
+            crate::logln!("REMEMBERED device={name:?} opened access without a code");
+            opened(app, ip, g).await
         }
         Err(e) => {
             crate::logln!("ERROR grant {ip}: {e}");
-            reject(src, &device, &format!("could not open the firewall: {e}"))
+            reject(src, name, &format!("could not open the firewall: {e}"))
         }
     }
 }
