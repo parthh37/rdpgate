@@ -482,20 +482,86 @@ async fn signing_in_over_ipv6_opens_ipv4_too_and_lock_closes_both() {
 /// Turns auto mode on for `name` and gives the client a fixed hardware digest.
 fn auto_mode(h: &Harness, d: &mut TestDevice, name: &str, hw: &str) {
     rdpgate_server::admin::set_device_auto(&h.dir, name, true).unwrap();
+    keep_signed_in(d, hw);
+}
+
+/// Ticks "Keep me signed in" and gives the client a fixed hardware digest.
+fn keep_signed_in(d: &mut TestDevice, hw: &str) {
+    d.cfg.keep_signed_in = true;
     d.cfg.hw_override = Some(hw.into());
 }
 
+/// Lets the current code be used once more, for a second sign-in in one test.
+fn reuse_code(h: &Harness) {
+    Store::new(&h.dir)
+        .update(|st| {
+            st.totp.as_mut().unwrap().last_step = 0;
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn without_auto_mode_nothing_is_remembered() {
+async fn without_asking_nothing_is_remembered() {
     let h = start().await;
     let mut d = h.device("mac", true);
     d.cfg.hw_override = Some("hw-1".into());
     let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
-    assert!(grant.auto.is_none(), "auto mode is off unless the server turns it on");
+    assert!(grant.auto.is_none(), "not remembered unless asked to keep signed in");
+    assert!(rdpgate_server::admin::devices(&h.dir).unwrap()[0].remembered.is_none());
     assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &grant).await, Ok(client::Followed::Ended(_))));
     // A made-up token is refused: the server decides, not the app.
     let err = client::open(&d.dir, &d.cfg, &d.key, "made-up").await.unwrap_err();
-    assert!(err.contains("Auto mode is off"), "{err}");
+    assert!(err.contains("isn't remembered"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keep_me_signed_in_remembers_the_computer_until_it_signs_in_without() {
+    let h = start().await;
+    let mut d = h.device("mac", true);
+    keep_signed_in(&mut d, "hw-1");
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    let token = grant.auto.clone().expect("kept signed in without auto mode");
+    let dev = &rdpgate_server::admin::devices(&h.dir).unwrap()[0];
+    assert!(!dev.auto && dev.remembered.is_some());
+
+    // Opens again with no code, and follows its address like auto mode.
+    client::lock(&d.dir, &d.cfg, &d.key).await.expect("lock succeeds");
+    let again = client::open(&d.dir, &d.cfg, &d.key, &token).await.expect("opens without a code");
+    assert!(matches!(client::follow(&d.dir, &d.cfg, &d.key, &again).await, Ok(client::Followed::Same)));
+
+    // Signing in with a code but without ticking it forgets the computer.
+    reuse_code(&h);
+    d.cfg.keep_signed_in = false;
+    let plain = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    assert!(plain.auto.is_none());
+    assert!(rdpgate_server::admin::devices(&h.dir).unwrap()[0].remembered.is_none());
+    assert!(client::open(&d.dir, &d.cfg, &d.key, &token).await.unwrap_err().contains("isn't remembered"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_can_turn_staying_signed_in_off() {
+    let h = start().await;
+    let mut d = h.device("mac", true);
+    keep_signed_in(&mut d, "hw-1");
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    let token = grant.auto.clone().expect("kept signed in");
+
+    // Turning it off forgets it at once, on the running service.
+    rdpgate_server::admin::set_keep_signed_in(&h.dir, false).unwrap();
+    assert!(rdpgate_server::admin::devices(&h.dir).unwrap()[0].remembered.is_none());
+    let err = client::open(&d.dir, &d.cfg, &d.key, &token).await.unwrap_err();
+    assert!(err.contains("staying signed in are off"), "{err}");
+
+    // Asking to stay signed in now gets nothing…
+    reuse_code(&h);
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    assert!(grant.auto.is_none(), "the server doesn't allow it");
+    // …unless auto mode is on for that computer.
+    rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
+    reuse_code(&h);
+    let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
+    assert!(grant.auto.is_some(), "auto mode still remembers");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -543,7 +609,7 @@ async fn turning_auto_mode_off_forgets_the_computer() {
     let grant = client::sign_in(&d.dir, &d.cfg, &d.key, &h.code()).await.expect("sign-in succeeds");
     rdpgate_server::admin::set_device_auto(&h.dir, "mac", false).unwrap();
     let Ok(client::Followed::Ended(e)) = client::follow(&d.dir, &d.cfg, &d.key, &grant).await else { panic!() };
-    assert!(e.contains("Auto mode is off"), "{e}");
+    assert!(e.contains("isn't remembered"), "{e}");
     rdpgate_server::admin::set_device_auto(&h.dir, "mac", true).unwrap();
     let err = client::open(&d.dir, &d.cfg, &d.key, grant.auto.as_deref().unwrap()).await.unwrap_err();
     assert!(err.contains("isn't remembered"), "turned back on, it still needs a code once: {err}");

@@ -155,6 +155,16 @@ enum Cmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    /// Stop remembering a computer (auto mode or "Keep me signed in"): it
+    /// signs in with passphrase and code again
+    DeviceForget { name: String },
+    /// Let computers stay signed in when the person signing in ticks "Keep me
+    /// signed in" in the app ("on", the default), or not ("off" also forgets
+    /// every computer kept signed in that isn't in auto mode)
+    KeepSignedIn {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Check for and install a signed update, then restart the service
     Update {
         /// Only check; don't install
@@ -369,7 +379,8 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
                 let auto = match (d.auto, d.remembered) {
                     (true, Some(t)) => format!("  auto mode, remembered since {}", local(t)),
                     (true, None) => "  auto mode (not remembered yet)".into(),
-                    _ => String::new(),
+                    (false, Some(t)) => format!("  kept signed in since {}", local(t)),
+                    (false, None) => String::new(),
                 };
                 println!(
                     "{:<20} {}  added {}  last sign-in {}{auto}{locked}",
@@ -397,6 +408,20 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
                 println!("Auto mode on for {name:?}. After its next sign-in with passphrase and code it is remembered.");
             } else {
                 println!("Auto mode off for {name:?}. It is forgotten and signs in with passphrase and code again.");
+            }
+            Ok(())
+        }
+        Cmd::DeviceForget { name } => {
+            admin::forget_device(data, &name)?;
+            println!("Forgot {name:?}. It signs in with passphrase and code again.");
+            Ok(())
+        }
+        Cmd::KeepSignedIn { state } => {
+            admin::set_keep_signed_in(data, state == "on")?;
+            if state == "on" {
+                println!("Computers can stay signed in: \"Keep me signed in\" in the app remembers a computer until its hardware changes.");
+            } else {
+                println!("Staying signed in is off. Only computers in auto mode are remembered; the others sign in with passphrase and code again.");
             }
             Ok(())
         }

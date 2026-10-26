@@ -83,13 +83,13 @@ async fn process(app: &App, tls: &mut TlsStream<TcpStream>, ip: IpAddr, src: &st
     // The request provably comes from an enrolled device from here on.
     let name = dev.name.clone();
     match p.op.as_str() {
-        OP_TOTP => sign_in(app, ip, src, name, p.totp, p.hw).await,
+        OP_TOTP => sign_in(app, ip, src, name, p.totp, p.hw, p.keep).await,
         OP_REVOKE => {
             app.grants.revoke(ip, &format!("locked by device {name}")).await;
             Response { ok: true, ip: Some(ip.to_string()), ..Default::default() }
         }
         OP_LINK => link(app, ip, src, name, p.link).await,
-        OP_FOLLOW | OP_OPEN => remembered(app, ip, src, dev, &p).await,
+        OP_FOLLOW | OP_OPEN => remembered(app, ip, src, dev, st.may_remember(dev), &p).await,
         _ => deny(app, src, &name, "unknown op"),
     }
 }
@@ -103,13 +103,14 @@ enum Check {
     NoTotp,
 }
 
-async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String, hw: String) -> Response {
+async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String, hw: String, keep: bool) -> Response {
     if !app.cfg.desktop_login {
         return reject(src, &device, "desktop sign-in is disabled on this server");
     }
     let t = now();
     let dev = device.clone();
-    // In auto mode, a computer that says what hardware it is gets remembered.
+    // A computer that says what hardware it is gets remembered in auto mode,
+    // or when it asked to stay signed in and this server allows that.
     let token = (!hw.is_empty() && hw.len() <= 128).then(rdpgate_core::random_token::<32>);
     let remember = token.clone();
     // One locked read-modify-write: the device must still exist, must not be
@@ -117,6 +118,7 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String,
     let checked = app
         .update_state(move |st| {
             let Some(totp) = st.totp.clone() else { return Ok(Check::NoTotp) };
+            let keep = keep && st.keep_signed_in;
             let Some(d) = st.devices.iter_mut().find(|d| d.name == dev) else { return Ok(Check::Gone) };
             if d.failed_codes >= MAX_FAILED_CODES {
                 return Ok(Check::Locked);
@@ -125,12 +127,17 @@ async fn sign_in(app: &App, ip: IpAddr, src: &str, device: String, code: String,
                 Some(step) => {
                     d.failed_codes = 0;
                     d.last_auth = Some(t);
-                    let remembered = match remember.filter(|_| d.auto) {
+                    // Signing in without asking to stay signed in forgets
+                    // whatever this computer was remembered with before.
+                    let remembered = match remember.filter(|_| d.auto || keep) {
                         Some(token) => {
                             d.trust = Some(Trust { token_hash: token_hash(&token), hw, since: t });
                             true
                         }
-                        None => false,
+                        None => {
+                            d.trust = None;
+                            false
+                        }
                     };
                     if let Some(s) = st.totp.as_mut() {
                         s.last_step = step;
@@ -198,18 +205,19 @@ async fn opened(app: &App, ip: IpAddr, g: Grant) -> Response {
     }
 }
 
-/// Auto mode: a remembered computer opens access ([`OP_OPEN`]) or moves it
-/// to its new address ([`OP_FOLLOW`]) with no passphrase or code. The device
-/// signature proves which computer it is, the token its sign-in with a code,
-/// and the hardware digest that it is still the same machine.
-async fn remembered(app: &App, ip: IpAddr, src: &str, dev: &Device, p: &Payload) -> Response {
+/// A remembered computer (auto mode, or kept signed in) opens access
+/// ([`OP_OPEN`]) or moves it to its new address ([`OP_FOLLOW`]) with no
+/// passphrase or code. The device signature proves which computer it is, the
+/// token its sign-in with a code, and the hardware digest that it is still
+/// the same machine. `allowed`: auto mode or staying signed in is on for it.
+async fn remembered(app: &App, ip: IpAddr, src: &str, dev: &Device, allowed: bool, p: &Payload) -> Response {
     let name = dev.name.as_str();
     let forgotten = |why: &str| reject(src, name, &format!("{}{why}", wire::NOT_REMEMBERED));
     if !app.cfg.desktop_login {
         return reject(src, name, "desktop sign-in is disabled on this server");
     }
-    if !dev.auto {
-        return forgotten("auto mode is off for this computer on the server");
+    if !allowed {
+        return forgotten("auto mode and staying signed in are off for this computer on the server");
     }
     if dev.failed_codes >= MAX_FAILED_CODES {
         return forgotten("this computer is locked after too many wrong codes");

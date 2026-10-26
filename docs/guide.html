@@ -240,6 +240,8 @@ rdpgate show                                    # fingerprints, pinned server, e
       <pre><code>rdpgate connect                 # asks for passphrase and code, then opens Remote Desktop
 rdpgate connect --no-launch     # only open the firewall; prints the address and .rdp file
 rdpgate connect --address 203.0.113.7:47443 # try this address first
+rdpgate connect --keep-signed-in --follow # stay signed in; move access when the IP changes
+rdpgate forget                  # sign this computer out: passphrase and code next time
 rdpgate lock                    # close access for this network now</code></pre>
     </li>
   </ol>
@@ -308,7 +310,7 @@ rdpgate lock                    # close access for this network now</code></pre>
     <tr><th>Add or change a domain</th><td><em>RDP Gate Server &gt; Browser sign-in</em>, or <code>rdpgate-server domain-setup</code> (see <a href="#browser">browser sign-in</a>).</td></tr>
     <tr><th>List or remove computers</th><td><code>rdpgate-server device-list</code>, <code>rdpgate-server device-remove macbook</code>. Removing takes effect immediately.</td></tr>
     <tr><th>Lost or stolen laptop</th><td><code>device-remove</code> it. Its key is useless without your passphrase and code anyway, but remove it.</td></tr>
-    <tr><th>Sign in less, IP keeps changing</th><td>Turn on auto mode for that computer: <em>RDP Gate Server &gt; Computers &gt; Auto mode</em>, or <code>rdpgate-server device-auto macbook on</code>. After one sign-in with passphrase and code it is remembered: the app shows one <em>Connect</em> button, no passphrase or code, until its hardware changes, and moves access to its new IP address by itself. Anyone using that computer's account can connect, so only do this for computers you keep locked. <code>device-auto macbook off</code> forgets it.</td></tr>
+    <tr><th>Sign in less, IP keeps changing</th><td>Tick <em>Keep me signed in on this computer</em> when you sign in (<code>rdpgate connect --keep-signed-in</code>). After that one sign-in with passphrase and code the computer is remembered until its hardware changes: the app opens access for its current IP address as soon as it starts, shows one <em>Connect</em> button, and moves access to a new IP address within seconds of the network changing. Anyone using that computer's account can connect, so only do this for computers you keep locked. <em>Sign out (forget this computer)</em> in the app, or <em>Forget</em> on the server (<code>rdpgate-server device-forget macbook</code>), undoes it. The server allows it by default: <em>RDP Gate Server &gt; Computers &gt; Let computers stay signed in</em>, or <code>rdpgate-server keep-signed-in off</code>. Auto mode (<code>rdpgate-server device-auto macbook on</code>) lets one computer stay signed in even while that is off.</td></tr>
     <tr><th>Too many wrong codes</th><td>After 10 wrong codes that computer is locked: <code>rdpgate-server device-unlock macbook</code>.</td></tr>
     <tr><th>New phone</th><td><code>rdpgate-server totp-setup --force</code> and scan the new QR code.</td></tr>
     <tr><th>Replace the GitHub token</th><td><code>rdpgate-server beacon-setup</code>.</td></tr>

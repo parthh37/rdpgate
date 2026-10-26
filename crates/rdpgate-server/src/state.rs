@@ -34,6 +34,15 @@ pub struct State {
     /// has signed in and connected through RDP Gate (see `protect`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub protection_pending: bool,
+    /// Computers may stay signed in when the person signing in asks to
+    /// ("Keep me signed in"), as if auto mode were on for them. Kept here
+    /// rather than in config.json so turning it off takes effect at once.
+    #[serde(default = "yes")]
+    pub keep_signed_in: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,9 +59,12 @@ pub struct Device {
     pub failed_codes: u32,
     /// Auto mode: after one sign-in with a code, this computer is remembered
     /// (see [`Trust`]) and its access follows its address when that changes.
+    /// Without it, a computer is remembered only when it asks to stay signed
+    /// in and [`State::keep_signed_in`] allows that.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto: bool,
-    /// Set by a sign-in with a code while auto mode is on: this computer
+    /// Set by a sign-in with a code while auto mode is on, or that asked to
+    /// stay signed in: this computer
     /// can open access with its device key and this token alone, while its
     /// hardware stays the same. Cleared when auto mode is turned off or the
     /// hardware changes.
@@ -112,6 +124,11 @@ pub fn token_hash(token: &str) -> String {
 impl State {
     pub fn device(&self, name: &str) -> Option<&Device> {
         self.devices.iter().find(|d| d.name == name)
+    }
+
+    /// Whether `d` may be (or stay) remembered.
+    pub fn may_remember(&self, d: &Device) -> bool {
+        d.auto || self.keep_signed_in
     }
 
     pub fn passkey_list(&self) -> Vec<Passkey> {
@@ -176,6 +193,7 @@ impl Store {
             totp: None,
             enroll_tokens: vec![],
             protection_pending: false,
+            keep_signed_in: true,
         };
         self.write(&s)?;
         Ok(true)

@@ -15,7 +15,7 @@ One agent on the Windows PC. A small app on your Mac or PC. No static IP, no DNS
 
 Exposing Remote Desktop (TCP 3389) to the internet invites constant password guessing and every future RDP vulnerability. RDP Gate keeps the port **closed** in Windows Firewall. When you sign in, it opens it **for your current IP address only**, keeps it open while you're connected, and closes it again when you leave.
 
-- **Signing in** takes this computer's private key **plus** a 6-digit code from any authenticator app. You can optionally also sign in from a browser with a passkey (needs your own domain). Or turn on [auto mode](#auto-mode-sign-in-once-then-just-connect) for a computer: it signs in once, then connects with one click until its hardware changes, and its access follows its IP.
+- **Signing in** takes this computer's private key **plus** a 6-digit code from any authenticator app. You can optionally also sign in from a browser with a passkey (needs your own domain). Or tick [Keep me signed in](#keep-me-signed-in-sign-in-once-then-just-connect): that computer signs in once, then opens access by itself whenever the app starts, until its hardware changes, and its access follows its IP within seconds.
 - **No static IP, no DNS, no DuckDNS.** The server publishes its address as an **encrypted, signed beacon** in a secret GitHub gist. The gist only ever holds ciphertext, though GitHub (like any website) sees the IP address each update comes from.
 - **Spoof-resistant end to end.** Your computers pin the server's identity key, so a fake server, a hijacked address or a man-in-the-middle on the RDP port is detected *before* anything is sent or Remote Desktop opens. See [Spoofing](#spoofing).
 - **One thing on the server:** `rdpgate-server.exe`, installed by a normal Setup wizard that also hardens RDP and the firewall and runs it as a Windows service.
@@ -145,17 +145,22 @@ The window shows the device fingerprint (check it matches the app) and a **serve
 
 Test from outside your home network, for example over a phone hotspot. To sign in from inside your own network too (a laptop on the same Wi-Fi), tick **Also allow sign-in from computers on my home network** in Setup, or run `rdpgate-server lan on`. The server then puts its home-network address in the encrypted beacon, and the app connects to it directly when you are at home (no router loop-back needed) and to your public address everywhere else. Give the PC a reserved address in your router so that address stays the same. Sign-in from the router's own address is always refused: some routers make every connection from the internet look like it, so a grant for it could open Remote Desktop to everyone.
 
-### Auto mode: sign in once, then just Connect
+### Keep me signed in: sign in once, then just Connect
 
-Turn on **auto mode** for a computer on the server: **RDP Gate Server → Computers → Auto mode**, or `rdpgate-server device-auto macbook on`. Then:
+Tick **Keep me signed in on this computer** under the code when you sign in (`rdpgate connect --keep-signed-in` on the command line). Then:
 
-- **Sign in once** with passphrase and code. The server now **remembers** that computer, and the app shows a single **Connect** button from then on: no passphrase, no code. This lasts until that computer's **hardware changes**, until you turn auto mode off on the server (which forgets it), or until you choose **Forget this computer** in the app (`rdpgate forget`).
-- **Your IP can change.** While access is open, the app checks every 15 seconds. If the server sees the computer at a new address (Wi-Fi to hotspot, a new address from your ISP, rotating IPv6), it opens the new one and closes the old one by itself. Keep the app open (minimised is fine). On the command line: `rdpgate connect --follow`.
+- **No more passphrase or code.** The server **remembers** that computer, and the app shows a single **Connect** button from then on. This lasts until that computer's **hardware changes**, until you sign in once without the tick, or until you choose **Sign out (forget this computer)** in the app (`rdpgate forget`). On the server, **Forget** next to the computer (`rdpgate-server device-forget macbook`) does the same.
+- **Access opens as soon as the app starts.** When RDP Gate opens on a computer that's kept signed in, it finds the server, tells it this computer's current IP address and opens access for it, without a click. **Open Remote Desktop** (or your own saved connection) then just works. **Connect** opens access and Remote Desktop together.
+- **Your IP can change.** While access is open, the app watches this computer's network every second. The moment it changes (Wi-Fi to hotspot, a new address from the router, rotating IPv6), it asks the server, which opens the new address and closes the old one; it retries every few seconds while the new network comes up. It also checks with the server every 15 seconds, for an address your ISP changes without your network noticing. Keep the app open (minimised is fine). On the command line: `rdpgate connect --follow`.
 - **Access still closes** as usual (time to connect, longest session, **Close access now**). Following never opens it by itself. Click **Connect** when you want it again.
+
+The server decides whether computers may stay signed in: **RDP Gate Server → Computers → Let computers stay signed in** (`rdpgate-server keep-signed-in on|off`). It's on by default; turning it off forgets every computer kept signed in, at once.
+
+**Auto mode** is the server-side version, for one computer: **RDP Gate Server → Computers → Auto mode**, or `rdpgate-server device-auto macbook on`. That computer can stay signed in even while staying signed in is off for the rest. Turning auto mode off forgets it.
 
 How it's tied to the computer: the app keeps the unlocked device key and the server's token sealed for your user account on that machine (Windows DPAPI, the macOS Keychain), so a copy of the settings folder is useless elsewhere. Every request also carries a digest of the computer's hardware IDs (the motherboard's UUID, and on Windows also the installation's ID; never the IDs themselves). If that changes, the server forgets the computer and it signs in with passphrase and code again. Every request is still signed with the device key, and the server's identity is still checked first.
 
-**The trade-off:** a remembered computer skips both the passphrase and the 6-digit code. Anyone who can use your account on it can open Remote Desktop's login screen (they still need your Windows password). Use auto mode only for computers you keep locked, and turn it off on the server if one is lost. Remembering is supported in the Mac and Windows apps; on Linux the CLI keeps asking for passphrase and code.
+**The trade-off:** a remembered computer skips both the passphrase and the 6-digit code. Anyone who can use your account on it can open Remote Desktop's login screen (they still need your Windows password). Stay signed in only on computers you keep locked, and forget a lost one on the server. Remembering is supported in the Mac and Windows apps; on Linux the CLI keeps asking for passphrase and code.
 
 ### Optional: browser sign-in with a passkey
 
@@ -216,6 +221,8 @@ rdpgate-server status                  # identity, beacon, warnings, open firewa
 rdpgate-server card                    # print the server card again
 rdpgate-server device-list | device-remove NAME | device-unlock NAME
 rdpgate-server device-auto NAME on|off # auto mode: remember that computer, follow its IP (off forgets it)
+rdpgate-server device-forget NAME      # sign a remembered computer out: passphrase and code again
+rdpgate-server keep-signed-in on|off   # let computers stay signed in when they ask (off forgets them)
 rdpgate-server passkey-list | passkey-remove NAME
 rdpgate-server beacon-setup            # new token or gist
 rdpgate-server domain-setup            # browser sign-in with your domain (guided); --remove to turn off

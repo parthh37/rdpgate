@@ -45,6 +45,7 @@ address, and many people can share one (hotel Wi-Fi, carrier NAT).
 
 - [x] Keep the PC awake while someone is signed in
 - [x] Auto mode (per computer, set on the server): sign in once, then connect with one click until the hardware changes; access follows the computer's IP
+- [x] "Keep me signed in" in the app (the server can turn it off): access opens for the computer's IP as soon as the app starts, and follows network changes within seconds
 - [ ] Sign-in notifications (email / push) and a revoke link
 - [ ] LAN allow-list (skip sign-in at home)
 - [x] IPv6 listening by default, with dual-stack grants and the IPv6 address in the beacon

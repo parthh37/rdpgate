@@ -15,6 +15,8 @@ const OPENGL_ARG: &str = "--opengl";
 const AUTO_MODE_HELP: &str = "Auto mode: after one sign-in with passphrase and code, the computer is remembered. It then connects \
     with one click, no passphrase or code, until its hardware changes, and its access moves with it when its IP address changes. \
     Anyone using that computer's account can connect, so use it only for computers you trust. Turning it off forgets the computer.";
+const KEEP_SIGNED_IN_HELP: &str = "Keep me signed in: whoever signs in with passphrase and code can tick it, and that computer is \
+    then remembered just like in auto mode. Turn this off to leave remembering to auto mode alone.";
 
 pub fn main() {
     rdpgate_core::update::cleanup_previous();
@@ -217,6 +219,8 @@ struct ServerApp {
     overview: Result<Overview, String>,
     service: Status,
     devices: Vec<DeviceInfo>,
+    /// Computers may stay signed in when asked to ("Keep me signed in").
+    keep_signed_in: bool,
     refreshed: Instant,
     // Computers
     add_name: String,
@@ -264,6 +268,7 @@ impl ServerApp {
             overview: Err(String::new()),
             service: Status::Unknown,
             devices: vec![],
+            keep_signed_in: true,
             refreshed: Instant::now(),
             add_name: String::new(),
             add_key: String::new(),
@@ -291,6 +296,7 @@ impl ServerApp {
     fn refresh(&mut self) {
         self.overview = admin::overview(&self.data);
         self.devices = admin::devices(&self.data).unwrap_or_default();
+        self.keep_signed_in = admin::keep_signed_in(&self.data).unwrap_or(true);
         self.service = service::status();
         if self.page == Page::Log {
             self.log = admin::log_tail(&self.data, 400);
@@ -810,7 +816,8 @@ impl ServerApp {
                     let label = match (d.auto, d.remembered) {
                         (true, Some(_)) => "On, remembered",
                         (true, None) => "On",
-                        _ => "Off",
+                        (false, Some(_)) => "Off, kept signed in",
+                        (false, None) => "Off",
                     };
                     let hover = match d.remembered {
                         Some(t) => format!("Remembered since {}.\n\n{AUTO_MODE_HELP}", when(Some(t))),
@@ -836,6 +843,14 @@ impl ServerApp {
                                 self.refresh();
                             }
                         }
+                        if d.remembered.is_some()
+                            && ui.button("Forget").on_hover_text("It signs in with passphrase and code again.").clicked()
+                        {
+                            let r = admin::forget_device(&self.data, &d.name)
+                                .map(|()| format!("Forgot {}. It signs in with passphrase and code again.", d.name));
+                            self.say(r);
+                            self.refresh();
+                        }
                         if ui.button("Remove…").clicked() {
                             self.confirm = Some(Confirm::RemoveComputer(d.name.clone()));
                         }
@@ -845,6 +860,20 @@ impl ServerApp {
             });
             ui.add_space(6.0);
             ui.label(muted(AUTO_MODE_HELP).small());
+            ui.add_space(6.0);
+            let mut keep = self.keep_signed_in;
+            if ui.checkbox(&mut keep, "Let computers stay signed in when they ask to (\"Keep me signed in\" in the app)").changed() {
+                let r = admin::set_keep_signed_in(&self.data, keep).map(|()| {
+                    if keep {
+                        "Computers can stay signed in now.".to_string()
+                    } else {
+                        "Staying signed in is off. Computers kept signed in (not in auto mode) are forgotten.".to_string()
+                    }
+                });
+                self.say(r);
+                self.refresh();
+            }
+            ui.label(muted(KEEP_SIGNED_IN_HELP).small());
         });
 
         if self.added.is_none() {

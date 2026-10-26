@@ -42,7 +42,8 @@ pub const OP_OPEN: &str = "open";
 /// The error [`OP_FOLLOW`] gets when this computer has no open access.
 pub const CLOSED: &str = "access has closed";
 /// Starts every error that means the server no longer remembers this
-/// computer (hardware changed, auto mode turned off…): sign in with a code.
+/// computer (hardware changed, auto mode or staying signed in turned off…):
+/// sign in with a code.
 pub const NOT_REMEMBERED: &str = "not remembered: ";
 
 #[derive(Debug, thiserror::Error)]
@@ -91,6 +92,11 @@ pub struct Payload {
     /// computer, and with [`OP_FOLLOW`] and [`OP_OPEN`] to show it's the same.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hw: String,
+    /// With [`OP_TOTP`]: the person signing in ticked "Keep me signed in".
+    /// The server then remembers this computer (as in auto mode) unless
+    /// staying signed in is turned off there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
 }
 
 /// Every server reply. Before the device is authenticated, errors are a bare
