@@ -44,6 +44,11 @@ enum Cmd {
         /// Sign in with passphrase and code even when this computer is remembered
         #[arg(long)]
         with_code: bool,
+        /// Keep me signed in: after this sign-in, connect with no passphrase
+        /// or code until this computer's hardware changes (`rdpgate forget`
+        /// undoes it). Remembered for next time.
+        #[arg(long)]
+        keep_signed_in: bool,
         /// Try this server address first, e.g. 203.0.113.7:47443
         #[arg(long)]
         address: Option<SocketAddr>,
@@ -136,7 +141,10 @@ fn run(cli: Cli) -> client::Result<()> {
             println!("Check it matches \"Server key\" in rdpgate-server status.");
             Ok(())
         }
-        Cmd::Connect { code, with_code, address, no_launch, follow } => {
+        Cmd::Connect { code, with_code, keep_signed_in, address, no_launch, follow } => {
+            if keep_signed_in {
+                client::set_keep_signed_in(&dir, true)?;
+            }
             let mut cfg = client::load_config(&dir)?;
             client::card(&cfg)?;
             cfg.connect_override = address;
@@ -144,7 +152,7 @@ fn run(cli: Cli) -> client::Result<()> {
             let remembered = (code.is_none() && !with_code).then(|| client::trust::recall(&dir)).flatten();
             let (grant, key) = match remembered {
                 Some(r) => {
-                    println!("This computer is remembered (auto mode): connecting without a passphrase or code.");
+                    println!("This computer is remembered: connecting without a passphrase or code.");
                     (rt.block_on(client::open(&dir, &cfg, &r.key, &r.token))?, r.key)
                 }
                 None => {
@@ -156,7 +164,9 @@ fn run(cli: Cli) -> client::Result<()> {
                     };
                     let grant = rt.block_on(client::sign_in(&dir, &cfg, &key, &code))?;
                     if grant.remembered {
-                        println!("Auto mode: this computer is remembered now. Next time, rdpgate connect needs no passphrase or code.");
+                        println!("You'll stay signed in: next time, rdpgate connect needs no passphrase or code.");
+                    } else if let Some(why) = client::not_kept(&grant).filter(|_| cfg.keep_signed_in) {
+                        println!("Couldn't keep you signed in: {why}");
                     }
                     (grant, key)
                 }
@@ -188,12 +198,9 @@ fn run(cli: Cli) -> client::Result<()> {
             }
             match grant.auto {
                 _ if !follow => {}
-                None => println!(
-                    "Auto mode is off for this computer on the server (rdpgate-server device-auto {} on), so there's nothing to follow.",
-                    cfg.device
-                ),
+                None => println!("This computer isn't remembered (rdpgate connect --keep-signed-in), so there's nothing to follow."),
                 Some(_) => {
-                    println!("Auto mode: access moves with this computer if its IP address changes. Keep this running; Ctrl+C stops.");
+                    println!("Access moves with this computer the moment its IP address changes. Keep this running; Ctrl+C stops.");
                     let stop = std::sync::atomic::AtomicBool::new(false);
                     rt.block_on(client::keep_following(&dir, &cfg, &key, grant, &stop, |ev| match ev {
                         FollowEvent::Moved { grant, check, .. } => {
@@ -239,9 +246,9 @@ fn run(cli: Cli) -> client::Result<()> {
             Ok(())
         }
         Cmd::Forget => {
-            client::trust::forget(&dir);
+            client::set_keep_signed_in(&dir, false)?;
             println!("This computer is no longer remembered here. Next time, sign in with your passphrase and code.");
-            println!("To forget it on the server too: rdpgate-server device-auto <name> off");
+            println!("To forget it on the server too: rdpgate-server device-forget <name>");
             Ok(())
         }
         Cmd::Show => {
@@ -250,7 +257,7 @@ fn run(cli: Cli) -> client::Result<()> {
             println!("Version:     {}{}", client::VERSION, if cfg.auto_update { " (auto-update on)" } else { " (auto-update off)" });
             println!("Device:      {}\nFingerprint: {}", id.device, id.fingerprint);
             let remembered = client::trust::is_remembered(&dir);
-            println!("Remembered:  {}\n", if remembered { "yes (auto mode: no passphrase or code needed)" } else { "no" });
+            println!("Remembered:  {}\n", if remembered { "yes (signed in: no passphrase or code needed)" } else { "no" });
             match client::card(&cfg) {
                 Ok(card) => {
                     println!("Server key:  {}", rdpgate_core::wire::fingerprint(&card.server_key()));

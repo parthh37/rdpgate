@@ -107,6 +107,36 @@ pub fn set_device_auto(data: &Path, name: &str, on: bool) -> Result<(), String> 
     })
 }
 
+/// Stops remembering a computer (auto mode or kept signed in): it signs in
+/// with passphrase and code again. Auto mode stays as it was.
+pub fn forget_device(data: &Path, name: &str) -> Result<(), String> {
+    Store::new(data).update(|st| {
+        let d = st.devices.iter_mut().find(|d| d.name == name).ok_or(format!("no computer named {name:?}"))?;
+        d.trust = None;
+        Ok(())
+    })
+}
+
+/// Whether computers may stay signed in when the person signing in asks to.
+pub fn keep_signed_in(data: &Path) -> Result<bool, String> {
+    Ok(Store::new(data).load()?.keep_signed_in)
+}
+
+/// Lets computers stay signed in ("Keep me signed in" in the app), or not.
+/// Takes effect on the running service immediately: turning it off forgets
+/// every computer kept signed in that isn't in auto mode.
+pub fn set_keep_signed_in(data: &Path, on: bool) -> Result<(), String> {
+    Store::new(data).update(|st| {
+        st.keep_signed_in = on;
+        if !on {
+            for d in st.devices.iter_mut().filter(|d| !d.auto) {
+                d.trust = None;
+            }
+        }
+        Ok(())
+    })
+}
+
 /// The server card (`rdpgate-card:…`) to paste into the app on each computer.
 pub fn card(data: &Path) -> Result<String, String> {
     let cfg = Config::load(data)?;

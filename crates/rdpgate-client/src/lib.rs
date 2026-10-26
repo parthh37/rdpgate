@@ -60,6 +60,11 @@ pub struct ClientConfig {
     /// Unix time of the last update check.
     #[serde(default)]
     pub last_update_check: i64,
+    /// "Keep me signed in": signing in with passphrase and code asks the
+    /// server to remember this computer, so it connects without them next
+    /// time ([`trust`]).
+    #[serde(default)]
+    pub keep_signed_in: bool,
     /// Connect here first (tests, or `--address`).
     #[serde(skip)]
     pub connect_override: Option<SocketAddr>,
@@ -95,6 +100,20 @@ pub fn set_auto_update(dir: &Path, on: bool) -> Result<()> {
     let mut cfg = load_config(dir)?;
     cfg.auto_update = on;
     save_config(dir, &cfg)
+}
+
+/// Remembers the "Keep me signed in" choice for the next sign-in. Turning it
+/// off also forgets this computer here.
+pub fn set_keep_signed_in(dir: &Path, on: bool) -> Result<()> {
+    let mut cfg = load_config(dir)?;
+    if !on {
+        trust::forget(dir);
+    }
+    if cfg.keep_signed_in != on {
+        cfg.keep_signed_in = on;
+        save_config(dir, &cfg)?;
+    }
+    Ok(())
 }
 
 /// Asks GitHub for a newer signed release (blocking). 0.x releases are
@@ -187,6 +206,7 @@ pub fn create_device(dir: &Path, device: &str, rdp_username: Option<String>, pas
         beacon_ts: 0,
         auto_update: true,
         last_update_check: 0,
+        keep_signed_in: false,
         connect_override: None,
         hw_override: None,
     };
@@ -244,8 +264,9 @@ pub struct Grant {
     pub rdp_cert_sha256: Option<String>,
     /// This computer's address as the server saw it.
     pub source: Option<IpAddr>,
-    /// Auto mode is on (the server decides) and the server remembers this
-    /// computer: the token that opens access without a passphrase or code
+    /// The server remembers this computer (auto mode, which the server turns
+    /// on, or "Keep me signed in", which the server allows or not): the
+    /// token that opens access without a passphrase or code
     /// ([`open`]) and moves it when this computer's address changes
     /// ([`keep_following`]).
     pub auto: Option<String>,
@@ -515,23 +536,43 @@ fn explain(resp: &Response) -> String {
 }
 
 /// Device key + 6-digit code: asks the server to open RDP for this network.
+/// With [`ClientConfig::keep_signed_in`], also asks it to remember this
+/// computer; without, whatever it was remembered with is forgotten.
 pub async fn sign_in(dir: &Path, cfg: &ClientConfig, key: &SigningKey, code: &str) -> Result<Grant> {
     let code = code.trim();
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Enter the 6-digit code from your authenticator app.".into());
     }
-    // Saying what hardware this is lets a server in auto mode remember it.
-    let hw = hardware(cfg, key);
-    let p = Payload { op: wire::OP_TOTP.into(), totp: code.into(), hw: hw.clone().unwrap_or_default(), ..Default::default() };
+    // Saying what hardware this is lets the server remember it, in auto mode
+    // or when asked to keep it signed in. Not asking, it says nothing.
+    let keep = cfg.keep_signed_in;
+    let hw = hardware(cfg, key).filter(|_| keep);
+    let p = Payload { op: wire::OP_TOTP.into(), totp: code.into(), hw: hw.clone().unwrap_or_default(), keep, ..Default::default() };
     let (resp, target, rest) = exchange(dir, cfg, key, p).await?;
     if !resp.ok {
         return Err(explain(&resp));
     }
     let mut grant = opened(cfg, key, resp, target, &rest).await;
-    if let (Some(token), Some(hw), None) = (&grant.auto, &hw, &cfg.hw_override) {
-        grant.remembered = trust::remember(dir, key, token, hw).is_ok();
+    match (&grant.auto, &hw, &cfg.hw_override) {
+        (Some(token), Some(hw), None) => grant.remembered = trust::remember(dir, key, token, hw).is_ok(),
+        // The server forgot it too.
+        (None, _, None) => trust::forget(dir),
+        _ => {}
     }
     Ok(grant)
+}
+
+/// Why asking to stay signed in didn't work, after a sign-in that asked.
+pub fn not_kept(grant: &Grant) -> Option<&'static str> {
+    if grant.remembered {
+        None
+    } else if !trust::supported() {
+        Some("Staying signed in isn't supported on this system yet.")
+    } else if grant.auto.is_none() {
+        Some("The server doesn't let computers stay signed in (RDP Gate Server > Computers).")
+    } else {
+        Some("This computer couldn't keep its sign-in safely (system keychain).")
+    }
 }
 
 /// This computer's hardware digest, where it can be remembered.
@@ -647,6 +688,28 @@ pub const FOLLOW_EVERY: Duration = Duration::from_secs(15);
 /// Longest wait between checks while the server can't be reached (offline,
 /// asleep), so the beacon isn't fetched every few seconds.
 const FOLLOW_BACKOFF_MAX: Duration = Duration::from_secs(120);
+/// How often auto mode looks at this computer's own network. That costs
+/// nothing (no packet is sent), so a change of network (Wi-Fi to hotspot,
+/// a new address from the router) reaches the server within a second or two
+/// instead of at the next [`FOLLOW_EVERY`].
+const NETWORK_EVERY: Duration = Duration::from_secs(1);
+/// After this computer's network changes: quick retries while the new one
+/// comes up, before backing off as usual.
+const NETWORK_RETRY: Duration = Duration::from_secs(2);
+const NETWORK_RETRIES: u32 = 8;
+
+/// The addresses this computer would send from to reach the internet, over
+/// IPv4 and IPv6. Connecting a UDP socket only picks a route: nothing is
+/// sent. When they change, so has this computer's network, and most likely
+/// the address the server sees.
+pub fn local_route() -> Vec<IpAddr> {
+    let probe = |bind: &str, to: &str| {
+        let s = std::net::UdpSocket::bind(bind).ok()?;
+        s.connect(to).ok()?;
+        s.local_addr().ok().map(|a| a.ip()).filter(|ip| !ip.is_unspecified())
+    };
+    [probe("0.0.0.0:0", "192.0.2.1:9"), probe("[::]:0", "[2001:db8::1]:9")].into_iter().flatten().collect()
+}
 
 /// What [`keep_following`] reports.
 #[derive(Debug, Clone)]
@@ -662,9 +725,10 @@ pub enum FollowEvent {
     Ended(String),
 }
 
-/// Auto mode: checks every [`FOLLOW_EVERY`] whether this computer's address
-/// changed and moves the access with it, until access closes, auto mode
-/// ends or `stop` is set. Only for a grant that has an auto token.
+/// Auto mode: checks every [`FOLLOW_EVERY`], and straight away when this
+/// computer's network changes, whether its address changed and moves the
+/// access with it, until access closes, auto mode ends or `stop` is set.
+/// Only for a grant that has an auto token.
 pub async fn keep_following(
     dir: &Path,
     cfg: &ClientConfig,
@@ -674,20 +738,36 @@ pub async fn keep_following(
     mut on: impl FnMut(FollowEvent),
 ) {
     use std::sync::atomic::Ordering;
+    use tokio::time::Instant;
     let mut wait = FOLLOW_EVERY;
+    let mut route = local_route();
+    let mut looked = Instant::now();
+    let mut retries = 0;
     loop {
-        let until = tokio::time::Instant::now() + wait;
-        while tokio::time::Instant::now() < until {
+        let until = Instant::now() + wait;
+        while Instant::now() < until {
             if stop.load(Ordering::SeqCst) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
+            if looked.elapsed() >= NETWORK_EVERY {
+                looked = Instant::now();
+                let now = local_route();
+                if now != route {
+                    route = now;
+                    retries = NETWORK_RETRIES;
+                    break;
+                }
+            }
         }
         // The newest beacon time, if signing in elsewhere saw one.
         let cfg = load_config(dir).map(|c| ClientConfig { connect_override: None, ..c }).unwrap_or_else(|_| cfg.clone());
         let result = follow(dir, &cfg, key, &grant).await;
         if stop.load(Ordering::SeqCst) {
             return;
+        }
+        if result.is_ok() {
+            retries = 0;
         }
         match result {
             Ok(Followed::Same) => wait = FOLLOW_EVERY,
@@ -706,6 +786,11 @@ pub async fn keep_following(
             }
             Ok(Followed::Closed) => return on(FollowEvent::Closed),
             Ok(Followed::Ended(e)) => return on(FollowEvent::Ended(e)),
+            // The new network may still be coming up: try again soon.
+            Err(_) if retries > 0 => {
+                retries -= 1;
+                wait = NETWORK_RETRY;
+            }
             Err(_) => wait = (wait * 2).min(FOLLOW_BACKOFF_MAX),
         }
     }
@@ -841,6 +926,13 @@ mod tests {
         assert_eq!(public_order(vec![v4, v6, v4], None), [v6, v4]);
         assert_eq!(public_order(vec![v6, v4], Some(SocketAddr::new(v4, 47443))), [v4, v6]);
         assert_eq!(public_order(vec![v4], Some(SocketAddr::new(v6, 47443))), [v4]);
+    }
+
+    #[test]
+    fn local_route_is_stable_and_sends_nothing() {
+        let route = local_route();
+        assert!(route.iter().all(|ip| !ip.is_unspecified()));
+        assert_eq!(local_route(), route, "the same network gives the same answer");
     }
 
     #[test]
