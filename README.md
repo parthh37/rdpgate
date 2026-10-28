@@ -132,7 +132,7 @@ It's step 2 of **Finish setting up** in RDP Gate Server, right after Setup. To d
 ### 4. Enroll each computer you'll connect from
 
 - **Mac:** open **`RDP-Gate-<version>-macOS.dmg`** and drag **RDP Gate** to Applications. The first time, right-click it and choose **Open** (the build isn't notarized yet).
-- **Windows:** run **`RDP-Gate-Setup-<version>.exe`**. It installs just for you, with no administrator rights needed, and adds a Start menu entry.
+- **Windows:** run **`RDP-Gate-Client-Setup-<version>.exe`**. It installs just for you, with no administrator rights needed, and adds a Start menu entry.
 
 Enter a name for this computer and a passphrase. The app then shows this computer's key (`rdpgate-ed25519:…`) with a **Copy** button. On the server, open **RDP Gate Server** from the Start menu → **Computers**, paste it under **Add a computer** and choose **Add computer**.
 
