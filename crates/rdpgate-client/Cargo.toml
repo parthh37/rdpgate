@@ -33,6 +33,7 @@ zeroize = "1.9.1"
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",

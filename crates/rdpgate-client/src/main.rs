@@ -1,5 +1,6 @@
-use clap::{Parser, Subcommand};
-use rdpgate_client::{self as client, FollowEvent, RdpCheck};
+use clap::{Args, Parser, Subcommand};
+use rdpgate_client::settings::{Audio, COLORS, Choice, Display, Keys, Resize, SCALES, Speed};
+use rdpgate_client::{self as client, FollowEvent, RdpCheck, RdpSettings, winpass};
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -66,6 +67,22 @@ enum Cmd {
     Forget,
     /// Show this computer's enrollment command and the pinned server
     Show,
+    /// Show or change the Remote Desktop settings used at every connect
+    /// (no options: show them)
+    Settings(SettingsArgs),
+    /// Remember your Windows password in the system's credential store, so
+    /// Remote Desktop signs in by itself (Windows; on a Mac it can be copied)
+    Password {
+        /// Windows account it belongs to (default: the one already set)
+        #[arg(long)]
+        user: Option<String>,
+        /// Forget the saved password
+        #[arg(long, conflicts_with_all = ["user", "copy"])]
+        forget: bool,
+        /// Copy the saved password to paste into Remote Desktop (cleared after 45 s)
+        #[arg(long, conflicts_with = "user")]
+        copy: bool,
+    },
     /// Check for and install a signed update of this tool
     Update {
         /// Only check; don't install
@@ -77,6 +94,117 @@ enum Cmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+}
+
+#[derive(Args)]
+struct SettingsArgs {
+    /// full-screen, all-monitors or window
+    #[arg(long)]
+    display: Option<Display>,
+    /// Window size for --display window, e.g. 1600x900 (or "auto")
+    #[arg(long, value_parser = parse_size)]
+    size: Option<(u32, u32)>,
+    /// When the window is resized: resolution, scale or off
+    #[arg(long)]
+    resize: Option<Resize>,
+    /// Display scale in percent (100, 125, 150, 175, 200, 250, 300, 400, 500), or 0 to match this computer
+    #[arg(long, value_parser = parse_scale)]
+    scale: Option<u32>,
+    /// Colour depth: 32, 24, 16 or 15
+    #[arg(long, value_parser = parse_colors)]
+    colors: Option<u32>,
+    /// Connection bar in full screen
+    #[arg(long, value_parser = on_off)]
+    connection_bar: Option<bool>,
+    /// Where Windows key combinations go: here, remote or full-screen
+    #[arg(long)]
+    keys: Option<Keys>,
+    #[arg(long, value_parser = on_off)]
+    clipboard: Option<bool>,
+    /// All of this computer's drives
+    #[arg(long, value_parser = on_off)]
+    drives: Option<bool>,
+    #[arg(long, value_parser = on_off)]
+    printers: Option<bool>,
+    /// Remote sound: here, remote or off
+    #[arg(long)]
+    audio: Option<Audio>,
+    #[arg(long, value_parser = on_off)]
+    microphone: Option<bool>,
+    #[arg(long, value_parser = on_off)]
+    cameras: Option<bool>,
+    #[arg(long, value_parser = on_off)]
+    smart_cards: Option<bool>,
+    /// Connection speed: auto, lan, broadband or slow
+    #[arg(long)]
+    speed: Option<Speed>,
+    /// Desktop background
+    #[arg(long, value_parser = on_off)]
+    wallpaper: Option<bool>,
+    #[arg(long, value_parser = on_off)]
+    font_smoothing: Option<bool>,
+    /// Window animations and themes
+    #[arg(long, value_parser = on_off)]
+    visual_effects: Option<bool>,
+    #[arg(long, value_parser = on_off)]
+    auto_reconnect: Option<bool>,
+    /// Back to the defaults (before any other option given)
+    #[arg(long)]
+    reset: bool,
+}
+
+fn on_off(s: &str) -> Result<bool, String> {
+    match s {
+        "on" | "yes" | "true" => Ok(true),
+        "off" | "no" | "false" => Ok(false),
+        _ => Err("use on or off".into()),
+    }
+}
+
+fn parse_size(s: &str) -> Result<(u32, u32), String> {
+    if s == "auto" {
+        return Ok((0, 0));
+    }
+    let (w, h) = s.split_once(['x', 'X']).ok_or("use WIDTHxHEIGHT, e.g. 1600x900, or auto")?;
+    let n = |v: &str| v.trim().parse::<u32>().ok().filter(|v| (200..=8192).contains(v)).ok_or("each side 200 to 8192 pixels");
+    Ok((n(w)?, n(h)?))
+}
+
+fn parse_scale(s: &str) -> Result<u32, String> {
+    s.trim_end_matches('%').parse().ok().filter(|v| SCALES.contains(v)).ok_or_else(|| format!("use one of {SCALES:?}"))
+}
+
+fn parse_colors(s: &str) -> Result<u32, String> {
+    s.parse().ok().filter(|v| COLORS.contains(v)).ok_or_else(|| format!("use one of {COLORS:?}"))
+}
+
+fn print_settings(s: &RdpSettings) {
+    let yn = |b: bool| if b { "on" } else { "off" };
+    let size = match s.window_size() {
+        Some((w, h)) => format!("{w}x{h}"),
+        None => "auto".into(),
+    };
+    let scale = if s.scale == 0 { "auto".into() } else { format!("{}%", s.scale) };
+    println!("Display:        {} (window size {size}, on resize: {}, scale {scale}, {}-bit colour)", s.display.name(), s.resize.name(), s.colors);
+    println!("Full screen:    connection bar {}, Windows keys go to: {}", yn(s.connection_bar), s.keys.name());
+    println!(
+        "Share:          clipboard {}, drives {}, printers {}, microphone {}, cameras {}, smart cards {}",
+        yn(s.clipboard),
+        yn(s.drives),
+        yn(s.printers),
+        yn(s.microphone),
+        yn(s.cameras),
+        yn(s.smart_cards)
+    );
+    println!("Sound:          {}", s.audio.name());
+    println!(
+        "Experience:     speed {}, wallpaper {}, font smoothing {}, visual effects {}, auto-reconnect {}",
+        s.speed.name(),
+        yn(s.wallpaper),
+        yn(s.font_smoothing),
+        yn(s.visual_effects),
+        yn(s.auto_reconnect)
+    );
 }
 
 fn main() {
@@ -186,6 +314,9 @@ fn run(cli: Cli) -> client::Result<()> {
                 println!("Connect to {}  (connection file: {})", grant.rdp_target(), file.display());
             } else {
                 client::launch_rdp(&file)?;
+                if winpass::is_saved(&dir) && !winpass::fills_in() {
+                    println!("Windows App can't take your saved Windows password: rdpgate password --copy, then paste it when asked.");
+                }
             }
             // Once a day, quietly take a signed update (if enabled).
             if client::update_due(&cfg) {
@@ -269,7 +400,62 @@ fn run(cli: Cli) -> client::Result<()> {
                 }
                 Err(_) => println!("Server:      no server card yet (rdpgate card <card>)"),
             }
+            let saved = if winpass::is_saved(&dir) { format!(" (password saved in {})", winpass::store_name()) } else { String::new() };
+            println!("Windows user: {}{saved}\n", cfg.rdp_username.as_deref().unwrap_or("(asked by Remote Desktop)"));
+            print_settings(&cfg.rdp);
             println!("\nEnroll on the server with:\n\n    {}", id.enroll_command());
+            Ok(())
+        }
+        Cmd::Settings(a) => {
+            let cfg = client::load_config(&dir)?;
+            let mut s = if a.reset { RdpSettings::default() } else { cfg.rdp.clone() };
+            macro_rules! set {
+                ($($f:ident),*) => { $(if let Some(v) = a.$f { s.$f = v; })* };
+            }
+            set!(display, resize, scale, colors, connection_bar, keys, clipboard, drives, printers, audio, microphone, cameras, smart_cards, speed, wallpaper, font_smoothing, visual_effects, auto_reconnect);
+            if let Some((w, h)) = a.size {
+                (s.width, s.height) = (w, h);
+                if w != 0 && s.display != Display::Window {
+                    println!("Note: the window size applies with --display window.");
+                }
+            }
+            if s != cfg.rdp {
+                client::set_rdp_settings(&dir, &s)?;
+                println!("Saved. These apply the next time Remote Desktop opens:\n");
+            }
+            print_settings(&s);
+            Ok(())
+        }
+        Cmd::Password { user, forget, copy } => {
+            if forget {
+                winpass::forget(&dir);
+                println!("Saved Windows password forgotten. Remote Desktop asks for it again.");
+                return Ok(());
+            }
+            if copy {
+                winpass::copy_for_paste(&dir)?;
+                println!("Copied. Paste it into Remote Desktop; the clipboard is cleared in 45 seconds.");
+                return Ok(());
+            }
+            if !winpass::supported() {
+                return Err("saving the Windows password isn't supported on this system yet".into());
+            }
+            let cfg = client::load_config(&dir)?;
+            let user = match user.or(cfg.rdp_username) {
+                Some(u) => u,
+                None => input.line("Windows user: ")?,
+            };
+            let pass = input.secret(&format!("Windows password for {user}: "))?;
+            if !input.stdin_pass && *input.secret("Repeat it: ")? != *pass {
+                return Err("passwords do not match".into());
+            }
+            winpass::save(&dir, &user, &pass)?;
+            println!("Saved in {} for {user}.", winpass::store_name());
+            if winpass::fills_in() {
+                println!("Remote Desktop now signs in with it. rdpgate password --forget removes it.");
+            } else {
+                println!("Windows App can't take a saved password, so it still asks: rdpgate password --copy copies it to paste.");
+            }
             Ok(())
         }
     }

@@ -143,6 +143,8 @@ The window shows the device fingerprint (check it matches the app) and a **serve
 - **App:** passphrase + 6-digit code → **Sign in and open Remote Desktop**. The app finds the server, verifies it, opens the firewall, checks the RDP certificate, and launches Remote Desktop.
 - **Command line:** `rdpgate connect` (and `rdpgate lock` when you're done).
 
+To use all your monitors, share drives or change other Remote Desktop options, or to have Remote Desktop remember your Windows password, see [Remote Desktop settings](#remote-desktop-settings-and-your-windows-password).
+
 Test from outside your home network, for example over a phone hotspot. To sign in from inside your own network too (a laptop on the same Wi-Fi), tick **Also allow sign-in from computers on my home network** in Setup, or run `rdpgate-server lan on`. The server then puts its home-network address in the encrypted beacon, and the app connects to it directly when you are at home (no router loop-back needed) and to your public address everywhere else. Give the PC a reserved address in your router so that address stays the same. Sign-in from the router's own address is always refused: some routers make every connection from the internet look like it, so a grant for it could open Remote Desktop to everyone.
 
 ### Keep me signed in: sign in once, then just Connect
@@ -161,6 +163,23 @@ The server decides whether computers may stay signed in: **RDP Gate Server → C
 How it's tied to the computer: the app keeps the unlocked device key and the server's token sealed for your user account on that machine (Windows DPAPI, the macOS Keychain), so a copy of the settings folder is useless elsewhere. Every request also carries a digest of the computer's hardware IDs (the motherboard's UUID, and on Windows also the installation's ID; never the IDs themselves). If that changes, the server forgets the computer and it signs in with passphrase and code again. Every request is still signed with the device key, and the server's identity is still checked first.
 
 **The trade-off:** a remembered computer skips both the passphrase and the 6-digit code. Anyone who can use your account on it can open Remote Desktop's login screen (they still need your Windows password). Stay signed in only on computers you keep locked, and forget a lost one on the server. Remembering is supported in the Mac and Windows apps; on Linux the CLI keeps asking for passphrase and code.
+
+### Remote Desktop settings and your Windows password
+
+Open **Remote Desktop settings** below the sign-in card. Changes are saved straight away (in `config.json`, with the server card) and apply every time RDP Gate opens Remote Desktop, including **Open Remote Desktop** while access is open. They are the options Remote Desktop Connection shows under *Show Options*:
+
+| Group | Settings | Default |
+|---|---|---|
+| Display | Full screen, full screen on **all monitors**, or in a window (window size: match this screen or a custom size); when the window is resized: change the remote resolution, scale the picture, or neither; display scale; colour depth; where Windows key combinations go; connection bar in full screen | Full screen, resolution follows the window, scale and size match this computer, 32-bit, keys go to the remote computer in full screen |
+| This computer's devices | **Clipboard**, sound (play here, on the remote computer, or not at all), microphone, cameras, drives, printers, smart cards | Clipboard on and sound here; nothing else shared |
+| Experience | Connection speed (detect, LAN, broadband, slow), desktop background, font smoothing, window animations and themes, reconnect if the connection drops | Detect, all on |
+
+On the command line, `rdpgate settings` shows them and `rdpgate settings --display all-monitors --clipboard off --drives on --audio remote` changes them (`rdpgate settings --help` lists every option; `--reset` goes back to the defaults). Microsoft's Windows App on the Mac reads the same connection file and ignores the few options it doesn't support.
+
+**Remember my Windows password** (same section; `rdpgate password` on the command line) keeps your Windows user name and password in the system's credential store, never in a file: **Windows Credential Manager** or the **macOS Keychain**. **Forget saved password** (`rdpgate password --forget`) removes it. Changing the Windows user forgets it too.
+
+- **Windows:** Remote Desktop signs in without asking. Each launch hands the password to Remote Desktop Connection the way its own *Remember me* does (a `TERMSRV/<address>` credential). Only the address in use keeps a copy, and forgetting removes them all. On a PC joined to a work domain, Windows may refuse saved credentials for a home PC ("does not allow the use of saved credentials"). That is the *Allow delegating saved credentials with NTLM-only server authentication* policy, which is off on domain-joined PCs and on for others. Remote Desktop then just asks as before.
+- **Mac:** Windows App can't take a password from a connection file or from another app, so it still asks. RDP Gate fills in the user name, and **Copy Windows password** (`rdpgate password --copy`) puts the password on the clipboard for you to paste. It's cleared after 45 seconds if it's still there.
 
 ### Optional: browser sign-in with a passkey
 
