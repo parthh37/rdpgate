@@ -225,10 +225,33 @@ jobs:
           fi
           # Atomic: the branch and the tag land together, or neither does.
           git push --atomic origin "HEAD:$BRANCH" "$TAG"
+      # Release notes start with which file to download; the generated
+      # changelog follows.
+      - name: Write the download guide
+        run: |
+          v="$VERSION"
+          for f in "RDP-Gate-Server-Setup-$v.exe" "RDP-Gate-Client-Setup-$v.exe" "RDP-Gate-$v-macOS.dmg" "RDP-Gate-$v-Windows-Client.zip" "RDP-Gate-$v-Windows-Server.zip" "RDP-Gate-$v-macOS.zip"; do
+            [ -f "assets/$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          dl="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          {
+            echo "## Downloads"
+            echo
+            echo "| You want to… | Download |"
+            echo "|---|---|"
+            echo "| Set up the **Windows PC you connect to** | [\`RDP-Gate-Server-Setup-$v.exe\`]($dl/RDP-Gate-Server-Setup-$v.exe) |"
+            echo "| Connect **from a Windows PC** | [\`RDP-Gate-Client-Setup-$v.exe\`]($dl/RDP-Gate-Client-Setup-$v.exe) (no administrator rights needed) |"
+            echo "| Connect **from a Mac** | [\`RDP-Gate-$v-macOS.dmg\`]($dl/RDP-Gate-$v-macOS.dmg) |"
+            echo
+            echo "Portable zips without an installer: \`RDP-Gate-$v-Windows-Client.zip\`, \`RDP-Gate-$v-Windows-Server.zip\`, \`RDP-Gate-$v-macOS.zip\`. The other files are what the built-in updater downloads. Check any download against \`SHA256SUMS.txt\`."
+            echo
+          } > notes.md
+          cat notes.md
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: RDP Gate ${{ needs.prepare.outputs.tag }}
+          body_path: notes.md
           files: assets/*
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           generate_release_notes: true
