@@ -21,7 +21,11 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
+pub mod settings;
 pub mod trust;
+pub mod winpass;
+
+pub use settings::RdpSettings;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -65,6 +69,9 @@ pub struct ClientConfig {
     /// time ([`trust`]).
     #[serde(default)]
     pub keep_signed_in: bool,
+    /// Remote Desktop settings, written into the connection file at every launch.
+    #[serde(default, deserialize_with = "settings::lenient")]
+    pub rdp: RdpSettings,
     /// Connect here first (tests, or `--address`).
     #[serde(skip)]
     pub connect_override: Option<SocketAddr>,
@@ -111,6 +118,27 @@ pub fn set_keep_signed_in(dir: &Path, on: bool) -> Result<()> {
     }
     if cfg.keep_signed_in != on {
         cfg.keep_signed_in = on;
+        save_config(dir, &cfg)?;
+    }
+    Ok(())
+}
+
+pub fn set_rdp_settings(dir: &Path, rdp: &RdpSettings) -> Result<()> {
+    let mut cfg = load_config(dir)?;
+    cfg.rdp = rdp.clone();
+    save_config(dir, &cfg)
+}
+
+/// The Windows account Remote Desktop signs in with. A saved password for
+/// another account is forgotten.
+pub fn set_rdp_username(dir: &Path, user: &str) -> Result<()> {
+    let user = Some(user.trim().to_string()).filter(|u| !u.is_empty());
+    let mut cfg = load_config(dir)?;
+    if winpass::is_saved(dir) && winpass::saved_user(dir) != user {
+        winpass::forget(dir);
+    }
+    if cfg.rdp_username != user {
+        cfg.rdp_username = user;
         save_config(dir, &cfg)?;
     }
     Ok(())
@@ -207,6 +235,7 @@ pub fn create_device(dir: &Path, device: &str, rdp_username: Option<String>, pas
         auto_update: true,
         last_update_check: 0,
         keep_signed_in: false,
+        rdp: RdpSettings::default(),
         connect_override: None,
         hw_override: None,
     };
@@ -851,19 +880,20 @@ pub async fn verify_rdp(grant: &Grant) -> Result<RdpCheck> {
     }
 }
 
-/// Writes a .rdp file pointing at the exact address the server proved itself at.
+/// Writes a .rdp file pointing at the exact address the server proved
+/// itself at, with this computer's Remote Desktop settings. A saved Windows
+/// password is handed to Remote Desktop where it can take one ([`winpass`]).
 pub fn write_rdp_file(dir: &Path, cfg: &ClientConfig, grant: &Grant) -> Result<PathBuf> {
+    let user = cfg.rdp_username.as_deref().filter(|u| !u.is_empty());
+    let signs_in = user.is_some_and(|u| winpass::prepare(dir, u, grant.server_addr.ip()));
     let mut lines = vec![
         format!("full address:s:{}", grant.rdp_target()),
-        "prompt for credentials:i:1".into(),
+        format!("prompt for credentials:i:{}", u8::from(!signs_in)),
         "authentication level:i:2".into(),
         "enablecredsspsupport:i:1".into(),
-        "redirectclipboard:i:1".into(),
-        "redirectprinters:i:0".into(),
-        "drivestoredirect:s:".into(),
-        "screen mode id:i:2".into(),
     ];
-    if let Some(u) = cfg.rdp_username.as_deref().filter(|u| !u.is_empty()) {
+    lines.extend(cfg.rdp.rdp_lines());
+    if let Some(u) = user {
         lines.push(format!("username:s:{u}"));
     }
     let path = dir.join("RDP Gate.rdp");
@@ -958,6 +988,37 @@ mod tests {
         };
         assert_eq!(set_card(&dir, &c.encode()).unwrap(), wire::fingerprint(&server.verifying_key()));
         assert_eq!(card(&load_config(&dir).unwrap()).unwrap().server_key(), server.verifying_key());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn connection_file_follows_the_saved_settings() {
+        let dir = std::env::temp_dir().join(format!("rdpgate-rdpfile-{}", rdpgate_core::random_token::<6>()));
+        create_device(&dir, "mac", Some("alice".into()), "long enough passphrase", false).unwrap();
+        let rdp = RdpSettings { display: settings::Display::AllMonitors, clipboard: false, ..Default::default() };
+        set_rdp_settings(&dir, &rdp).unwrap();
+        let cfg = load_config(&dir).unwrap();
+        assert_eq!(cfg.rdp, rdp, "kept in config.json");
+        let grant = Grant {
+            ip: "198.51.100.4".into(),
+            expires: 0,
+            hard_expires: None,
+            server_addr: "192.0.2.10:47443".parse().unwrap(),
+            rdp_port: 3390,
+            rdp_cert_sha256: None,
+            source: None,
+            auto: None,
+            remembered: false,
+        };
+        let text = std::fs::read_to_string(write_rdp_file(&dir, &cfg, &grant).unwrap()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for line in ["full address:s:192.0.2.10:3390", "use multimon:i:1", "redirectclipboard:i:0", "username:s:alice", "prompt for credentials:i:1"] {
+            assert!(lines.contains(&line), "{line} in\n{text}");
+        }
+        assert!(text.ends_with("\r\n") && !text.contains("password"), "no password in the file");
+
+        set_rdp_username(&dir, "  ").unwrap();
+        assert_eq!(load_config(&dir).unwrap().rdp_username, None);
         std::fs::remove_dir_all(dir).ok();
     }
 }

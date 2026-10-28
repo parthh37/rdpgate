@@ -6,7 +6,8 @@
 
 use eframe::egui::{self, RichText, TextEdit};
 use ed25519_dalek::SigningKey;
-use rdpgate_client::{self as client, FollowEvent, Grant, Identity, RdpCheck};
+use rdpgate_client::settings::{COLORS, Choice, Display, SCALES};
+use rdpgate_client::{self as client, FollowEvent, Grant, Identity, RdpCheck, RdpSettings, winpass};
 use rdpgate_core::update::{Available, Component};
 use rdpgate_ui::{self as theme, MUTED, Tone, muted, primary, primary_wide};
 use std::path::PathBuf;
@@ -57,7 +58,6 @@ enum Screen {
 struct Session {
     grant: Grant,
     key: SigningKey,
-    rdp_file: PathBuf,
     check: RdpCheck,
     /// Remote Desktop was started (not when access opened by itself at launch).
     launched: bool,
@@ -105,7 +105,7 @@ fn launch(dir: &std::path::Path, cfg: &client::ClientConfig, grant: Grant, key: 
     if open {
         client::launch_rdp(&rdp_file)?;
     }
-    Ok(Box::new(Session { grant, key, rdp_file, check, launched: open, follower: None }))
+    Ok(Box::new(Session { grant, key, check, launched: open, follower: None }))
 }
 
 /// Self-update progress, shown as a banner.
@@ -166,6 +166,13 @@ struct GateApp {
     /// Open access for this computer's address as soon as the app starts,
     /// once, when it is remembered.
     open_at_start: bool,
+    /// Remote Desktop settings, as saved.
+    rdp: RdpSettings,
+    /// The Windows account Remote Desktop signs in with, as typed.
+    win_user: String,
+    win_pass: Zeroizing<String>,
+    /// A Windows password is saved in the system's credential store.
+    win_saved: bool,
     session: Option<Session>,
     busy: Option<&'static str>,
     status: Option<(bool, String)>,
@@ -200,6 +207,17 @@ fn default_device_name() -> String {
     if s.trim_matches('-').is_empty() { "my-computer".into() } else { s }
 }
 
+/// A grid row: `label`, then a drop-down of every choice of its kind.
+fn choice<T: Choice>(ui: &mut egui::Ui, label: &str, value: &mut T) {
+    ui.label(label);
+    egui::ComboBox::from_id_salt(label).selected_text(value.label()).show_ui(ui, |ui| {
+        for &c in T::ALL {
+            ui.selectable_value(value, c, c.label());
+        }
+    });
+    ui.end_row();
+}
+
 fn rt() -> Result<tokio::runtime::Runtime, String> {
     tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())
 }
@@ -209,12 +227,17 @@ impl GateApp {
         let dir = client::default_dir();
         let screen = if client::is_set_up(&dir) { Screen::Main } else { Screen::Setup };
         let remembered = client::trust::is_remembered(&dir);
+        let cfg = client::load_config(&dir).ok();
         GateApp {
             remembered,
             use_code: false,
             // Remembered by auto mode before this option existed: ticked too.
-            keep_signed_in: remembered || client::load_config(&dir).is_ok_and(|c| c.keep_signed_in),
+            keep_signed_in: remembered || cfg.as_ref().is_some_and(|c| c.keep_signed_in),
             open_at_start: remembered,
+            rdp: cfg.as_ref().map(|c| c.rdp.clone()).unwrap_or_default(),
+            win_user: cfg.and_then(|c| c.rdp_username).unwrap_or_default(),
+            win_pass: Default::default(),
+            win_saved: winpass::is_saved(&dir),
             dir,
             screen,
             device: default_device_name(),
@@ -379,9 +402,9 @@ impl GateApp {
         let Some(s) = self.session.as_mut() else { return };
         let Some(Ok(ev)) = s.follower.as_ref().map(|f| f.rx.try_recv()) else { return };
         match ev {
-            FollowEvent::Moved { grant, check, rdp_file } => {
+            FollowEvent::Moved { grant, check, .. } => {
                 self.status = Some((true, format!("This computer's address changed. Access moved to {} automatically.", grant.ip)));
-                (s.grant, s.check, s.rdp_file) = (grant, check, rdp_file);
+                (s.grant, s.check) = (grant, check);
             }
             FollowEvent::Closed => {
                 self.session = None;
@@ -405,6 +428,7 @@ impl GateApp {
         self.busy = None;
         match done {
             Done::Created(Ok(id)) => {
+                self.win_user = self.username.trim().to_string();
                 self.pass1 = Default::default();
                 self.pass2 = Default::default();
                 self.screen = Screen::Enroll(id);
@@ -561,7 +585,7 @@ impl GateApp {
         };
 
         if let Some(s) = &self.session {
-            let (file, key) = (s.rdp_file.clone(), s.key.clone());
+            let (grant, key) = (s.grant.clone(), s.key.clone());
             let verified = s.check == RdpCheck::Verified;
             let following = s.follower.is_some();
             let (ip, left, held) = (s.grant.ip.to_string(), client::minutes_left(s.grant.expires), s.grant.while_connected());
@@ -587,10 +611,20 @@ impl GateApp {
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
+                    // Written again, so changed settings apply.
                     if ui.add(primary("Open Remote Desktop")).clicked()
-                        && let Err(e) = client::launch_rdp(&file)
+                        && let Err(e) = client::write_rdp_file(&self.dir, &cfg, &grant).and_then(|f| client::launch_rdp(&f))
                     {
                         self.status = Some((false, e));
+                    }
+                    if self.win_saved
+                        && !winpass::fills_in()
+                        && ui.add(egui::Button::new("Copy Windows password").min_size(egui::vec2(0.0, 36.0))).clicked()
+                    {
+                        self.status = Some(match winpass::copy_for_paste(&self.dir) {
+                            Ok(()) => (true, "Copied. Paste it when Windows App asks; the clipboard is cleared in 45 seconds.".into()),
+                            Err(e) => (false, e),
+                        });
                     }
                     if ui.add_enabled(self.busy.is_none(), egui::Button::new("Close access now").min_size(egui::vec2(0.0, 36.0))).clicked() {
                         let (dir, cfg) = (self.dir.clone(), cfg.clone());
@@ -608,6 +642,7 @@ impl GateApp {
                 "Anyone who shares your public IP (same Wi-Fi or mobile carrier) can reach the Windows login screen until access closes. They still need your Windows password.",
                 false,
             );
+            self.connection_ui(ui);
             return;
         }
 
@@ -709,8 +744,164 @@ impl GateApp {
         self.details_ui(ui, &cfg);
     }
 
+    /// "Remote Desktop settings": the Windows sign-in and the options written
+    /// into the connection file. Changes are saved straight away.
+    fn connection_ui(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+        let before = self.rdp.clone();
+        theme::card(ui, |ui| {
+            egui::CollapsingHeader::new(RichText::new("Remote Desktop settings").strong()).show(ui, |ui| {
+                self.windows_sign_in_ui(ui);
+                let s = &mut self.rdp;
+
+                ui.separator();
+                ui.label(RichText::new("Display").strong());
+                egui::Grid::new("display").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    choice(ui, "Show the remote desktop", &mut s.display);
+                    if s.display == Display::Window {
+                        ui.label("Window size");
+                        ui.horizontal(|ui| {
+                            let mut custom = s.width != 0;
+                            if ui.checkbox(&mut custom, "Custom").changed() {
+                                (s.width, s.height) = if custom { (1600, 900) } else { (0, 0) };
+                            }
+                            if custom {
+                                ui.add(egui::DragValue::new(&mut s.width).range(200..=8192));
+                                ui.label("×");
+                                ui.add(egui::DragValue::new(&mut s.height).range(200..=8192));
+                            } else {
+                                ui.label(muted("match this screen"));
+                            }
+                        });
+                        ui.end_row();
+                    }
+                    choice(ui, "When the window is resized", &mut s.resize);
+                    ui.label("Scale");
+                    let scale = |v: u32| if v == 0 { "Match this computer".to_string() } else { format!("{v}%") };
+                    egui::ComboBox::from_id_salt("scale").selected_text(scale(s.scale)).show_ui(ui, |ui| {
+                        for v in SCALES {
+                            ui.selectable_value(&mut s.scale, v, scale(v));
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Colours");
+                    egui::ComboBox::from_id_salt("colors").selected_text(format!("{}-bit", s.colors)).show_ui(ui, |ui| {
+                        for v in COLORS {
+                            ui.selectable_value(&mut s.colors, v, format!("{v}-bit"));
+                        }
+                    });
+                    ui.end_row();
+                    choice(ui, "Windows key combinations go to", &mut s.keys);
+                });
+                ui.checkbox(&mut s.connection_bar, "Show the connection bar in full screen");
+
+                ui.separator();
+                ui.label(RichText::new("This computer's devices").strong());
+                egui::Grid::new("sound").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    choice(ui, "Sound from the remote computer", &mut s.audio);
+                });
+                ui.checkbox(&mut s.clipboard, "Clipboard (copy and paste between the two)");
+                ui.checkbox(&mut s.microphone, "Microphone");
+                ui.checkbox(&mut s.cameras, "Cameras");
+                ui.checkbox(&mut s.drives, "Drives (all of this computer's disks)");
+                ui.checkbox(&mut s.printers, "Printers");
+                ui.checkbox(&mut s.smart_cards, "Smart cards");
+                ui.label(muted("Each one shared lets the remote computer use it while you're connected.").small());
+
+                ui.separator();
+                ui.label(RichText::new("Experience").strong());
+                egui::Grid::new("speed").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    choice(ui, "Connection speed", &mut s.speed);
+                });
+                ui.checkbox(&mut s.wallpaper, "Desktop background");
+                ui.checkbox(&mut s.font_smoothing, "Font smoothing");
+                ui.checkbox(&mut s.visual_effects, "Window animations and themes");
+                ui.checkbox(&mut s.auto_reconnect, "Reconnect if the connection drops");
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(*s != RdpSettings::default(), egui::Button::new("Restore defaults").small()).clicked() {
+                        *s = RdpSettings::default();
+                    }
+                    ui.label(muted("Applied each time RDP Gate opens Remote Desktop.").small());
+                });
+            });
+        });
+        if self.rdp != before
+            && let Err(e) = client::set_rdp_settings(&self.dir, &self.rdp)
+        {
+            self.status = Some((false, e));
+        }
+    }
+
+    /// The Windows account, and "Remember my Windows password".
+    fn windows_sign_in_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Windows sign-in").strong());
+        theme::field_label(ui, "Windows user");
+        let edit = ui.add(TextEdit::singleline(&mut self.win_user).hint_text("the account you sign in to Windows with").desired_width(f32::INFINITY));
+        if edit.lost_focus() {
+            let saved = client::load_config(&self.dir).ok().and_then(|c| c.rdp_username).unwrap_or_default();
+            if self.win_user.trim() != saved {
+                let had = self.win_saved;
+                if let Err(e) = client::set_rdp_username(&self.dir, &self.win_user) {
+                    self.status = Some((false, e));
+                }
+                self.win_saved = winpass::is_saved(&self.dir);
+                if had && !self.win_saved {
+                    self.status = Some((true, "Windows user changed, so the saved password was forgotten.".into()));
+                }
+            }
+        }
+        if !winpass::supported() {
+            return;
+        }
+        if self.win_saved {
+            ui.horizontal(|ui| {
+                theme::pill(ui, Tone::Good, "Password saved");
+                ui.label(muted(format!("in {}", winpass::store_name())).small());
+            });
+            if !winpass::fills_in() {
+                ui.label(
+                    muted(
+                        "Windows App can't take a password from another app, so it still asks. \
+                         Use Copy Windows password, then paste it.",
+                    )
+                    .small(),
+                );
+            }
+            if ui.button("Forget saved password").clicked() {
+                winpass::forget(&self.dir);
+                self.win_saved = winpass::is_saved(&self.dir);
+                self.status = Some((true, "Saved Windows password forgotten. Remote Desktop asks for it again.".into()));
+            }
+            return;
+        }
+        theme::field_label(ui, "Windows password");
+        ui.add(TextEdit::singleline(&mut *self.win_pass).password(true).desired_width(f32::INFINITY));
+        let how = if winpass::fills_in() {
+            "Kept in Windows Credential Manager, never in a file. Remote Desktop then signs in by itself."
+        } else {
+            "Kept in the macOS Keychain, never in a file. Windows App can't take it from another app, \
+             so RDP Gate copies it for you to paste."
+        };
+        ui.label(muted(how).small());
+        let ready = !self.win_user.trim().is_empty() && !self.win_pass.is_empty();
+        if ui.add_enabled(ready, egui::Button::new("Remember my Windows password")).clicked() {
+            match winpass::save(&self.dir, &self.win_user, &self.win_pass) {
+                Ok(()) => {
+                    self.win_user = self.win_user.trim().to_string();
+                    self.status = Some((true, format!("Windows password saved in {}.", winpass::store_name())));
+                }
+                Err(e) => self.status = Some((false, e)),
+            }
+            self.win_pass = Default::default();
+            self.win_saved = winpass::is_saved(&self.dir);
+        }
+    }
+
     /// "This computer and server", below the sign-in card.
     fn details_ui(&mut self, ui: &mut egui::Ui, cfg: &client::ClientConfig) {
+        self.connection_ui(ui);
         ui.add_space(10.0);
         theme::card(ui, |ui| {
             egui::CollapsingHeader::new(RichText::new("This computer and server").strong()).show(ui, |ui| {

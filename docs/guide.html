@@ -214,7 +214,7 @@ rdpgate show                                    # fingerprints, pinned server, e
         <li>makes the server prove its identity key before sending anything;</li>
         <li>signs in with this computer's key and your code;</li>
         <li>checks the Remote Desktop certificate is your PC's;</li>
-        <li>opens Remote Desktop. Log in to Windows with your Windows password as usual.</li>
+        <li>opens Remote Desktop with your settings. Log in to Windows with your Windows password as usual, or let it be filled in (see <a href="#rdp-settings">Remote Desktop settings</a>).</li>
       </ol>
       <div class="ways tight">
         <figure class="window">
@@ -227,6 +227,21 @@ rdpgate show                                    # fingerprints, pinned server, e
         </figure>
       </div>
       <p>The app shows <em>Open for &lt;your IP&gt;</em> and a countdown. You have 10 minutes to start Remote Desktop. While you're connected, access stays open (up to 12 hours). Both times can be changed in <strong>RDP Gate Server → Overview → Time limits</strong>. If your computer has both IPv6 and IPv4, signing in opens both addresses, and locking closes both. If the Remote Desktop window closed, choose <strong>Open Remote Desktop</strong> to reopen it.</p>
+    </li>
+
+    <li id="rdp-settings">
+      <h3>Remote Desktop settings and your Windows password</h3>
+      <p>Open <strong>Remote Desktop settings</strong> below the sign-in card. Changes are saved straight away and apply every time RDP Gate opens Remote Desktop:</p>
+      <ul>
+        <li><strong>Display:</strong> full screen, full screen on <strong>all monitors</strong>, or in a window (match this screen or a custom size); what happens when the window is resized; display scale; colour depth; where Windows key combinations go; the connection bar.</li>
+        <li><strong>This computer's devices:</strong> clipboard, sound (here, on the remote computer, or off), microphone, cameras, drives, printers and smart cards. By default only the clipboard and sound are shared.</li>
+        <li><strong>Experience:</strong> connection speed, desktop background, font smoothing, animations and themes, and reconnecting if the connection drops.</li>
+      </ul>
+      <p><strong>Remember my Windows password</strong> keeps your Windows user name and password in Windows Credential Manager or the macOS Keychain, never in a file. <strong>Forget saved password</strong> removes it.</p>
+      <ul>
+        <li><strong>Windows:</strong> Remote Desktop signs in by itself, as with its own <em>Remember me</em>. On a PC joined to a work domain, Windows policy may refuse saved credentials; Remote Desktop then just asks.</li>
+        <li><strong>Mac:</strong> Windows App can't take a password from another app, so it still asks. RDP Gate fills in the user name, and <strong>Copy Windows password</strong> puts the password on the clipboard to paste (cleared after 45 seconds).</li>
+      </ul>
     </li>
 
     <li id="close">
@@ -242,6 +257,9 @@ rdpgate connect --no-launch     # only open the firewall; prints the address and
 rdpgate connect --address 203.0.113.7:47443 # try this address first
 rdpgate connect --keep-signed-in --follow # stay signed in; move access when the IP changes
 rdpgate forget                  # sign this computer out: passphrase and code next time
+rdpgate settings                # show the Remote Desktop settings
+rdpgate settings --display all-monitors --drives on   # change them (--help lists all)
+rdpgate password                # remember your Windows password (--forget, --copy on a Mac)
 rdpgate lock                    # close access for this network now</code></pre>
     </li>
   </ol>
