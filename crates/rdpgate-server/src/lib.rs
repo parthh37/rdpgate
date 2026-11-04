@@ -4,8 +4,10 @@ pub mod admin;
 pub mod app;
 pub mod beacon;
 pub mod cert;
+pub mod clock;
 pub mod config;
 pub mod firewall;
+pub mod fix;
 pub mod gate;
 pub mod grants;
 pub mod identity;
@@ -16,7 +18,9 @@ pub mod power;
 pub mod protect;
 pub mod secure_dir;
 pub mod service;
+pub mod session;
 pub mod state;
+pub mod status;
 pub mod updater;
 pub mod web;
 
@@ -39,6 +43,15 @@ pub fn run_server(data_dir: &Path, interactive: bool, shutdown: watch::Receiver<
     log::init(Some(data_dir.join("logs")), interactive).map_err(|e| format!("open log: {e}"))?;
     if let Err(e) = swept {
         logln!("ERROR removing leftover firewall rules: {e}");
+    }
+    if status::enabled()
+        && let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf))
+    {
+        updater::repair_window(&dir);
+        // What updates of the window and the icon left behind (in use then).
+        for name in [updater::WINDOW_EXE, updater::TRAY_EXE] {
+            let _ = std::fs::remove_file(dir.join(name).with_extension("old.exe"));
+        }
     }
     let (cfg, changed) = config::Config::load_noting(data_dir)?;
     logln!("RDP Gate server {}", updater::VERSION);

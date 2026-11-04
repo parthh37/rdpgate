@@ -489,7 +489,7 @@ pub fn overview(data: &Path) -> Result<Overview, String> {
         serde_json::Value::Array(a) => a
             .iter()
             .map(|g| GrantInfo {
-                ip: g["ip"].as_str().unwrap_or("?").into(),
+                ip: g["ip"].as_str().map(|s| s.parse().map(rdpgate_core::describe_scope).unwrap_or_else(|_| s.to_string())).unwrap_or_else(|| "?".into()),
                 who: g["who"].as_str().unwrap_or("?").into(),
                 expires: g["expires"].as_i64().unwrap_or(0),
                 hard_expires: g["hard_expires"].as_i64().unwrap_or(0),

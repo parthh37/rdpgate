@@ -13,7 +13,7 @@ One agent on the Windows PC. A small app on your Mac or PC. No static IP, no DNS
 
 ---
 
-Exposing Remote Desktop (TCP 3389) to the internet invites constant password guessing and every future RDP vulnerability. RDP Gate keeps the port **closed** in Windows Firewall. When you sign in, it opens it **for your current IP address only**, keeps it open while you're connected, and closes it again when you leave.
+Exposing Remote Desktop (TCP 3389) to the internet invites constant password guessing and every future RDP vulnerability. RDP Gate keeps the port **closed** in Windows Firewall. When you sign in, it opens it **for your current IP address only** (over IPv6, your network's /64, since a Mac or PC rotates several addresses there), keeps it open while you're connected, and closes it again when you leave.
 
 - **Signing in** takes this computer's private key **plus** a 6-digit code from any authenticator app. You can optionally also sign in from a browser with a passkey (needs your own domain). Or tick [Keep me signed in](#keep-me-signed-in-sign-in-once-then-just-connect): that computer signs in once, then opens access by itself whenever the app starts, until its hardware changes, and its access follows its IP within seconds.
 - **No static IP, no DNS, no DuckDNS.** The server publishes its address as an **encrypted, signed beacon** in a secret GitHub gist. The gist only ever holds ciphertext, though GitHub (like any website) sees the IP address each update comes from.
@@ -105,6 +105,8 @@ Setup does the following, in this order (with *after your first sign-in*, the tw
 - sets account lockout to 15 minutes after 10 wrong passwords (unless you untick it).
 - stops a desktop PC sleeping or hibernating on mains power, so it can always be reached (unless you untick it). On a laptop it only warns, and battery settings are never changed.
 - creates the server identity, publishes the first beacon, and starts the `RDPGate` service. It runs as SYSTEM and starts at boot whether or not anyone signs in to Windows. Windows restarts it after any failure, it exits and restarts itself if part of it stops working, and a scheduled task (`\RDPGate\Watchdog` in Task Scheduler) starts it again within 5 minutes if it was stopped any other way.
+
+  It also survives a wrong clock after a reboot (a virtual machine reading its hardware clock in the wrong time zone, a dead CMOS battery): sign-in is checked against the time, so the service reads the real time from the internet and uses that whenever this PC's clock is off, and Setup makes Windows Time start at boot and sync. And it starts the RDP Gate icon in every signed-in session if the Startup folder didn't. The icon shows which computers have access open and whether Remote Desktop is connected, notifies you when one signs in, and turns amber with a notification when something needs attention, such as Windows Firewall turned off.
 
 Uninstall it from **Settings → Apps → RDP Gate Server**. It asks whether to **put back the settings Setup changed**: Windows Firewall (on or off, as before), the Remote Desktop firewall rules and settings, the lockout policy, sleep on mains power, and the router forwards RDP Gate added. Setup records these before its first change. Answer *No* to keep Remote Desktop blocked from the network. Your RDP Gate data in `C:\ProgramData\RDPGate` is kept either way. From a script: `uninstall-server.ps1 -Restore [-RemoveData]`.
 

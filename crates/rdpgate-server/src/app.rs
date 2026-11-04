@@ -54,6 +54,25 @@ pub struct App {
     protecting: AtomicBool,
     /// Unix time before which a failed lock-down isn't tried again.
     protect_retry_at: std::sync::atomic::AtomicI64,
+    /// What `status` and RDP Gate Server warn about: the firewall's findings
+    /// and, while this PC's clock is wrong, that.
+    warnings: Mutex<Warnings>,
+}
+
+#[derive(Default)]
+struct Warnings {
+    firewall: Vec<String>,
+    /// The latest quick profile check, which replaces the profile warnings
+    /// of the last full audit once it has run.
+    profiles: Option<Vec<String>>,
+    clock: Option<String>,
+}
+
+impl Warnings {
+    fn all(&self) -> Vec<String> {
+        let firewall = self.firewall.iter().filter(|w| self.profiles.is_none() || !w.starts_with(crate::firewall::PROFILE_WARNING));
+        self.clock.iter().chain(self.profiles.iter().flatten()).chain(firewall).cloned().collect()
+    }
 }
 
 /// Why the server stopped.
@@ -163,15 +182,54 @@ impl App {
             protection_pending: AtomicBool::new(protection_pending),
             protecting: AtomicBool::new(false),
             protect_retry_at: std::sync::atomic::AtomicI64::new(0),
+            warnings: Mutex::new(Warnings::default()),
             cfg,
         }))
     }
 
     /// Keeps the firewall warnings for `rdpgate-server status`.
     fn write_warnings(&self, warnings: &[String]) {
-        if let Ok(json) = serde_json::to_vec_pretty(warnings) {
+        {
+            let mut w = self.warnings.lock().unwrap();
+            w.firewall = warnings.to_vec();
+            // A full audit also checked the profiles, just now.
+            w.profiles = None;
+        }
+        self.save_warnings();
+    }
+
+    /// Sets (or clears) the warning about this PC's clock.
+    pub fn set_clock_warning(&self, w: Option<String>) {
+        let mut cur = self.warnings.lock().unwrap();
+        if cur.clock == w {
+            return;
+        }
+        cur.clock = w;
+        drop(cur);
+        self.save_warnings();
+    }
+
+    /// Sets the result of the latest quick firewall-profile check.
+    fn set_profile_warnings(&self, p: Vec<String>) {
+        let mut cur = self.warnings.lock().unwrap();
+        if cur.profiles.as_ref() == Some(&p) {
+            return;
+        }
+        let newly_off: Vec<&String> = p.iter().filter(|w| !cur.all().contains(w)).collect();
+        for w in newly_off {
+            crate::logln!("WARNING {w}");
+        }
+        cur.profiles = Some(p);
+        drop(cur);
+        self.save_warnings();
+    }
+
+    fn save_warnings(&self) {
+        let all = self.warnings.lock().unwrap().all();
+        if let Ok(json) = serde_json::to_vec_pretty(&all) {
             let _ = rdpgate_core::keystore::write_private(&self.cfg.data_dir.join("warnings.json"), &json);
         }
+        crate::status::set_warnings(all);
     }
 
     /// Asks the server to stop so the freshly installed version can start.
@@ -301,6 +359,18 @@ fn bind(addr: SocketAddr) -> std::io::Result<TcpListener> {
 }
 
 pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut watch::Receiver<bool>) -> Result<Exit, String> {
+    // First of all: sign-in depends on the time, and after a reboot this
+    // PC's clock may be hours off. Not in dry-run mode (development, tests),
+    // where clients share this machine's clock, right or wrong.
+    let clock = {
+        let app = app.clone();
+        let (real, stop) = (app.cfg.firewall == "windows", shutdown.clone());
+        tokio::spawn(async move {
+            if real {
+                crate::clock::run(move |w| app.set_clock_warning(w), stop).await;
+            }
+        })
+    };
     let tls = Arc::new(tls_setup(&app.cfg, shutdown.clone())?);
 
     // Nothing from a previous run may stay open, then check for anything
@@ -353,6 +423,9 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     let beacon = tokio::spawn(crate::beacon::run(app.clone(), shutdown.clone()));
     let updater = tokio::spawn(crate::updater::run(app.clone(), shutdown.clone()));
     let router = tokio::spawn(crate::router::run(app.cfg.clone(), shutdown.clone()));
+    let firewall_watch = tokio::spawn(watch_firewall(app.clone(), shutdown.clone()));
+    // The notification-area icon in every signed-in session (service only).
+    let tray = tokio::spawn(crate::session::run(shutdown.clone()));
 
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     for ln in listeners {
@@ -398,8 +471,11 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     crate::logln!("STOP closing all firewall grants");
     critical.abort_all();
     beacon.abort();
+    clock.abort();
     updater.abort();
     router.abort();
+    firewall_watch.abort();
+    tray.abort();
     app.grants.shutdown().await;
     if let Some(why) = failed {
         return Err(format!("{why} unexpectedly; exiting so the service restarts"));
@@ -440,6 +516,31 @@ async fn connection(app: Arc<App>, tls: Arc<Tls>, tcp: TcpStream, peer: SocketAd
         crate::gate::handle(app.clone(), stream, peer).await;
     } else {
         crate::web::serve(app.clone(), stream, peer).await;
+    }
+}
+
+/// Checks every few minutes that Windows Firewall is still on, so a firewall
+/// someone turned off shows as a warning (and in the tray icon) while it's off.
+async fn watch_firewall(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
+    const EVERY: Duration = Duration::from_secs(60);
+    /// The full audit inspects every rule: now and then is enough, so a rule
+    /// disabled from RDP Gate Server stops being reported.
+    const FULL_EVERY: u32 = 15;
+    let mut n: u32 = 0;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(EVERY) => {}
+            _ = shutdown.changed() => return,
+        }
+        n += 1;
+        let fw = app.grants.firewall();
+        if n.is_multiple_of(FULL_EVERY) {
+            if let Ok(w) = tokio::task::spawn_blocking(move || fw.audit()).await {
+                app.write_warnings(&w);
+            }
+        } else if let Ok(p) = tokio::task::spawn_blocking(move || fw.profile_warnings()).await {
+            app.set_profile_warnings(p);
+        }
     }
 }
 

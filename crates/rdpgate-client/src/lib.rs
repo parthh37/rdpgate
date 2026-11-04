@@ -623,7 +623,8 @@ fn not_remembered(dir: &Path, resp: &Response) -> Option<String> {
 /// The grant a successful sign-in (or auto-mode move) answered with.
 async fn opened(cfg: &ClientConfig, key: &SigningKey, resp: Response, target: Target, rest: &[Target]) -> Grant {
     let source = resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok());
-    let mut ip = source.map(|i| i.to_string()).unwrap_or_default();
+    // What the server opened: this address, or for IPv6 its whole /64.
+    let mut ip = source.map(rdpgate_core::describe_scope).unwrap_or_default();
     // Don't hold up signing in for long if the other address doesn't answer.
     if let Some(token) = resp.link.as_deref()
         && let Ok(Some(also)) = tokio::time::timeout(IPV6_TIMEOUT, link_other_family(cfg, key, target, rest, token)).await
@@ -676,7 +677,8 @@ pub async fn follow(dir: &Path, cfg: &ClientConfig, key: &SigningKey, grant: &Gr
     }
     let source = resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok());
     if target.addr == grant.server_addr {
-        if source == grant.source {
+        // Another privacy address on the same IPv6 network is the same place.
+        if source.map(rdpgate_core::grant_scope) == grant.source.map(rdpgate_core::grant_scope) {
             return Ok(Followed::Same);
         }
         // Same place as before (perhaps the server's own-network address).
@@ -839,7 +841,7 @@ async fn link_other_family(cfg: &ClientConfig, key: &SigningKey, signed_in: Targ
     let (mut tls, binding) = open_verified(other.addr, &card).await.ok()?;
     let p = Payload { op: wire::OP_LINK.into(), device: cfg.device.clone(), ts: unix_now(), link: token.into(), ..Default::default() };
     let resp = request(&mut tls, &binding, key, p).await.ok().filter(|r| r.ok)?;
-    resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok()).map(|i| i.to_string())
+    resp.ip.as_deref().and_then(|i| i.parse::<IpAddr>().ok()).map(rdpgate_core::describe_scope)
 }
 
 /// Closes the firewall for this network again.

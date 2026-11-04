@@ -24,6 +24,8 @@ const IPV4_SOURCES: &[&str] = &[
 /// The same over IPv6: each of these names has only an IPv6 address.
 const IPV6_SOURCES: &[&str] = &["https://api6.ipify.org", "https://ipv6.icanhazip.com", "https://v6.ident.me", "https://ipv6.seeip.org"];
 const CHECK_EVERY: Duration = Duration::from_secs(300);
+/// Until the first publish: at boot the network may not be up yet.
+const BOOT_RETRY: Duration = Duration::from_secs(20);
 /// Re-publish even when nothing changed, so clients can tell the beacon is live.
 const REFRESH_EVERY: Duration = Duration::from_secs(6 * 3600);
 
@@ -189,13 +191,16 @@ pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
     let mut last: Option<(PublicIps, Instant)> = None;
     let mut last_lan: Option<LanLocation> = None;
     let mut last_error: Option<String> = None;
-    let mut tick = tokio::time::interval(CHECK_EVERY);
+    // Right away, then every CHECK_EVERY; quicker until the first publish,
+    // while the network comes up after a reboot.
+    let mut wait = Duration::ZERO;
     let ipv6 = app.cfg.ipv6;
     loop {
         tokio::select! {
-            _ = tick.tick() => {}
+            _ = tokio::time::sleep(wait) => {}
             _ = shutdown.changed() => return,
         }
+        wait = CHECK_EVERY;
         let found = match tokio::task::spawn_blocking(move || discover_public_ips(ipv6)).await {
             Ok(Ok(ips)) => ips,
             Ok(Err(e)) => {
@@ -204,6 +209,9 @@ pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
                     write_status(&app, &Status::new(last.map(|l| l.0), None, Some(e.clone())));
                 }
                 last_error = Some(e);
+                if last.is_none() {
+                    wait = BOOT_RETRY;
+                }
                 continue;
             }
             Err(_) => return,
@@ -237,6 +245,9 @@ pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
             Ok(Err(e)) => {
                 crate::logln!("BEACON {e}");
                 last_error = Some(e.clone());
+                if last.is_none() {
+                    wait = BOOT_RETRY;
+                }
                 write_status(&app, &Status::new(Some(ips), None, Some(e)));
             }
             Err(_) => return,

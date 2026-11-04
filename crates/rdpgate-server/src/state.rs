@@ -12,8 +12,10 @@ use std::path::{Path, PathBuf};
 use subtle::ConstantTimeEq;
 use webauthn_rs::prelude::{Passkey, Uuid};
 
+/// The current Unix time, corrected from internet time if this PC's clock
+/// is wrong (see [`crate::clock`]).
 pub fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    crate::clock::now()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

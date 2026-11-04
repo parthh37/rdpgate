@@ -21,6 +21,9 @@ const KEEP_SIGNED_IN_HELP: &str = "Keep me signed in: whoever signs in with pass
 pub fn main() {
     rdpgate_core::update::cleanup_previous();
     rdpgate_server::install_crypto();
+    // Checking a new 6-digit code needs the right time, even on a PC whose
+    // clock is off.
+    rdpgate_server::clock::sync_in_background();
     let opengl = std::env::args().any(|a| a == OPENGL_ARG);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -179,6 +182,8 @@ enum Confirm {
     Restart(&'static str),
     Protect,
     InstallUpdate(Box<Available>),
+    /// A warning's Fix button, and the warning.
+    Fix(rdpgate_server::fix::Fix, String),
     DomainOff,
 }
 
@@ -186,6 +191,8 @@ enum Confirm {
 /// manager can take a while).
 enum Done {
     Message(Result<String, String>),
+    /// A warning's Fix button ran.
+    Fixed(Result<String, String>),
     Router(Vec<String>),
     UpdateChecked(Result<Option<Available>, String>),
     /// The DNS records to create for the host typed in.
@@ -245,6 +252,9 @@ struct ServerApp {
     status: Option<(bool, String)>,
     busy: Option<&'static str>,
     rx: Option<Receiver<Done>>,
+    /// Warnings fixed from this window, hidden until the service stops
+    /// reporting them (it re-checks within a minute or so).
+    fixed: std::collections::HashSet<String>,
 }
 
 impl ServerApp {
@@ -287,6 +297,7 @@ impl ServerApp {
             status: None,
             busy: None,
             rx: None,
+            fixed: Default::default(),
         };
         app.refresh();
         app
@@ -330,6 +341,13 @@ impl ServerApp {
         self.busy = None;
         match done {
             Done::Message(r) => self.say(r),
+            Done::Fixed(r) => {
+                // It didn't work: show the warning again.
+                if r.is_err() {
+                    self.fixed.clear();
+                }
+                self.say(r);
+            }
             Done::Router(lines) => self.router_lines = lines,
             Done::UpdateChecked(Ok(None)) => self.say(Ok("You have the latest version.".into())),
             Done::UpdateChecked(Ok(Some(av))) => self.update = Some(av),
@@ -365,6 +383,13 @@ impl ServerApp {
         } else {
             self.restart_now(ctx, why);
         }
+    }
+
+    /// Runs a warning's fix, then hides that warning until the service's
+    /// next check confirms it's gone.
+    fn apply_fix(&mut self, ctx: &egui::Context, fix: rdpgate_server::fix::Fix, warning: String, rdp_port: u16) {
+        self.fixed.insert(warning);
+        self.run(ctx, "Fixing…", move || Done::Fixed(rdpgate_server::fix::apply(&fix, rdp_port)));
     }
 
     fn restart_now(&mut self, ctx: &egui::Context, why: &'static str) {
@@ -611,9 +636,22 @@ impl ServerApp {
                 );
             }
         }
-        for w in &o.warnings {
+        // What the service no longer reports needn't stay hidden.
+        self.fixed.retain(|f| o.warnings.contains(f));
+        let shown: Vec<&String> = o.warnings.iter().filter(|w| !self.fixed.contains(*w)).collect();
+        for w in shown {
             ui.add_space(6.0);
             theme::notice(ui, Tone::Warn, &format!("Warning: {w}"), false);
+            if let Some(fix) = rdpgate_server::fix::fix_for(w) {
+                ui.add_space(4.0);
+                if ui.add_enabled(idle, primary(fix.label())).clicked() {
+                    if fix.confirm().is_some() {
+                        self.confirm = Some(Confirm::Fix(fix, w.clone()));
+                    } else {
+                        self.apply_fix(&ctx, fix, w.clone(), o.rdp_port);
+                    }
+                }
+            }
         }
 
         gap(ui);
@@ -1423,6 +1461,7 @@ impl ServerApp {
                 },
                 "Install",
             ),
+            Confirm::Fix(fix, _) => (format!("{}?", fix.label()), fix.confirm().unwrap_or_default(), fix.label()),
         };
         let mut answer = None;
         egui::Modal::new(egui::Id::unique("confirm")).show(ctx, |ui| {
@@ -1470,6 +1509,10 @@ impl ServerApp {
                 Ok(()) => self.restart(ctx, "Browser sign-in is off."),
                 Err(e) => self.say(Err(e)),
             },
+            Confirm::Fix(fix, warning) => {
+                let port = self.overview.as_ref().map(|o| o.rdp_port).unwrap_or(3389);
+                self.apply_fix(ctx, fix, warning, port);
+            }
             Confirm::InstallUpdate(av) => {
                 self.update = None;
                 self.run(ctx, "Installing the update…", move || {

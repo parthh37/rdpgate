@@ -136,6 +136,10 @@ function Test-ExposesRdp($Rule, [int] $Port) {
         elseif ($lp -match '^(\d+)-(\d+)$' -and [int]$Matches[1] -le $Port -and [int]$Matches[2] -ge $Port) { $hit = $true }
     }
     if (-not $hit) { return $false }
+    # Per-user and Store app rules only ever match that user's (or app's)
+    # own programs, never the Remote Desktop service.
+    if ($Rule.Owner) { return $false }
+    if (($Rule | Get-NetFirewallApplicationFilter).Package) { return $false }
     $app = ($Rule | Get-NetFirewallApplicationFilter).Program
     $svc = ($Rule | Get-NetFirewallServiceFilter).Service
     $appOk = $app -in @('Any', 'System', '%SystemRoot%\system32\svchost.exe', "$env:SystemRoot\system32\svchost.exe")
@@ -184,6 +188,19 @@ if ($fwSvc.Status -ne 'Running') {
         throw "Could not start Windows Defender Firewall (MpsSvc). Turn it on (Windows Security > Firewall & network protection, or Group Policy if it's managed), then run this again."
     }
     Ok 'Windows Defender Firewall service started'
+}
+# Sign-in checks the time. Windows Time normally starts only on demand and
+# syncs about once a week, so a clock that is wrong after a reboot (a virtual
+# machine reading its hardware clock in the wrong time zone, say) can stay
+# wrong for days. Start it at boot and sync now. The service also uses
+# internet time by itself whenever this PC's clock is off.
+try {
+    & "$env:SystemRoot\System32\sc.exe" config W32Time start= auto | Out-Null
+    Start-Service W32Time -ErrorAction SilentlyContinue
+    & "$env:SystemRoot\System32\w32tm.exe" /resync /force 2>&1 | Out-Null
+    Ok 'Windows Time starts at boot and keeps the clock right'
+} catch {
+    Warn "Could not set Windows Time to start at boot ($_). RDP Gate still uses internet time when the clock is off."
 }
 $rdpPort = [int](Get-ItemProperty -Path $RdpTcpKey).PortNumber
 Ok "$($os.Caption), Remote Desktop port $rdpPort"

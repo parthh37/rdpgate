@@ -31,7 +31,16 @@ pub trait Firewall: Send + Sync + 'static {
     /// it disabled; fails (leaving Remote Desktop alone) if anything, such as
     /// Group Policy, still exposes the port afterwards.
     fn lock_down(&self) -> Result<Vec<String>, String>;
+    /// The quick part of [`Firewall::audit`]: firewall profiles that are off
+    /// or allow inbound traffic. Cheap enough to check every few minutes, so
+    /// a firewall someone turned off is noticed while it's off.
+    fn profile_warnings(&self) -> Vec<String> {
+        vec![]
+    }
 }
+
+/// How [`Firewall::audit`] and [`Firewall::profile_warnings`] start a profile warning.
+pub const PROFILE_WARNING: &str = "firewall profile ";
 
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub fn for_config(cfg: &crate::config::Config) -> std::sync::Arc<dyn Firewall> {
@@ -107,10 +116,15 @@ pub mod windows_fw {
     /// Lock-down inspects every firewall rule, which can take a minute.
     const SLOW_TIMEOUT: Duration = Duration::from_secs(300);
 
+    /// [`EXPOSES_RDP_PS`], for other scripts that need it.
+    pub fn exposes_rdp() -> &'static str {
+        EXPOSES_RDP_PS
+    }
+
     /// PowerShell `Test-ExposesRdp $rule $port`, the same test as
     /// install-server.ps1: the rule allows inbound TCP to the RDP port (or
     /// any port, or a range containing it) and isn't limited to some
-    /// unrelated program or service.
+    /// unrelated program, service, user or Store app.
     const EXPOSES_RDP_PS: &str = r#"function Test-ExposesRdp($r, [int] $p) {
   $pf = $r | Get-NetFirewallPortFilter
   if ($pf.Protocol -notin @('TCP','Any')) { return $false }
@@ -120,6 +134,8 @@ pub mod windows_fw {
     elseif ($lp -match '^(\d+)-(\d+)$' -and [int]$Matches[1] -le $p -and [int]$Matches[2] -ge $p) { $hit = $true }
   }
   if (-not $hit) { return $false }
+  if ($r.Owner) { return $false }
+  if (($r | Get-NetFirewallApplicationFilter).Package) { return $false }
   $app = ($r | Get-NetFirewallApplicationFilter).Program
   $svc = ($r | Get-NetFirewallServiceFilter).Service
   if ($app -notin @('Any','System','%SystemRoot%\system32\svchost.exe',"$env:SystemRoot\system32\svchost.exe") -and $svc -ne 'TermService') { return $false }
@@ -182,7 +198,7 @@ pub mod windows_fw {
         run(&system32("netsh.exe"), args)
     }
 
-    fn powershell(script: &str) -> Result<String, String> {
+    pub fn powershell(script: &str) -> Result<String, String> {
         powershell_for(script, CHILD_TIMEOUT)
     }
 
@@ -207,6 +223,13 @@ pub mod windows_fw {
         netsh(&["advfirewall", "firewall", "show", "rule", &format!("name={}", rule_name(ip))]).map(|(ok, _)| ok)
     }
 
+    fn profile_warning(p: &str) -> String {
+        format!(
+            "{PROFILE_WARNING}{p} is off or allows inbound traffic by default: Remote Desktop is reachable without signing in. \
+             Turn Windows Firewall back on (Windows Security > Firewall & network protection)"
+        )
+    }
+
     impl WindowsFirewall {
         fn audit_for(&self, timeout: Duration) -> Vec<String> {
             let port = self.port;
@@ -224,7 +247,7 @@ Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Allow -E
                 Ok(out) => {
                     for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
                         if let Some(p) = line.strip_prefix("PROFILE ") {
-                            warnings.push(format!("firewall profile {p} is off or allows inbound traffic by default: RDP is reachable without signing in"));
+                            warnings.push(profile_warning(p));
                         } else if let Some(r) = line.strip_prefix("RULE ") {
                             warnings.push(format!("firewall rule [{r}] lets anyone reach port {port}: disable it (rules from Group Policy must be changed there)"));
                         }
@@ -241,10 +264,21 @@ Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Allow -E
             self.audit_for(CHILD_TIMEOUT)
         }
 
+        fn profile_warnings(&self) -> Vec<String> {
+            match powershell(
+                "Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { $_.Enabled -ne 'True' -or $_.DefaultInboundAction -eq 'Allow' } | ForEach-Object { 'PROFILE ' + $_.Name }",
+            ) {
+                Ok(out) => out.lines().filter_map(|l| l.trim().strip_prefix("PROFILE ")).map(profile_warning).collect(),
+                Err(e) => vec![format!("firewall audit failed: {e}")],
+            }
+        }
+
         fn allow(&self, ip: IpAddr) -> Result<(), String> {
             let name = format!("name={}", rule_name(ip));
             let port = format!("localport={}", self.port);
-            let remote = format!("remoteip={ip}");
+            // An IPv6 grant covers the computer's /64: it signs in from one of
+            // its addresses and Remote Desktop may connect from another.
+            let remote = format!("remoteip={}", rdpgate_core::describe_scope(ip));
             let add = |proto: &str| -> Result<(), String> {
                 let (ok, out) = netsh(&[
                     "advfirewall", "firewall", "add", "rule", &name, "dir=in", "action=allow", proto, &port, &remote,

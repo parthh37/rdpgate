@@ -126,6 +126,8 @@ if (Get-Service RDPGate -ErrorAction SilentlyContinue) {
     & sc.exe delete RDPGate | Out-Null
     Write-Host 'Service removed.'
 }
+# What the service told the tray icon (gone at the next reboot anyway).
+Remove-Item 'HKLM:\SOFTWARE\RDPGate' -Recurse -Force -ErrorAction SilentlyContinue
 Get-NetFirewallRule -DisplayName 'RDPGate-*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 Get-NetFirewallRule -Name 'RDPGate-Temp-KeepRdp' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 Write-Host 'Firewall rules removed.'
