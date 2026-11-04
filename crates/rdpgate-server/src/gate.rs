@@ -77,7 +77,20 @@ async fn process(app: &App, tls: &mut TlsStream<TcpStream>, ip: IpAddr, src: &st
         Err(e) => return deny(app, src, &dev.name, &e.to_string()),
     };
     if (now() as u64).abs_diff(p.ts as u64) > MAX_CLOCK_SKEW {
-        return deny(app, src, &dev.name, "clock skew: fix the time on the client or server");
+        // The signature is good: this is the enrolled computer with a wrong
+        // clock, not an attack (the channel binding already stops replays).
+        // Say so, and don't count it towards a ban that would lock it out
+        // for longer after the clock is fixed.
+        let off = p.ts - now();
+        let how = if off > 0 { "ahead of" } else { "behind" };
+        return reject(
+            src,
+            &dev.name,
+            &format!(
+                "this computer's clock is {} {how} the server's: set the time automatically on this computer and try again",
+                crate::clock::span(off.abs())
+            ),
+        );
     }
 
     // The request provably comes from an enrolled device from here on.

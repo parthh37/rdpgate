@@ -229,7 +229,7 @@ impl Grants {
     /// [`wire::CLOSED`]: rdpgate_core::wire::CLOSED
     pub async fn follow(self: &Arc<Self>, ip: IpAddr, who: &str) -> Result<(Grant, Renewed), String> {
         let (me, who) = (self.clone(), who.to_string());
-        tokio::spawn(async move { me.follow_inner(ip.to_canonical(), &who).await }).await.map_err(|e| format!("grant task: {e}"))?
+        tokio::spawn(async move { me.follow_inner(rdpgate_core::grant_scope(ip), &who).await }).await.map_err(|e| format!("grant task: {e}"))?
     }
 
     async fn follow_inner(&self, ip: IpAddr, who: &str) -> Result<(Grant, Renewed), String> {
@@ -261,7 +261,7 @@ impl Grants {
     /// family and was handed `token` (once, within a minute). `who` must
     /// match that sign-in. The two grants then close together.
     pub async fn link(self: &Arc<Self>, token: &str, ip: IpAddr, who: &str) -> Result<Grant, String> {
-        let (ip, t) = (ip.to_canonical(), now());
+        let (ip, t) = (rdpgate_core::grant_scope(ip), now());
         let (group, created, first) = {
             let mut inner = self.inner.lock().await;
             let g = inner
@@ -282,7 +282,7 @@ impl Grants {
             (g.revoke_token.clone(), g.created, g.ip)
         };
         let me = self.clone();
-        let who = format!("{who} with {first}");
+        let who = format!("{who} with {}", rdpgate_core::describe_scope(first));
         let opening = Opening { group: Some(group), link: false, created: Some(created) };
         tokio::spawn(async move {
             let mut inner = me.inner.lock().await;
@@ -311,6 +311,8 @@ impl Grants {
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err("the service is stopping".into());
         }
+        // An IPv6 computer's grant covers its /64 (see `grant_scope`).
+        let ip = rdpgate_core::grant_scope(ip);
         if !inner.grants.contains_key(&ip) {
             if inner.grants.len() >= MAX_GRANTS {
                 return Err("too many active grants".into());
@@ -333,7 +335,7 @@ impl Grants {
         };
         inner.grants.insert(ip, g.clone());
         self.changed(&inner.grants);
-        crate::logln!("GRANT open ip={ip} who={:?} until={}", g.who, crate::log::local(g.expires));
+        crate::logln!("GRANT open ip={} who={:?} until={}", rdpgate_core::describe_scope(ip), g.who, crate::log::local(g.expires));
         Ok(g)
     }
 
@@ -350,7 +352,7 @@ impl Grants {
             }
         }
         if existed {
-            crate::logln!("GRANT closed ip={ip} reason={why}");
+            crate::logln!("GRANT closed ip={} reason={why}", rdpgate_core::describe_scope(ip));
             self.changed(&inner.grants);
         }
         existed
@@ -358,7 +360,7 @@ impl Grants {
 
     /// Closes `ip` and any grant opened together with it.
     pub async fn revoke(&self, ip: IpAddr, why: &str) -> bool {
-        let ip = ip.to_canonical();
+        let ip = rdpgate_core::grant_scope(ip);
         let mut inner = self.inner.lock().await;
         let group = inner.grants.get(&ip).map(|g| g.revoke_token.clone());
         let mut ips = vec![ip];
@@ -438,8 +440,9 @@ impl Grants {
             return;
         }
         let fw = self.fw.clone();
-        let peers = match blocking(move || fw.connected_peers()).await {
-            Ok(p) => p,
+        let peers: HashSet<IpAddr> = match blocking(move || fw.connected_peers()).await {
+            // Grants are kept by network for IPv6: match connections the same way.
+            Ok(p) => p.into_iter().map(rdpgate_core::grant_scope).collect(),
             Err(e) => {
                 // Fail closed: if connections cannot be seen, treat them as absent.
                 crate::logln!("ERROR reading connection table: {e}");
@@ -473,6 +476,7 @@ impl Grants {
     /// Runs after every change to the grant table, with `inner` locked.
     fn changed(&self, map: &HashMap<IpAddr, Grant>) {
         self.write_status(map);
+        crate::status::set_grants(map.values());
         self.sync_power(!map.is_empty());
     }
 
@@ -540,6 +544,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_ipv6_grant_covers_the_computers_other_addresses() {
+        let fw = Arc::new(DryRun::default());
+        let grants = grants(fw.clone(), false); // grant_minutes 0: only a connection keeps it
+        // A Mac signs in from one privacy address; Remote Desktop connects from another.
+        let (signed_in, rdp): (IpAddr, IpAddr) =
+            ("2405:201:2022:ca6f:8963:b2a5:373c:317d".parse().unwrap(), "2405:201:2022:ca6f:34c8:931b:a619:fcdd".parse().unwrap());
+        let net: IpAddr = "2405:201:2022:ca6f::".parse().unwrap();
+        let g = grants.allow(signed_in, "device mac".into()).await.unwrap();
+        assert_eq!(g.ip, net);
+        assert_eq!(fw.allowed.lock().unwrap().iter().copied().collect::<Vec<_>>(), vec![net]);
+
+        fw.peers.lock().unwrap().insert(rdp);
+        grants.tick().await;
+        assert!(grants.list().await[0].last_connected.is_some(), "the connection from the other address counts");
+
+        // Auto mode: a new privacy address on the same network is no move.
+        grants.start_auto(&g).await;
+        let (_, how) = grants.follow(rdp, "device mac").await.unwrap();
+        assert_eq!(how, Renewed::Same);
+        // Another network is.
+        let (moved, how) = grants.follow("2a00:1450:4001:81a::1".parse().unwrap(), "device mac").await.unwrap();
+        assert_eq!((moved.ip, how), ("2a00:1450:4001:81a::".parse().unwrap(), Renewed::Moved));
+
+        // Locking from any address of the network closes it.
+        assert!(grants.revoke("2a00:1450:4001:81a::99".parse().unwrap(), "test").await);
+        assert!(fw.allowed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_sign_in_opens_the_other_ip_family_once_and_both_close_together() {
         let fw = Arc::new(DryRun::default());
         let grants = grants(fw.clone(), false);
@@ -555,7 +588,7 @@ mod tests {
         assert!(grants.link(&token, v4, "device other").await.unwrap_err().contains("belongs to"));
         let token = grants.allow(v6, "device mac".into()).await.unwrap().link.unwrap().0;
         let linked = grants.link(&token, v4, "device mac").await.unwrap();
-        assert_eq!(linked.who, format!("device mac with {v6}"));
+        assert_eq!(linked.who, "device mac with 2a00:1450::/64");
         assert!(linked.link.is_none(), "a linked grant can't link further");
         assert_eq!(fw.allowed.lock().unwrap().len(), 2);
 

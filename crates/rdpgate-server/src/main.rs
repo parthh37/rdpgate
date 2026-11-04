@@ -755,6 +755,8 @@ fn status(data: &Path) -> Result<(), String> {
 }
 
 fn totp_setup(data: &Path, force: bool, invert: bool) -> Result<(), String> {
+    // The code typed below is checked against the time: use the real one.
+    rdpgate_server::clock::sync_in_background();
     let enrollment = admin::totp_begin(data, force).map_err(|e| {
         if e.contains("already set up") { "6-digit codes are already set up (use --force to replace; old codes stop working)".into() } else { e }
     })?;

@@ -57,6 +57,7 @@ mod imp {
             });
         };
         set(ServiceState::Running, 0);
+        crate::status::enable();
         let result = crate::run_server(&data_dir, false, rx);
         if let Err(e) = &result {
             crate::logln!("FATAL {e}");
@@ -67,6 +68,7 @@ mod imp {
             Ok(crate::app::Exit::Stopped) => 0,
             Ok(crate::app::Exit::Restart) | Err(_) => 1,
         };
+        crate::status::clear();
         set(ServiceState::Stopped, code);
     }
 

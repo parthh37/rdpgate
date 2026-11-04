@@ -6,8 +6,10 @@
 use crate::icon::{self, Level};
 use crate::watch::{Note, Watch};
 use rdpgate_server::service::{self, Status};
-use rdpgate_server::updater::WINDOW_EXE;
+use rdpgate_server::status::{self as public, Public};
+use rdpgate_server::updater::{SERVER_EXE, WINDOW_EXE};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -146,6 +148,41 @@ struct Tray {
     added: bool,
     watch: Watch,
     opened: Option<Instant>,
+    /// What the running service last published (who's signed in, warnings).
+    summary: Option<Public>,
+    /// Computers with access open at the last check; `None` before the
+    /// first, so what was open before the icon started isn't announced.
+    known: Option<HashSet<String>>,
+    /// Warnings already shown as a notification.
+    warned: HashSet<String>,
+}
+
+/// "macbook connected", "2 computers signed in".
+fn access_line(p: &Public) -> Option<String> {
+    match p.signed_in.as_slice() {
+        [] => None,
+        [one] if one.connected => Some(format!("{} connected", one.name)),
+        [one] => Some(format!("{} signed in", one.name)),
+        many => {
+            let n = many.iter().filter(|s| s.connected).count();
+            Some(format!("{} computers signed in, {n} connected", many.len()))
+        }
+    }
+}
+
+/// "14:05" for a Unix time.
+fn clock_time(unix: i64) -> String {
+    let t = rdpgate_server::log::local(unix);
+    t.rsplit(' ').next().unwrap_or(&t).to_string()
+}
+
+/// Makes a warning from the service read as a sentence.
+fn sentence(w: &str) -> String {
+    let mut s: String = w.chars().take(250).collect();
+    if let Some(f) = s.get_mut(0..1) {
+        f.make_ascii_uppercase();
+    }
+    s
 }
 
 impl Tray {
@@ -164,7 +201,16 @@ impl Tray {
         n.uCallbackMessage = WM_TRAY;
         n.hIcon = self.icon;
         let state = self.status.map_or("RDP Gate service: checking…", describe);
-        fill(&mut n.szTip, &format!("RDP Gate Server\n{}", state.trim_start_matches("RDP Gate service ")));
+        let mut tip = format!("RDP Gate Server\n{}", state.trim_start_matches("RDP Gate service "));
+        if let Some(p) = &self.summary {
+            if let Some(line) = access_line(p) {
+                tip = format!("{tip}\n{line}");
+            }
+            if !p.warnings.is_empty() {
+                tip = format!("{tip}\nNeeds attention: right-click for details");
+            }
+        }
+        fill(&mut n.szTip, &tip);
         if self.added {
             // Fails if Explorer went away without telling: add it again next time.
             self.added = unsafe { Shell_NotifyIconW(NIM_MODIFY, &n) } != 0;
@@ -205,17 +251,25 @@ impl Tray {
         }
         let status = service::status();
         let level = level(status);
-        let changed = self.status != Some(status);
+        // What the service says about itself, while it's running.
+        let summary = if status == Status::Running { public::read() } else { None };
+        // A running service that needs attention (firewall off, clock off) shows amber.
+        let shown = if level == Level::Good && summary.as_ref().is_some_and(|p| !p.warnings.is_empty()) { Level::Busy } else { level };
+        let changed = self.status != Some(status) || self.summary != summary;
         self.status = Some(status);
-        if self.icon_level != Some(level) || self.icon.is_null() {
-            let old = std::mem::replace(&mut self.icon, make_icon(level));
-            self.icon_level = Some(level);
+        let before = std::mem::replace(&mut self.summary, summary);
+        if self.icon_level != Some(shown) || self.icon.is_null() {
+            let old = std::mem::replace(&mut self.icon, make_icon(shown));
+            self.icon_level = Some(shown);
             self.show();
             if !old.is_null() {
                 unsafe { DestroyIcon(old) };
             }
         } else if changed || !self.added {
             self.show();
+        }
+        if self.summary.is_some() || before.is_some() {
+            self.announce();
         }
         match self.watch.update(level, Instant::now()) {
             Some(Note::Down) if status == Status::NotInstalled => self.notify(
@@ -232,6 +286,35 @@ impl Tray {
             None => {}
         }
         false
+    }
+
+    /// Tells about sign-ins, access closing and new warnings.
+    fn announce(&mut self) {
+        let Some(p) = self.summary.clone() else {
+            // The service stopped or restarted: that is told by `watch`.
+            self.known = None;
+            return;
+        };
+        let now: HashSet<String> = p.signed_in.iter().map(|s| s.name.clone()).collect();
+        if let Some(known) = &self.known {
+            for s in p.signed_in.iter().filter(|s| !known.contains(&s.name)) {
+                self.notify(
+                    &format!("{} signed in", s.name),
+                    &format!("Remote Desktop is open for it. Access closes at {} unless it's connected.", clock_time(s.expires)),
+                    false,
+                );
+            }
+            let gone: Vec<&String> = known.iter().filter(|n| !now.contains(*n)).collect();
+            if !gone.is_empty() && p.signed_in.is_empty() {
+                self.notify("Remote Desktop is closed again", "Nobody has access open now.", false);
+            }
+        }
+        self.known = Some(now);
+        self.warned.retain(|w| p.warnings.contains(w));
+        if let Some(w) = p.warnings.iter().find(|w| !self.warned.contains(*w)) {
+            self.notify("RDP Gate needs attention", &sentence(w), true);
+            self.warned.insert(w.clone());
+        }
     }
 }
 
@@ -298,6 +381,16 @@ fn open_window(hwnd: HWND) {
         return;
     }
     let dir = server_dir();
+    // An update from the window in 1.5.1 and earlier could put a copy of the
+    // server in its place, which opens no window at all.
+    let size = |name: &str| std::fs::metadata(dir.join(name)).map(|m| m.len()).ok();
+    if size(WINDOW_EXE).is_some() && size(WINDOW_EXE) == size(SERVER_EXE) {
+        message_box(&format!(
+            "{WINDOW_EXE} was damaged by an earlier update. The RDP Gate service repairs it the next time it starts \
+             (restart this PC, or the RDPGate service); or run RDP Gate Server Setup again."
+        ));
+        return;
+    }
     let (file, dir_w, verb) = (wide_path(&dir.join(WINDOW_EXE)), wide_path(&dir), wide("open"));
     let r = unsafe { ShellExecuteW(hwnd, verb.as_ptr(), file.as_ptr(), null(), dir_w.as_ptr(), SW_SHOWNORMAL) } as isize;
     // 2 and 3: file or folder not found. Other failures include saying No
@@ -310,20 +403,49 @@ fn open_window(hwnd: HWND) {
 /// Starts the service through rdpgate-server, which asks for Administrator rights.
 fn start_service(hwnd: HWND) {
     let dir = server_dir();
-    let (file, dir_w) = (wide_path(&dir.join("rdpgate-server.exe")), wide_path(&dir));
+    let (file, dir_w) = (wide_path(&dir.join(SERVER_EXE)), wide_path(&dir));
     let (verb, args) = (wide("runas"), wide("service-start"));
     unsafe { ShellExecuteW(hwnd, verb.as_ptr(), file.as_ptr(), args.as_ptr(), dir_w.as_ptr(), SW_HIDE) };
     // Show "starting…" soon rather than at the next regular check.
     unsafe { SetTimer(hwnd, 2, 1500, None) };
 }
 
+/// The menu's lines about who has access and what needs attention.
+fn summary_lines(p: &Public) -> Vec<String> {
+    let mut lines: Vec<String> = p
+        .signed_in
+        .iter()
+        .map(|s| {
+            if s.connected {
+                format!("{}: connected", s.name)
+            } else {
+                format!("{}: signed in, start Remote Desktop by {}", s.name, clock_time(s.expires))
+            }
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push("Remote Desktop is closed: nobody has signed in".into());
+    }
+    for w in &p.warnings {
+        // Menu lines are short: the first clause, with the full text in the notification.
+        let short = w.split([':', '.']).next().unwrap_or(w);
+        lines.push(format!("\u{26a0} {}", sentence(short)));
+    }
+    lines
+}
+
 fn menu(hwnd: HWND, x: i32, y: i32) {
-    let Some(status) = with(|t| t.status) else { return };
+    let Some((status, summary)) = with(|t| (t.status, t.summary.clone())) else { return };
     let status = status.unwrap_or(Status::Unknown);
     unsafe {
         let m = CreatePopupMenu();
         let header = wide(describe(status));
         AppendMenuW(m, MF_STRING | MF_DISABLED, 0, header.as_ptr());
+        // Kept alive until the menu is gone.
+        let lines: Vec<Vec<u16>> = summary.as_ref().map(summary_lines).unwrap_or_default().iter().map(|l| wide(l)).collect();
+        for l in &lines {
+            AppendMenuW(m, MF_STRING | MF_DISABLED, 0, l.as_ptr());
+        }
         AppendMenuW(m, MF_SEPARATOR, 0, null());
         let open = wide("Open RDP Gate Server");
         AppendMenuW(m, MF_STRING, ID_OPEN, open.as_ptr());
@@ -440,6 +562,9 @@ pub fn main() {
             added: false,
             watch: Watch::default(),
             opened: None,
+            summary: None,
+            known: None,
+            warned: HashSet::new(),
         })
     });
     // At sign-in the taskbar may not be ready yet; each check retries adding the icon.
