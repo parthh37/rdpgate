@@ -177,6 +177,10 @@ enum Cmd {
     ServiceUninstall,
     /// Start the service if it is stopped (Administrator)
     ServiceStart,
+    /// Restart the service, e.g. to apply settings (Administrator). Signed-in
+    /// computers keep their access and Remote Desktop stays connected, unlike
+    /// with Restart-Service
+    ServiceRestart,
     /// Start the service if it is stopped (run by the scheduled watchdog task)
     #[command(hide = true)]
     ServiceWatchdog,
@@ -251,7 +255,7 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             println!("Publishing the first beacon…");
             let gist_id = admin::beacon_setup(data, &token, gist.as_deref())?;
             println!("Encrypted beacon published to secret gist {gist_id}.");
-            println!("Restart the service to keep it updated: Restart-Service RDPGate\n");
+            println!("Restart the service to keep it updated: rdpgate-server service-restart\n");
             print_card(&Config::load(data)?, &Identity::load_or_create(data)?);
             Ok(())
         }
@@ -329,7 +333,7 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             rdpgate_server::updater::install(&av)?;
             println!("Installed {}.", av.version);
             match rdpgate_server::service::restart() {
-                Ok(()) => println!("Service restarted on the new version."),
+                Ok(()) => println!("Service restarted on the new version. Signed-in computers kept their access."),
                 Err(e) => println!("Restart the service to finish ({e})."),
             }
             Ok(())
@@ -442,6 +446,11 @@ fn dispatch(cmd: Cmd, data: &Path) -> Result<(), String> {
             } else {
                 println!("Service \"RDPGate\" was already running.");
             }
+            Ok(())
+        }
+        Cmd::ServiceRestart => {
+            rdpgate_server::service::restart()?;
+            println!("Service \"RDPGate\" restarted. Signed-in computers kept their access.");
             Ok(())
         }
         Cmd::ServiceWatchdog => {
@@ -611,25 +620,13 @@ fn domain_setup(data: &Path, host: Option<String>, cert: Option<PathBuf>, key: O
     Ok(())
 }
 
-/// Restarts the service to apply new settings. Restarting closes every open
-/// grant, which drops Remote Desktop sessions that came through RDP Gate,
-/// so it asks first while anyone has access open.
-fn restart_service(data: &Path) -> Result<(), String> {
-    let open = std::fs::read(data.join("grants.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Vec<serde_json::Value>>(&b).ok())
-        .map_or(0, |g| g.len());
-    if open > 0 {
-        println!("  Access is open right now ({open} address(es), probably including yours). Restarting the");
-        println!("  service closes it and disconnects Remote Desktop sessions that came through RDP Gate.");
-        if !yes_no("  Restart now?", false)? {
-            println!("  Not restarted. The new settings apply at the next restart: Restart-Service RDPGate");
-            return Ok(());
-        }
-    }
+/// Restarts the service to apply new settings. Open access is handed to the
+/// new run, so Remote Desktop sessions that came through RDP Gate stay
+/// connected.
+fn restart_service(_data: &Path) -> Result<(), String> {
     match rdpgate_server::service::restart() {
         Ok(()) => println!("  Service restarted with the new settings."),
-        Err(e) => println!("  Restart the service to apply the settings: Restart-Service RDPGate ({e})"),
+        Err(e) => println!("  Restart the service to apply the settings: rdpgate-server service-restart ({e})"),
     }
     Ok(())
 }

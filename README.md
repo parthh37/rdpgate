@@ -202,7 +202,7 @@ Every program keeps itself up to date, and only ever installs a release signed w
 
 | Program | Automatic | By hand |
 |---|---|---|
-| Server | Checks daily. Installs only while nobody has access open, then restarts the service. `"auto_update": false` in config.json turns it off. | RDP Gate Server → Overview → **Check for updates**, or `rdpgate-server update` (`--check` to only look) |
+| Server | Checks daily, installs, then restarts the service on the new version. Signed-in computers keep their access and Remote Desktop stays connected. `"auto_update": false` in config.json turns it off. | RDP Gate Server → Overview → **Check for updates**, or `rdpgate-server update` (`--check` to only look) |
 | Desktop app | Checks once a day at launch. Installs and offers **Restart now**. There's a toggle under *This computer and server*. | **Check for updates** at the bottom of every screen, even before setup |
 | `rdpgate` CLI | Once a day, after a successful `connect`. | `rdpgate update`, `rdpgate auto-update on\|off` |
 
@@ -256,7 +256,7 @@ rdpgate-server totp-setup --force      # new authenticator secret
 
 Logs: `C:\ProgramData\RDPGate\logs\rdpgate.log`. Every refusal (`DENY`), sign-in (`GRANT open`), RDP connection, lockout, beacon update and closure is recorded.
 
-Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after editing (`Restart-Service RDPGate`):
+Settings live in `C:\ProgramData\RDPGate\config.json`; restart the service after editing (`rdpgate-server service-restart`, which keeps signed-in computers connected; `Restart-Service RDPGate` closes their access):
 
 | Key | Default | Meaning |
 |---|---|---|

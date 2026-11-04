@@ -11,7 +11,7 @@ mod imp {
     use windows_service::service::{
         ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept, ServiceErrorControl,
         ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState,
-        ServiceStatus, ServiceType,
+        ServiceStatus, ServiceType, UserEventCode,
     };
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -19,6 +19,10 @@ mod imp {
 
     pub const NAME: &str = "RDPGate";
     static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+    /// Our own control code (128-255 are for services to define): stop in
+    /// order to be started again, handing open access to the next run
+    /// instead of closing it (see [`crate::handoff`]).
+    const RESTART_KEEPING_ACCESS: u32 = 200;
 
     define_windows_service!(ffi_service_main, service_main);
 
@@ -32,6 +36,11 @@ mod imp {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let handler = move |event| match event {
             ServiceControl::Stop | ServiceControl::Shutdown | ServiceControl::Preshutdown => {
+                let _ = tx.send(true);
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::UserEvent(code) if code.to_raw() == RESTART_KEEPING_ACCESS => {
+                crate::app::restart_keeping_access();
                 let _ = tx.send(true);
                 ServiceControlHandlerResult::NoError
             }
@@ -135,23 +144,39 @@ mod imp {
         Ok(true)
     }
 
-    /// Stops the service (if running) and starts it again.
+    /// Stops the service (if running) and starts it again. Open access is
+    /// handed to the new run, so Remote Desktop sessions stay connected and
+    /// nobody has to sign in again. A service from 1.5.1 or earlier doesn't
+    /// know how, and is just stopped (closing access, as it always did).
     pub fn restart() -> Result<(), String> {
         let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|e| format!("open service manager (run as Administrator): {e}"))?;
         let svc = m
-            .open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::START)
+            .open_service(
+                NAME,
+                ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::START | ServiceAccess::USER_DEFINED_CONTROL,
+            )
             .map_err(|e| format!("open service: {e}"))?;
-        if svc.query_status().map(|s| s.current_state != ServiceState::Stopped).unwrap_or(false) {
-            let _ = svc.stop();
+        let state = || svc.query_status().map(|s| s.current_state);
+        if state().map(|s| s != ServiceState::Stopped).unwrap_or(false) {
+            let keep = UserEventCode::from_raw(RESTART_KEEPING_ACCESS).map_err(|e| e.to_string())?;
+            if svc.notify(keep).is_err() {
+                let _ = svc.stop();
+            }
             for _ in 0..60 {
                 std::thread::sleep(Duration::from_millis(500));
-                if svc.query_status().map(|s| s.current_state == ServiceState::Stopped).unwrap_or(true) {
+                if state().map(|s| s == ServiceState::Stopped).unwrap_or(true) {
                     break;
                 }
             }
         }
-        svc.start(&[] as &[&OsStr]).map_err(|e| format!("start service: {e}"))
+        match svc.start(&[] as &[&OsStr]) {
+            Ok(()) => Ok(()),
+            // The service manager's own restart (the service asks for one
+            // when it stops to restart) may have been quicker.
+            Err(_) if matches!(state(), Ok(ServiceState::Running | ServiceState::StartPending)) => Ok(()),
+            Err(e) => Err(format!("start service: {e}")),
+        }
     }
 
     pub fn uninstall() -> Result<(), String> {

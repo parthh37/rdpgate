@@ -289,7 +289,7 @@ rdpgate lock                    # close access for this network now</code></pre>
         <li><strong>Domain name.</strong> Enter e.g. <code>rdp.example.com</code>.</li>
         <li><strong>DNS records.</strong> It finds your public addresses and shows the exact records to create: type <code>A</code> for IPv4 and, if you have IPv6, <code>AAAA</code> (name, value, TTL). Then it checks them until they're right. It warns about a Cloudflare proxy (set it to <em>DNS only</em>) and any record that points somewhere else.</li>
         <li><strong>Certificate.</strong> Enter the certificate file (PEM, full chain) and its private key. It checks they match and cover your domain. Renewed files are picked up within an hour, no restart needed.</li>
-        <li><strong>Turn it on.</strong> It saves the settings and restarts the service. If access is open, it asks first, because a restart closes it. Then it prints your sign-in page and offers a link for your first passkey.</li>
+        <li><strong>Turn it on.</strong> It saves the settings and restarts the service (signed-in computers keep their access). Then it prints your sign-in page and offers a link for your first passkey.</li>
       </ol>
       <p>Your devices, passkeys, beacon and other settings are kept. To turn browser sign-in off again: <code>rdpgate-server domain-setup --remove</code>.</p>
     </li>
@@ -332,9 +332,9 @@ rdpgate lock                    # close access for this network now</code></pre>
     <tr><th>Too many wrong codes</th><td>After 10 wrong codes that computer is locked: <code>rdpgate-server device-unlock macbook</code>.</td></tr>
     <tr><th>New phone</th><td><code>rdpgate-server totp-setup --force</code> and scan the new QR code.</td></tr>
     <tr><th>Replace the GitHub token</th><td><code>rdpgate-server beacon-setup</code>.</td></tr>
-    <tr><th>Updates</th><td>Automatic and signed. The server installs them only while nobody has access open. On the server, use <em>RDP Gate Server → Overview → Check for updates</em> (or <code>rdpgate-server update</code>); in the app, click <em>Check for updates</em> at the bottom of the window.</td></tr>
+    <tr><th>Updates</th><td>Automatic and signed. The server installs them and restarts on the new version; signed-in computers keep their access and Remote Desktop stays connected. On the server, use <em>RDP Gate Server → Overview → Check for updates</em> (or <code>rdpgate-server update</code>); in the app, click <em>Check for updates</em> at the bottom of the window.</td></tr>
     <tr><th>Logs</th><td><code>C:\ProgramData\RDPGate\logs\rdpgate.log</code>: every refusal (<code>DENY</code>), sign-in (<code>GRANT open</code>), RDP connection and closure.</td></tr>
-    <tr><th>Settings</th><td><code>C:\ProgramData\RDPGate\config.json</code>, then <code>Restart-Service RDPGate</code>. See the <a href="https://github.com/parthh37/rdpgate#administration">settings table</a>.</td></tr>
+    <tr><th>Settings</th><td><code>C:\ProgramData\RDPGate\config.json</code>, then <code>rdpgate-server service-restart</code> (signed-in computers stay connected). See the <a href="https://github.com/parthh37/rdpgate#administration">settings table</a>.</td></tr>
     <tr><th>Uninstall</th><td><em>Settings → Apps → RDP Gate Server</em>. Answer <em>Yes</em> to put back everything Setup changed (firewall, Remote Desktop rules and settings, lockout policy, sleep, router forwards) as it was before installing. Answer <em>No</em> to keep Remote Desktop blocked from the network. Your RDP Gate data is kept either way.</td></tr>
   </table>
 </section>

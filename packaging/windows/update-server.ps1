@@ -6,11 +6,12 @@
     For checking from PowerShell (RDP Gate Server does the same from its
     Overview, without a console). Asks for
     Administrator rights, shows the installed and the newest version, and
-    installs only after you confirm: installing restarts the RDPGate service,
-    which closes access for every computer signed in right now.
+    installs after you confirm. Installing restarts the RDPGate service on
+    the new version; computers signed in right now keep their access and
+    Remote Desktop sessions through RDP Gate stay connected.
 
-    The service also updates itself once a day, waiting until nobody is
-    signed in; this is for checking or updating sooner.
+    The service also updates itself once a day; this is for checking or
+    updating sooner.
 #>
 [CmdletBinding()]
 param()
@@ -36,10 +37,10 @@ $code = $LASTEXITCODE
 $out | ForEach-Object { Write-Host "  $_" }
 
 if ($code -eq 0 -and ($out -match '^Available:')) {
-    Write-Host "`nInstalling restarts the RDP Gate service. Every computer signed in right now loses access" -ForegroundColor Yellow
-    Write-Host 'and has to sign in again (a Remote Desktop session through RDP Gate may drop).' -ForegroundColor Yellow
-    Write-Host 'If you leave it, the service installs it by itself once nobody is signed in.'
-    if ((Read-Host "`nInstall now? [y/N]") -match '^(y|yes)$') {
+    Write-Host "`nInstalling restarts the RDP Gate service on the new version. Computers signed in right now"
+    Write-Host 'keep their access, and Remote Desktop sessions through RDP Gate stay connected.'
+    Write-Host 'If you leave it, the service installs it by itself within a day.'
+    if ((Read-Host "`nInstall now? [Y/n]") -notmatch '^(n|no)$') {
         Write-Host ''
         & $Exe update 2>&1 | ForEach-Object { Write-Host "  $_" }
     }

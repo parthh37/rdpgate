@@ -3,10 +3,12 @@
 //! A grant opens the RDP port for `grant_minutes` so you can start a session.
 //! While an RDP connection from that address is established the grant is kept
 //! alive (plus a short grace period, so a quick reconnect works), but never
-//! beyond `max_hours`. Grants live in memory only: restarting the service
-//! closes everything (fail closed), and rules that exist without a grant are
-//! found and removed every few minutes. While any grant is open the PC is
-//! kept awake, so it can't fall asleep under a session.
+//! beyond `max_hours`. Grants live in memory: stopping the service closes
+//! everything (fail closed), and rules that exist without a grant are found
+//! and removed every few minutes. Only a planned restart (an update, a
+//! changed setting) hands open grants to the next run, see
+//! [`crate::handoff`]. While any grant is open the PC is kept awake, so it
+//! can't fall asleep under a session.
 //!
 //! A computer in auto mode also gets an auto session when it opens access.
 //! It lets that computer move its grant to a new address (its IP changed);
@@ -15,6 +17,7 @@
 //! computer locked, the service restarted) and is in memory only.
 
 use crate::firewall::Firewall;
+use crate::handoff::{KeptAuto, KeptGrant};
 use crate::power::Power;
 use crate::state::now;
 use serde::Serialize;
@@ -292,7 +295,8 @@ impl Grants {
         .map_err(|e| format!("grant task: {e}"))?
     }
 
-    async fn open(&self, inner: &mut Inner, ip: IpAddr, who: String, how: Opening) -> Result<Grant, String> {
+    /// Whether `ip` may have a grant at all, with the current settings.
+    fn admissible(&self, ip: IpAddr) -> Result<(), String> {
         let ip = ip.to_canonical();
         if !self.allow_private && !is_public(ip) {
             return Err(format!(
@@ -308,6 +312,12 @@ impl Grants {
                  At home, the RDP Gate app connects to this PC directly; update it if it went through the router"
             ));
         }
+        Ok(())
+    }
+
+    async fn open(&self, inner: &mut Inner, ip: IpAddr, who: String, how: Opening) -> Result<Grant, String> {
+        let ip = ip.to_canonical();
+        self.admissible(ip)?;
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err("the service is stopping".into());
         }
@@ -404,6 +414,110 @@ impl Grants {
         inner.grants.clear();
         inner.autos.clear();
         self.changed(&inner.grants);
+    }
+
+    /// For a planned restart: refuses new grants and hands the open ones,
+    /// with their firewall rules left in place, to the next run (see
+    /// [`crate::handoff`]). Only revokes that were failing are retried.
+    pub async fn hand_off(&self) -> (Vec<KeptGrant>, Vec<KeptAuto>) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        let mut inner = self.inner.lock().await;
+        for ip in inner.closing.clone() {
+            self.close(&mut inner, ip, "service restarting").await;
+        }
+        let grants = inner
+            .grants
+            .drain()
+            .map(|(_, g)| KeptGrant {
+                ip: g.ip,
+                who: g.who,
+                created: g.created,
+                expires: g.expires,
+                hard_expires: g.hard_expires,
+                last_connected: g.last_connected,
+                revoke_token: g.revoke_token,
+            })
+            .collect();
+        let autos = inner
+            .autos
+            .drain(..)
+            .map(|a| KeptAuto { who: a.who, created: a.created, hard_expires: a.hard_expires, group: a.group })
+            .collect();
+        // grants.json keeps showing them until the next run takes over.
+        self.sync_power(false);
+        (grants, autos)
+    }
+
+    /// The grants of a hand-over that may stay open with the current
+    /// settings. Their addresses are the rules the start-up sweep keeps.
+    pub fn admissible_grants(&self, kept: Vec<KeptGrant>) -> Vec<KeptGrant> {
+        let t = now();
+        let max = self.max.load(Ordering::SeqCst) as i64;
+        kept.into_iter()
+            .filter(|g| match self.admissible(g.ip) {
+                Ok(()) if t < g.created + max => true,
+                Ok(()) => {
+                    crate::logln!("GRANT closed ip={} reason=max_hours reached during the restart", rdpgate_core::describe_scope(g.ip));
+                    false
+                }
+                Err(e) => {
+                    crate::logln!("GRANT closed ip={} reason=not allowed with the new settings ({e})", rdpgate_core::describe_scope(g.ip));
+                    false
+                }
+            })
+            .collect()
+    }
+
+    /// Takes over grants (from [`Grants::admissible_grants`]) that the
+    /// previous run handed over, and the auto sessions that go with them.
+    /// Only grants whose firewall rule still exists: adopting never opens
+    /// anything. Returns how many were kept.
+    pub async fn adopt(&self, kept: Vec<KeptGrant>, autos: Vec<KeptAuto>) -> usize {
+        if kept.is_empty() {
+            return 0;
+        }
+        let fw = self.fw.clone();
+        let rules = match blocking(move || fw.list_allowed()).await {
+            Ok(r) => r,
+            Err(e) => {
+                crate::logln!("ERROR listing firewall rules, so access from before the restart closes: {e}");
+                let fw = self.fw.clone();
+                let ips: Vec<IpAddr> = kept.iter().map(|g| g.ip).collect();
+                let _ = blocking(move || ips.into_iter().try_for_each(|ip| fw.revoke(ip))).await;
+                return 0;
+            }
+        };
+        let max = self.max.load(Ordering::SeqCst) as i64;
+        let mut inner = self.inner.lock().await;
+        for k in kept {
+            if !rules.contains(&k.ip) {
+                crate::logln!("GRANT closed ip={} reason=its firewall rule was gone after the restart", rdpgate_core::describe_scope(k.ip));
+                continue;
+            }
+            if inner.grants.len() >= MAX_GRANTS {
+                break;
+            }
+            crate::logln!("GRANT kept ip={} who={:?} (open since before the restart)", rdpgate_core::describe_scope(k.ip), k.who);
+            let g = Grant {
+                ip: k.ip,
+                who: k.who,
+                created: k.created,
+                expires: k.expires,
+                hard_expires: k.created + max,
+                last_connected: k.last_connected,
+                revoke_token: k.revoke_token,
+                link: None,
+            };
+            inner.grants.insert(g.ip, g);
+        }
+        let groups: HashSet<String> = inner.grants.values().map(|g| g.revoke_token.clone()).collect();
+        for a in autos.into_iter().filter(|a| groups.contains(&a.group)) {
+            inner.autos.retain(|o| o.who != a.who);
+            inner.autos.push(Auto { who: a.who, created: a.created, hard_expires: a.created + max, group: a.group });
+        }
+        let n = inner.grants.len();
+        self.changed(&inner.grants);
+        n
     }
 
     /// Refreshes grants with live RDP connections, closes expired ones,
@@ -711,6 +825,47 @@ mod tests {
         g.allow(a, "device mac".into()).await.unwrap();
         g.shutdown().await;
         assert!(!awake(), "stopping the service releases it");
+    }
+
+    #[tokio::test]
+    async fn a_planned_restart_hands_open_access_to_the_next_run() {
+        let fw = Arc::new(DryRun::default());
+        let old = Arc::new(Grants::new(fw.clone(), Duration::from_secs(600), Duration::from_secs(3600), false, None));
+        let (home, other): (IpAddr, IpAddr) = ("81.2.69.160".parse().unwrap(), "81.2.69.161".parse().unwrap());
+        let g = old.allow(home, "device mac".into()).await.unwrap();
+        old.start_auto(&g).await;
+        old.allow(other, "passkey phone".into()).await.unwrap();
+
+        let (kept, autos) = old.hand_off().await;
+        assert_eq!(kept.len(), 2);
+        assert_eq!(fw.allowed.lock().unwrap().len(), 2, "the rules stay while the service restarts");
+        assert!(old.allow(home, "x".into()).await.is_err(), "no new grants while handing over");
+
+        // The other address's rule went missing meanwhile: it isn't recreated.
+        fw.allowed.lock().unwrap().remove(&other);
+        let new = Arc::new(Grants::new(fw.clone(), Duration::from_secs(600), Duration::from_secs(3600), false, None));
+        let kept = new.admissible_grants(kept);
+        assert_eq!(new.adopt(kept, autos).await, 1);
+        let list = new.list().await;
+        assert_eq!((list[0].ip, list[0].revoke_token.as_str()), (home, g.revoke_token.as_str()));
+        assert_eq!(fw.allowed.lock().unwrap().iter().copied().collect::<Vec<_>>(), vec![home]);
+
+        // Auto mode carries on: the computer's access still follows it.
+        let (moved, how) = new.follow(other, "device mac").await.unwrap();
+        assert_eq!((moved.ip, how), (other, Renewed::Moved));
+        // And the web page's revoke token still closes it.
+        assert_eq!(new.revoke_by_token(&g.revoke_token).await, Some(other));
+        assert!(fw.allowed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_handover_the_new_settings_dont_allow_is_closed() {
+        let fw = Arc::new(DryRun::default());
+        let old = grants(fw.clone(), true); // sign-in from this network on
+        old.allow("10.0.0.5".parse().unwrap(), "device laptop".into()).await.unwrap();
+        let (kept, _) = old.hand_off().await;
+        let new = grants(fw.clone(), false); // and now off
+        assert!(new.admissible_grants(kept).is_empty());
     }
 
     #[tokio::test]

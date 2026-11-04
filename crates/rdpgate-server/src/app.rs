@@ -48,6 +48,9 @@ pub struct App {
     conns: Mutex<HashMap<String, u32>>,
     restart: tokio::sync::Notify,
     restart_requested: std::sync::atomic::AtomicBool,
+    /// Access the previous run handed over (see [`crate::handoff`]), until
+    /// `serve` takes it over.
+    handoff: Mutex<Option<crate::handoff::Handoff>>,
     /// Protection waits for the first connected sign-in (see `protect`).
     protection_pending: AtomicBool,
     /// A lock-down is running right now.
@@ -73,6 +76,16 @@ impl Warnings {
         let firewall = self.firewall.iter().filter(|w| self.profiles.is_none() || !w.starts_with(crate::firewall::PROFILE_WARNING));
         self.clock.iter().chain(self.profiles.iter().flatten()).chain(firewall).cloned().collect()
     }
+}
+
+/// Set when the coming stop is a restart (the service manager was asked
+/// for one): open access is then handed over instead of closed.
+static KEEP_ACCESS: AtomicBool = AtomicBool::new(false);
+
+/// Makes the coming stop a restart that keeps open access. Call it before
+/// signalling the shutdown.
+pub fn restart_keeping_access() {
+    KEEP_ACCESS.store(true, Ordering::SeqCst);
 }
 
 /// Why the server stopped.
@@ -179,6 +192,7 @@ impl App {
             conns: Mutex::new(HashMap::new()),
             restart: tokio::sync::Notify::new(),
             restart_requested: std::sync::atomic::AtomicBool::new(false),
+            handoff: Mutex::new(None),
             protection_pending: AtomicBool::new(protection_pending),
             protecting: AtomicBool::new(false),
             protect_retry_at: std::sync::atomic::AtomicI64::new(0),
@@ -233,9 +247,15 @@ impl App {
     }
 
     /// Asks the server to stop so the freshly installed version can start.
+    /// Open access is handed over to it (see [`crate::handoff`]).
     pub fn request_restart(&self) {
         self.restart_requested.store(true, std::sync::atomic::Ordering::SeqCst);
         self.restart.notify_one();
+    }
+
+    /// Access the previous run handed over, for `serve` to take over.
+    pub fn carry_over(&self, h: crate::handoff::Handoff) {
+        *self.handoff.lock().unwrap() = Some(h);
     }
 
     fn take_slot(&self, src: &str) -> Option<ConnSlot<'_>> {
@@ -373,13 +393,26 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     };
     let tls = Arc::new(tls_setup(&app.cfg, shutdown.clone())?);
 
-    // Nothing from a previous run may stay open, then check for anything
-    // else that would expose RDP. Warnings are also kept for `status`.
+    // Nothing from a previous run may stay open, except what a planned
+    // restart handed over, then check for anything else that would expose
+    // RDP. Warnings are also kept for `status`.
+    let handoff = app.handoff.lock().unwrap().take().and_then(|h| match h.misfit(&app.cfg) {
+        None => Some(h),
+        Some(why) => {
+            crate::logln!("RESTART {why}: access open before the restart closes");
+            None
+        }
+    });
+    let (kept, autos) = match handoff {
+        Some(h) => (app.grants.admissible_grants(h.grants), h.autos),
+        None => Default::default(),
+    };
+    let keep: std::collections::HashSet<std::net::IpAddr> = kept.iter().map(|g| g.ip).collect();
     let fw = app.grants.firewall();
     let portal_ports: Vec<u16> = listeners.iter().filter_map(|l| l.local_addr().ok()).map(|a| a.port()).collect();
     let warnings = tokio::task::spawn_blocking(move || {
         let mut w = Vec::new();
-        if let Err(e) = fw.revoke_all() {
+        if let Err(e) = fw.revoke_all_except(&keep) {
             w.push(format!("could not remove old RDPGate rules: {e}"));
         }
         // The sign-in port must be reachable: (re)create our own allow rule.
@@ -400,6 +433,10 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
         );
     }
     app.write_warnings(&warnings);
+    let n = app.grants.adopt(kept, autos).await;
+    if n > 0 {
+        crate::logln!("RESTART {n} address(es) kept the access they had before the restart");
+    }
 
     let addrs: Vec<String> = listeners.iter().filter_map(|l| l.local_addr().ok()).map(|a| a.to_string()).collect();
     crate::logln!(
@@ -468,7 +505,11 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
             }
         }
     }
-    crate::logln!("STOP closing all firewall grants");
+    let restart = failed.is_none()
+        && (app.restart_requested.load(std::sync::atomic::Ordering::SeqCst) || KEEP_ACCESS.load(Ordering::SeqCst));
+    if !restart {
+        crate::logln!("STOP closing all firewall grants");
+    }
     critical.abort_all();
     beacon.abort();
     clock.abort();
@@ -476,11 +517,35 @@ pub async fn serve(app: Arc<App>, listeners: Vec<TcpListener>, shutdown: &mut wa
     router.abort();
     firewall_watch.abort();
     tray.abort();
-    app.grants.shutdown().await;
+    if restart {
+        hand_off(&app).await;
+    } else {
+        app.grants.shutdown().await;
+    }
     if let Some(why) = failed {
         return Err(format!("{why} unexpectedly; exiting so the service restarts"));
     }
-    if app.restart_requested.load(std::sync::atomic::Ordering::SeqCst) { Ok(Exit::Restart) } else { Ok(Exit::Stopped) }
+    if restart { Ok(Exit::Restart) } else { Ok(Exit::Stopped) }
+}
+
+/// A planned restart: leaves open access in place for the next run. If it
+/// can't be written down, everything closes as on any other stop.
+async fn hand_off(app: &App) {
+    let (grants, autos) = app.grants.hand_off().await;
+    let n = grants.len();
+    if n == 0 {
+        crate::logln!("STOP restarting");
+        return;
+    }
+    let h = crate::handoff::Handoff::new(&app.cfg, grants, autos);
+    let dir = app.cfg.data_dir.clone();
+    match tokio::task::spawn_blocking(move || h.save(&dir)).await.unwrap_or_else(|e| Err(e.to_string())) {
+        Ok(()) => crate::logln!("STOP restarting; {n} address(es) keep their access"),
+        Err(e) => {
+            crate::logln!("ERROR {e}: closing all firewall grants instead");
+            app.grants.shutdown().await;
+        }
+    }
 }
 
 async fn connection(app: Arc<App>, tls: Arc<Tls>, tcp: TcpStream, peer: SocketAddr) {

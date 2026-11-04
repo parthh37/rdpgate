@@ -10,6 +10,7 @@ pub mod firewall;
 pub mod fix;
 pub mod gate;
 pub mod grants;
+pub mod handoff;
 pub mod identity;
 pub mod limiter;
 pub mod router;
@@ -37,12 +38,25 @@ pub fn run_server(data_dir: &Path, interactive: bool, shutdown: watch::Receiver<
     install_crypto();
     rdpgate_core::update::cleanup_previous();
     // First, before anything that could fail: no rule may outlive the run
-    // that created it, even after a crash or power cut.
-    let swept = firewall::early_sweep();
+    // that created it, even after a crash or power cut. Only a planned
+    // restart moments ago hands its open access over (and only once).
+    let taken = handoff::take(data_dir);
+    let keep = taken.as_ref().ok().and_then(Option::as_ref).map(handoff::Handoff::ips).unwrap_or_default();
+    let swept = firewall::early_sweep(&keep);
     secure_dir::harden(data_dir)?;
     log::init(Some(data_dir.join("logs")), interactive).map_err(|e| format!("open log: {e}"))?;
     if let Err(e) = swept {
         logln!("ERROR removing leftover firewall rules: {e}");
+    }
+    let taken = match taken {
+        Ok(h) => h,
+        Err(e) => {
+            logln!("RESTART {e}: access open before it was closed");
+            None
+        }
+    };
+    if let Some(h) = &taken {
+        logln!("RESTART from {} with {} address(es) signed in", h.from, h.grants.len());
     }
     if status::enabled()
         && let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf))
@@ -62,6 +76,9 @@ pub fn run_server(data_dir: &Path, interactive: bool, shutdown: watch::Receiver<
     rt.block_on(async move {
         let fw = firewall::for_config(&cfg);
         let app = app::App::new(cfg, fw)?;
+        if let Some(h) = taken {
+            app.carry_over(h);
+        }
         app::run(app, shutdown).await
     })
 }
