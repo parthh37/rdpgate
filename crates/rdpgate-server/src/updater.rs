@@ -1,7 +1,8 @@
 //! Keeps the server up to date. Once a day it asks GitHub for a newer signed
-//! release; if there is one, it waits until nobody has access open (so no
-//! session is cut), swaps in the new rdpgate-server.exe and asks the service
-//! manager to restart it.
+//! release; if there is one, it swaps in the new rdpgate-server.exe and asks
+//! the service manager to restart it. Open access is handed to the new
+//! version (see [`crate::handoff`]), so Remote Desktop sessions stay
+//! connected and nobody has to sign in again.
 
 use crate::app::App;
 use rdpgate_core::update::{self, Component};
@@ -11,7 +12,6 @@ use tokio::sync::watch;
 
 const FIRST_CHECK: Duration = Duration::from_secs(10 * 60);
 const CHECK_EVERY: Duration = Duration::from_secs(24 * 3600);
-const IDLE_POLL: Duration = Duration::from_secs(5 * 60);
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Downloads, verifies and installs `av` (blocking). Run by the service, by
@@ -38,7 +38,7 @@ pub fn install(av: &update::Available) -> Result<(), String> {
 }
 
 /// The folder RDP Gate is installed in: where this program is.
-fn install_dir() -> Result<std::path::PathBuf, String> {
+pub fn install_dir() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     exe.parent().map(std::path::Path::to_path_buf).ok_or_else(|| "can't tell where RDP Gate is installed".into())
 }
@@ -104,16 +104,10 @@ pub async fn run(app: Arc<App>, mut shutdown: watch::Receiver<bool>) {
         match tokio::task::spawn_blocking(move || update::check(VERSION, pre)).await {
             Ok(Ok(Some(av))) => {
                 crate::logln!("UPDATE available: {} (running {VERSION})", av.version);
-                // Never cut an open session: wait until no grants remain.
-                while !app.grants.list().await.is_empty() {
-                    if !sleep_or_stop(IDLE_POLL, &mut shutdown).await {
-                        return;
-                    }
-                }
                 let v = av.version.clone();
                 match tokio::task::spawn_blocking(move || install(&av)).await {
                     Ok(Ok(())) => {
-                        crate::logln!("UPDATE installed {v}; restarting");
+                        crate::logln!("UPDATE installed {v}; restarting on it, signed-in computers keep their access");
                         app.request_restart();
                         return;
                     }

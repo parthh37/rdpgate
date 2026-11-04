@@ -178,10 +178,7 @@ enum Confirm {
     RemoveComputer(String),
     RemovePasskey(String),
     ReplaceCodes,
-    /// Restarting closes every open grant; `why` says what it applies.
-    Restart(&'static str),
     Protect,
-    InstallUpdate(Box<Available>),
     /// A warning's Fix button, and the warning.
     Fix(rdpgate_server::fix::Fix, String),
     DomainOff,
@@ -195,6 +192,9 @@ enum Done {
     Fixed(Result<String, String>),
     Router(Vec<String>),
     UpdateChecked(Result<Option<Available>, String>),
+    /// An update was installed and the service restarted on it: reopen
+    /// this window on its new version too.
+    Updated(Result<String, String>),
     /// The DNS records to create for the host typed in.
     Records(String, Result<(Vec<DnsRecord>, PublicIps), String>),
     /// What a DNS check of that host found: whether it's right, line by line.
@@ -255,6 +255,36 @@ struct ServerApp {
     /// Warnings fixed from this window, hidden until the service stops
     /// reporting them (it re-checks within a minute or so).
     fixed: std::collections::HashSet<String>,
+    /// This program and when it was written, to notice when an update (by
+    /// the service, say) puts a new version in its place.
+    exe: Option<(PathBuf, std::time::SystemTime)>,
+    /// A newer version of this window is installed: offer to reopen it.
+    replaced: bool,
+    /// Close this window (its new version has been started).
+    quit: bool,
+}
+
+/// Starts this window again (its file is the new version after an update),
+/// with the same data folder and renderer. Returns whether it started.
+fn relaunch() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let args: Vec<String> = std::env::args().collect();
+    let mut cmd = std::process::Command::new(exe);
+    if let Some(i) = args.iter().position(|a| a == "--data")
+        && let Some(d) = args.get(i + 1)
+    {
+        cmd.arg("--data").arg(d);
+    }
+    if args.iter().any(|a| a == OPENGL_ARG) {
+        cmd.arg(OPENGL_ARG);
+    }
+    cmd.spawn().is_ok()
+}
+
+fn exe_written() -> Option<(PathBuf, std::time::SystemTime)> {
+    let exe = std::env::current_exe().ok()?;
+    let at = std::fs::metadata(&exe).and_then(|m| m.modified()).ok()?;
+    Some((exe, at))
 }
 
 impl ServerApp {
@@ -298,6 +328,9 @@ impl ServerApp {
             busy: None,
             rx: None,
             fixed: Default::default(),
+            exe: exe_written(),
+            replaced: false,
+            quit: false,
         };
         app.refresh();
         app
@@ -311,6 +344,9 @@ impl ServerApp {
         self.service = service::status();
         if self.page == Page::Log {
             self.log = admin::log_tail(&self.data, 400);
+        }
+        if let Some((exe, at)) = &self.exe {
+            self.replaced = std::fs::metadata(exe).and_then(|m| m.modified()).is_ok_and(|now| now != *at);
         }
         self.refreshed = Instant::now();
     }
@@ -352,6 +388,14 @@ impl ServerApp {
             Done::UpdateChecked(Ok(None)) => self.say(Ok("You have the latest version.".into())),
             Done::UpdateChecked(Ok(Some(av))) => self.update = Some(av),
             Done::UpdateChecked(Err(e)) => self.say(Err(format!("Update check: {e}"))),
+            Done::Updated(Ok(m)) => {
+                if relaunch() {
+                    self.quit = true;
+                } else {
+                    self.say(Ok(format!("{m} Reopen this window to use its new version.")));
+                }
+            }
+            Done::Updated(Err(e)) => self.say(Err(e)),
             Done::Records(host, Ok((records, ips))) => {
                 if let Some(f) = &mut self.domain {
                     f.records = Some((host, records, ips));
@@ -371,18 +415,24 @@ impl ServerApp {
         self.refresh();
     }
 
-    fn open_grants(&self) -> usize {
-        self.overview.as_ref().map_or(0, |o| o.grants.len())
+    /// Restarts the service so a changed setting applies. Open access is
+    /// kept across the restart, so there is nothing to ask first.
+    fn restart(&mut self, ctx: &egui::Context, why: &'static str) {
+        self.run(ctx, "Restarting the RDP Gate service…", move || {
+            Done::Message(service::restart().map(|()| format!("{why} The service restarted with it.")))
+        });
     }
 
-    /// Restarts the service so a changed setting applies, asking first when
-    /// that would close someone's access.
-    fn restart(&mut self, ctx: &egui::Context, why: &'static str) {
-        if self.open_grants() > 0 {
-            self.confirm = Some(Confirm::Restart(why));
-        } else {
-            self.restart_now(ctx, why);
-        }
+    /// Installs `av`, restarts the service on it (signed-in computers keep
+    /// their access) and then reopens this window on its new version.
+    fn install_update(&mut self, ctx: &egui::Context, av: Available) {
+        self.update = None;
+        self.run(ctx, "Installing the update…", move || {
+            let r = rdpgate_server::updater::install(&av)
+                .and_then(|()| service::restart())
+                .map(|()| format!("Installed {}. The service restarted on it; signed-in computers kept their access.", av.version));
+            Done::Updated(r)
+        });
     }
 
     /// Runs a warning's fix, then hides that warning until the service's
@@ -390,12 +440,6 @@ impl ServerApp {
     fn apply_fix(&mut self, ctx: &egui::Context, fix: rdpgate_server::fix::Fix, warning: String, rdp_port: u16) {
         self.fixed.insert(warning);
         self.run(ctx, "Fixing…", move || Done::Fixed(rdpgate_server::fix::apply(&fix, rdp_port)));
-    }
-
-    fn restart_now(&mut self, ctx: &egui::Context, why: &'static str) {
-        self.run(ctx, "Restarting the RDP Gate service…", move || {
-            Done::Message(service::restart().map(|()| format!("{why} The service restarted with it.")))
-        });
     }
 
     // ---- pages ---------------------------------------------------------
@@ -743,7 +787,7 @@ impl ServerApp {
             ui.horizontal(|ui| {
                 theme::pill(ui, Tone::Info, &format!("Version {}", o.version));
                 let mut auto = o.auto_update;
-                if ui.checkbox(&mut auto, "Install signed updates automatically (when nobody is signed in)").changed() {
+                if ui.checkbox(&mut auto, "Install signed updates automatically").changed() {
                     let r = admin::set_auto_update(&self.data, auto);
                     if r.is_ok() {
                         self.restart(&ctx, "Automatic updates changed.");
@@ -758,7 +802,7 @@ impl ServerApp {
                     ui.horizontal(|ui| {
                         theme::pill(ui, Tone::Good, &format!("Version {} is available", av.version));
                         if ui.add_enabled(idle, primary("Install update")).clicked() {
-                            self.confirm = Some(Confirm::InstallUpdate(Box::new(av)));
+                            self.install_update(&ctx, av);
                         }
                     });
                 }
@@ -1421,7 +1465,6 @@ impl ServerApp {
 
     fn confirm_ui(&mut self, ctx: &egui::Context) {
         let Some(c) = &self.confirm else { return };
-        let grants = self.open_grants();
         let (title, body, action) = match c {
             Confirm::RemoveComputer(n) => (format!("Remove {n}?"), "It can no longer sign in. Access it has open now closes on its normal schedule.".to_string(), "Remove"),
             Confirm::RemovePasskey(n) => (format!("Remove the passkey {n}?"), "It can no longer sign in from a browser.".to_string(), "Remove"),
@@ -1429,11 +1472,6 @@ impl ServerApp {
                 "Use a new phone?".to_string(),
                 "Codes from the current authenticator app stop working once the new one is confirmed.".to_string(),
                 "Continue",
-            ),
-            Confirm::Restart(_) => (
-                "Restart the RDP Gate service?".to_string(),
-                format!("{grants} address(es) have access open right now, maybe including yours. Restarting closes it and disconnects Remote Desktop sessions that came through RDP Gate. They can sign in again afterwards."),
-                "Restart now",
             ),
             Confirm::Protect => (
                 "Close Remote Desktop to everyone else now?".to_string(),
@@ -1451,15 +1489,6 @@ impl ServerApp {
                  The RDP Gate app isn't affected."
                     .to_string(),
                 "Turn off",
-            ),
-            Confirm::InstallUpdate(av) => (
-                format!("Install version {}?", av.version),
-                if grants > 0 {
-                    format!("The service restarts on the new version, which closes access for the {grants} address(es) signed in right now.")
-                } else {
-                    "The service restarts on the new version. This window updates too: reopen it afterwards.".to_string()
-                },
-                "Install",
             ),
             Confirm::Fix(fix, _) => (format!("{}?", fix.label()), fix.confirm().unwrap_or_default(), fix.label()),
         };
@@ -1496,7 +1525,6 @@ impl ServerApp {
                 self.refresh();
             }
             Confirm::ReplaceCodes => self.begin_codes(true),
-            Confirm::Restart(why) => self.restart_now(ctx, why),
             Confirm::Protect => {
                 let data = self.data.clone();
                 self.run(ctx, "Closing Remote Desktop to everyone else (this can take a minute)…", move || {
@@ -1512,15 +1540,6 @@ impl ServerApp {
             Confirm::Fix(fix, warning) => {
                 let port = self.overview.as_ref().map(|o| o.rdp_port).unwrap_or(3389);
                 self.apply_fix(ctx, fix, warning, port);
-            }
-            Confirm::InstallUpdate(av) => {
-                self.update = None;
-                self.run(ctx, "Installing the update…", move || {
-                    let r = rdpgate_server::updater::install(&av).and_then(|()| service::restart()).map(|()| {
-                        format!("Installed {}. The service restarted on it; reopen this window to use its new version.", av.version)
-                    });
-                    Done::Message(r)
-                });
             }
         }
     }
@@ -1568,6 +1587,9 @@ impl eframe::App for ServerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
         let ctx = ui.ctx().clone();
+        if self.quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         // Keep the service state and open access current while idle.
         if self.busy.is_none() && self.enrolling.is_none() && self.refreshed.elapsed() >= REFRESH {
             self.refresh();
@@ -1589,6 +1611,16 @@ impl eframe::App for ServerApp {
             }
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 ui.label(muted(format!("Version {}", rdpgate_server::updater::VERSION)).small());
+                // The service updated this window's file: one click to use it.
+                if self.replaced
+                    && ui
+                        .add_enabled(self.busy.is_none(), primary("Reopen on the new version"))
+                        .on_hover_text("RDP Gate was updated. This window is still the old version.")
+                        .clicked()
+                    && relaunch()
+                {
+                    self.quit = true;
+                }
                 let (tone, text) = service_pill(self.service);
                 ui.horizontal(|ui| {
                     ui.label(muted("Service").small());

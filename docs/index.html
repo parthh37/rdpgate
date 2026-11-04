@@ -199,7 +199,7 @@
   <h2>Updates install themselves, and only if they're genuine</h2>
   <p class="section-lede">Each release carries a manifest of every file's checksum, signed with the RDP Gate release key. Every program has the matching public key built in.</p>
   <dl class="layers">
-    <div><dt>Server</dt><dd>Checks once a day and installs only while nobody has access open, then restarts itself. Run <code>rdpgate-server update</code> to update now.</dd></div>
+    <div><dt>Server</dt><dd>Checks once a day, installs, and restarts itself without dropping anyone signed in. Run <code>rdpgate-server update</code> to update now.</dd></div>
     <div><dt>Desktop app</dt><dd>Checks at launch, installs, and offers <em>Restart now</em>. Turn it off under <em>This computer and server</em>.</dd></div>
     <div><dt>Command line</dt><dd>Updates after a successful <code>rdpgate connect</code>, once a day. Run <code>rdpgate update</code> to update now.</dd></div>
     <div><dt>Refused</dt><dd>Anything unsigned, a file that doesn't match its signed checksum, and anything older than what's installed, whoever serves it.</dd></div>

@@ -18,6 +18,17 @@ pub trait Firewall: Send + Sync + 'static {
     fn revoke(&self, ip: IpAddr) -> Result<(), String>;
     /// Removes every rule we ever created, tracked or not.
     fn revoke_all(&self) -> Result<(), String>;
+    /// Like [`Firewall::revoke_all`], but leaves the rules of `keep` alone:
+    /// access carried over a planned restart (see [`crate::handoff`]).
+    fn revoke_all_except(&self, keep: &HashSet<IpAddr>) -> Result<(), String> {
+        if keep.is_empty() {
+            return self.revoke_all();
+        }
+        for ip in self.list_allowed()?.into_iter().filter(|ip| !keep.contains(ip)) {
+            self.revoke(ip)?;
+        }
+        Ok(())
+    }
     /// Addresses that currently have one of our allow rules.
     fn list_allowed(&self) -> Result<HashSet<IpAddr>, String>;
     /// Remote addresses with an established TCP connection to the RDP port.
@@ -52,10 +63,12 @@ pub fn for_config(cfg: &crate::config::Config) -> std::sync::Arc<dyn Firewall> {
 }
 
 /// Removes leftover rules before anything else can fail (config errors, a
-/// busy port): a rule must never outlive the process that tracked it.
-pub fn early_sweep() -> Result<(), String> {
+/// busy port): a rule must never outlive the process that tracked it, except
+/// the ones `keep` names, which a planned restart handed over to this run.
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub fn early_sweep(keep: &HashSet<IpAddr>) -> Result<(), String> {
     #[cfg(windows)]
-    return windows_fw::WindowsFirewall::new(3389, false).revoke_all();
+    return windows_fw::WindowsFirewall::new(3389, false).revoke_all_except(keep);
     #[cfg(not(windows))]
     Ok(())
 }
@@ -84,6 +97,10 @@ impl Firewall for DryRun {
     }
     fn revoke_all(&self) -> Result<(), String> {
         self.allowed.lock().unwrap().clear();
+        Ok(())
+    }
+    fn revoke_all_except(&self, keep: &HashSet<IpAddr>) -> Result<(), String> {
+        self.allowed.lock().unwrap().retain(|ip| keep.contains(ip));
         Ok(())
     }
     fn list_allowed(&self) -> Result<HashSet<IpAddr>, String> {
@@ -306,6 +323,21 @@ Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Action Allow -E
         fn revoke_all(&self) -> Result<(), String> {
             powershell(&format!(
                 "Get-NetFirewallRule -DisplayName '{RULE_PREFIX}*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule"
+            ))
+            .map(|_| ())
+        }
+
+        fn revoke_all_except(&self, keep: &HashSet<IpAddr>) -> Result<(), String> {
+            if keep.is_empty() {
+                return self.revoke_all();
+            }
+            // Rule names are rendered from parsed addresses (hex digits, dots
+            // and colons only), so they are safe inside single quotes.
+            let keep: Vec<String> = keep.iter().map(|ip| format!("'{}'", rule_name(*ip))).collect();
+            powershell(&format!(
+                "$keep = @({}); Get-NetFirewallRule -DisplayName '{RULE_PREFIX}*' -ErrorAction SilentlyContinue | \
+                 Where-Object {{ $keep -notcontains $_.DisplayName }} | Remove-NetFirewallRule",
+                keep.join(",")
             ))
             .map(|_| ())
         }
