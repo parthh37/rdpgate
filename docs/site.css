@@ -211,6 +211,8 @@ h1 span { color: var(--allow); }
 }
 .card:hover { border-color: var(--action); transform: translateY(-2px); }
 .card strong { font: 700 1.25rem var(--mono); color: var(--ink); letter-spacing: -0.02em; }
+.card .get { margin-top: auto; padding-top: .6rem; font: 600 .9rem var(--mono); color: var(--action); }
+.card .get::after { content: " ↓"; }
 .os { font: 600 .75rem var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--action); }
 .fine { font-size: .9rem; color: var(--ink-soft); margin-top: 1.2rem; }
 

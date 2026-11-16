@@ -176,23 +176,28 @@
 <section id="download" class="downloads">
   <h2>Download</h2>
   <div class="cards">
-    <a class="card" href="https://github.com/parthh37/rdpgate/releases">
+    <!-- Each release also uploads these installers without the version in
+         the name, so releases/latest/download/<name> is always the newest. -->
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest/download/RDP-Gate-Server-Setup.exe">
       <span class="os">Windows</span>
       <strong>Server</strong>
-      <span><code>RDP-Gate-Server-Setup-….exe</code>: Setup wizard for the PC you connect <em>to</em>. Windows 10/11 Pro, Enterprise or Server.</span>
+      <span><code>RDP-Gate-Server-Setup.exe</code>: Setup wizard for the PC you connect <em>to</em>. Windows 10/11 Pro, Enterprise or Server.</span>
+      <span class="get">Download for the server</span>
     </a>
-    <a class="card" href="https://github.com/parthh37/rdpgate/releases">
-      <span class="os">macOS 11+</span>
-      <strong>Mac app</strong>
-      <span><code>RDP-Gate-…-macOS.dmg</code>: drag RDP Gate to Applications. Intel and Apple silicon.</span>
-    </a>
-    <a class="card" href="https://github.com/parthh37/rdpgate/releases">
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest/download/RDP-Gate-Client-Setup.exe">
       <span class="os">Windows</span>
       <strong>PC app</strong>
-      <span><code>RDP-Gate-Client-Setup-….exe</code>: installs just for you, with no administrator rights needed. Uses the built-in Remote Desktop Connection.</span>
+      <span><code>RDP-Gate-Client-Setup.exe</code>: installs just for you, with no administrator rights needed. Uses the built-in Remote Desktop Connection.</span>
+      <span class="get">Download for Windows</span>
+    </a>
+    <a class="card" href="https://github.com/parthh37/rdpgate/releases/latest/download/RDP-Gate-macOS.dmg">
+      <span class="os">macOS 11+</span>
+      <strong>Mac app</strong>
+      <span><code>RDP-Gate-macOS.dmg</code>: drag RDP Gate to Applications. Intel and Apple silicon.</span>
+      <span class="get">Download for Mac</span>
     </a>
   </div>
-  <p class="fine">Builds aren't Apple- or Microsoft-signed yet. On a Mac, right-click the app and choose Open the first time. On Windows, at the SmartScreen prompt choose More info, then Run anyway. Check downloads against <code>SHA256SUMS.txt</code> on the release page. Portable zips are there too.</p>
+  <p class="fine">Each link downloads the latest version. Builds aren't Apple- or Microsoft-signed yet. On a Mac, right-click the app and choose Open the first time. On Windows, at the SmartScreen prompt choose More info, then Run anyway. Portable zips, every older version and <code>SHA256SUMS.txt</code> to check downloads against are on the <a href="https://github.com/parthh37/rdpgate/releases/latest">release page</a>.</p>
 </section>
 
 <section id="updates" class="band">
