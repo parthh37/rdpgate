@@ -114,6 +114,11 @@ jobs:
           Compress-Archive $wc "out/$wc.zip"
           Compress-Archive $ws "out/$ws.zip"
 
+          # The installers again under fixed names, so the website can link
+          # to releases/latest/download/<name> without knowing the version.
+          Copy-Item "out/RDP-Gate-Server-Setup-$v.exe" out/RDP-Gate-Server-Setup.exe
+          Copy-Item "out/RDP-Gate-Client-Setup-$v.exe" out/RDP-Gate-Client-Setup.exe
+
           # Files the auto-updater downloads (fixed names across versions)
           Copy-Item stage/rdpgate-server.exe out/rdpgate-server-windows-x64.exe
           Copy-Item stage/rdpgate.exe out/rdpgate-windows-x64.exe
@@ -167,6 +172,9 @@ jobs:
 
           # Portable zip
           ditto -c -k --keepParent "$d" "out/$d.zip"
+
+          # The disk image again under a fixed name, for the website's link
+          cp "out/RDP-Gate-$v-macOS.dmg" out/RDP-Gate-macOS.dmg
 
           # Files the auto-updater downloads (fixed names across versions)
           cp "$d/rdpgate" out/rdpgate-macos-universal
@@ -230,20 +238,26 @@ jobs:
       - name: Write the download guide
         run: |
           v="$VERSION"
-          for f in "RDP-Gate-Server-Setup-$v.exe" "RDP-Gate-Client-Setup-$v.exe" "RDP-Gate-$v-macOS.dmg" "RDP-Gate-$v-Windows-Client.zip" "RDP-Gate-$v-Windows-Server.zip" "RDP-Gate-$v-macOS.zip"; do
+          # The website links to the fixed-name copies, so they must exist too.
+          for f in "RDP-Gate-Server-Setup-$v.exe" "RDP-Gate-Client-Setup-$v.exe" "RDP-Gate-$v-macOS.dmg" "RDP-Gate-$v-Windows-Client.zip" "RDP-Gate-$v-Windows-Server.zip" "RDP-Gate-$v-macOS.zip" RDP-Gate-Server-Setup.exe RDP-Gate-Client-Setup.exe RDP-Gate-macOS.dmg; do
             [ -f "assets/$f" ] || { echo "::error::missing $f"; exit 1; }
           done
           dl="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
           {
             echo "## Downloads"
             echo
-            echo "| You want to… | Download |"
-            echo "|---|---|"
-            echo "| Set up the **Windows PC you connect to** | [\`RDP-Gate-Server-Setup-$v.exe\`]($dl/RDP-Gate-Server-Setup-$v.exe) |"
-            echo "| Connect **from a Windows PC** | [\`RDP-Gate-Client-Setup-$v.exe\`]($dl/RDP-Gate-Client-Setup-$v.exe) (no administrator rights needed) |"
-            echo "| Connect **from a Mac** | [\`RDP-Gate-$v-macOS.dmg\`]($dl/RDP-Gate-$v-macOS.dmg) |"
+            echo "### Set up the Windows PC you connect to"
+            echo "**[⬇ RDP-Gate-Server-Setup-$v.exe]($dl/RDP-Gate-Server-Setup-$v.exe)**: Windows 10/11 Pro, Enterprise or Server."
             echo
-            echo "Portable zips without an installer: \`RDP-Gate-$v-Windows-Client.zip\`, \`RDP-Gate-$v-Windows-Server.zip\`, \`RDP-Gate-$v-macOS.zip\`. The other files are what the built-in updater downloads. Check any download against \`SHA256SUMS.txt\`."
+            echo "### Connect from a Windows PC"
+            echo "**[⬇ RDP-Gate-Client-Setup-$v.exe]($dl/RDP-Gate-Client-Setup-$v.exe)**: installs just for you, no administrator rights needed."
+            echo
+            echo "### Connect from a Mac"
+            echo "**[⬇ RDP-Gate-$v-macOS.dmg]($dl/RDP-Gate-$v-macOS.dmg)**: drag RDP Gate to Applications."
+            echo
+            echo "---"
+            echo
+            echo "Portable zips without an installer: \`RDP-Gate-$v-Windows-Client.zip\`, \`RDP-Gate-$v-Windows-Server.zip\`, \`RDP-Gate-$v-macOS.zip\`. \`RDP-Gate-Client-Setup.exe\`, \`RDP-Gate-Server-Setup.exe\` and \`RDP-Gate-macOS.dmg\` are the same installers without the version in the name, for links that always get the latest. The other files are what the built-in updater downloads. Check any download against \`SHA256SUMS.txt\`."
             echo
           } > notes.md
           cat notes.md
